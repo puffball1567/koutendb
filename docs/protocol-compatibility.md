@@ -41,8 +41,55 @@ it to redirect directly instead of probing every node.
 
 Point reads are served only by the calculated current owner. A previous owner
 may retain a short handoff copy, but it is not exposed as a read fallback
-because it cannot prove that a newer update or delete does not exist. Clients
-follow at most two explicit owner redirects and never perform all-node fan-out.
+because it is not the authoritative serving location. Clients follow at most
+two explicit owner redirects and never perform all-node fan-out.
+
+## Mutation Ordering
+
+Particle and logical-delete transfer frames carry an optional hybrid logical
+mutation version:
+
+```text
+<physicalMicros> <logical> <origin>
+```
+
+The tuple is compared lexicographically at the destination. A destination
+rejects duplicate or older values, and a durable tombstone rejects a delayed
+value that predates the delete. `TRF` appends the version after the codec;
+`TRFD` transfers a logical-delete tombstone without a payload. Existing `TRF`
+frames without these fields remain readable and derive a compatibility version
+from `tWrite`.
+
+Mixed-version rolling upgrades preserve old value transfers, but logical delete
+convergence requires every receiving node to understand `TRFD`. An older node
+rejects that unknown command; the upgraded source retains the tombstone and
+retries instead of acknowledging or pruning it. Upgrade all cluster nodes
+before relying on cross-node delete convergence.
+
+Physical source eviction is deliberately separate from logical deletion.
+Moving an acknowledged source copy writes a physical `D` record; application
+deletion writes a versioned logical `L` tombstone. This prevents a normal
+handoff departure from deleting the accepted destination value.
+
+Tombstones survive WAL replay, compaction, backup, and restore. Each node keeps
+a local guard copy instead of deleting the marker when ownership moves. The
+current orbital owner advances an acknowledgement set in `TRFD`; non-owners do
+not independently fan out the marker. Once every configured peer ID has
+durably applied the same delete version, the owner assigns a reclamation
+deadline. The deadline covers both the bounded handoff queue and enough time
+for the completed acknowledgement set to make another full orbit through the
+guard copies. Final reclamation writes `LG`, so a restart cannot restore the
+marker after it was safely collected.
+
+This is deliberately not a time-only tombstone TTL. Reclamation remains
+fail-closed while any configured peer is missing. The peer set must remain
+stable during an acknowledgement epoch; a tombstone that names a node outside
+the configured peer set is rejected rather than guessed through. Restoring an
+arbitrarily old node image after reclamation is also outside the direct-restart
+contract: operators must restore from a current recovery snapshot and complete
+catch-up before the node may serve or hand off data. Explicit topology
+generations and stale-snapshot fencing remain part of the physical placement
+work.
 
 ## Payload Codec Metadata
 

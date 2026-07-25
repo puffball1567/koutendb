@@ -145,6 +145,8 @@ similar platforms.
 | `connectionsAccepted` | Total accepted TCP connections | Connection churn baseline |
 | `activeConnections` | Current open TCP connections | Client pressure and leak detection |
 | `items` | Stored live particles/documents on the node | Capacity and skew monitoring |
+| `tombstones` | Durable logical-delete guard markers retained by the node | Mutation-ordering safety and acknowledgement/reclamation pressure |
+| `tombstonesReclaimed` | Guard markers safely reclaimed after all-node acknowledgement and drain grace | Confirm that delete metadata is converging instead of growing without bound |
 | `rings` | Known ring metadata count | Routing/domain growth |
 | `forwarders` | Active handoff forwarders | Orbital handoff pressure |
 | `handoffPending` | Records currently awaiting a transfer result | In-flight orbital handoff pressure |
@@ -182,6 +184,7 @@ undecryptable, or inconsistent with its manifest.
 | `recoveryMirrorEncrypted` | `1` when verified with encrypted backup mode | Confirm the expected backup policy |
 | `recoveryMirrorBytes` | Backup artifact size | Detect missing, truncated, or unexpectedly large mirrors |
 | `recoveryMirrorItems` | Live item count in the recovery snapshot | Compare against source-side item trends |
+| `recoveryMirrorTombstones` | Durable logical-delete marker count | Detect missing ordering state and track future reclamation pressure |
 | `recoveryMirrorRings` | Ring metadata count in the recovery snapshot | Detect incomplete domain metadata |
 | `recoveryMirrorNames` | Ring name count in the recovery snapshot | Detect incomplete ring map metadata |
 | `recoveryMirrorClusterTx` | Cluster transaction intents in the mirror | Recovery backlog / landing-state visibility |
@@ -215,8 +218,9 @@ Start with conservative alerts:
 - `recovery-verify --metrics` exits non-zero for any required mirror.
 - `recovery-status --metrics` exits non-zero or reports
   `recoveryUniverseHealthy 0`.
-- `recoveryMirrorItems`, `recoveryMirrorRings`, or `recoveryMirrorBytes` drops
-  unexpectedly compared with the source and previous mirrors.
+- `recoveryMirrorItems`, `recoveryMirrorTombstones`, `recoveryMirrorRings`, or
+  `recoveryMirrorBytes` changes unexpectedly compared with the source and
+  previous mirrors.
 - `activeConnections` rises without returning to the normal range.
 - `uptimeSec` resets outside planned maintenance.
 

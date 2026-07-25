@@ -20,6 +20,9 @@ proc ringSignature(st: Store, ring: uint64): seq[string] =
       result.add p.payload & "|" & $p.codec & "|" & $p.seq & "|" & $p.tWrite
   result.sort()
 
+proc mutationVersion(n: int64, origin = 1'u32): MutationVersion =
+  MutationVersion(physicalMicros: n, logical: 0, origin: origin)
+
 suite "store persistence":
   test "persistent data dirs are locked across processes":
     let dir = createTempDir("kouten-store", "lock")
@@ -75,6 +78,217 @@ suite "store persistence":
     check legacy.items[(13'u64, 0'u32)].codec == pcRaw
     legacy.close()
     removeDir(legacyDir)
+
+  test "mutation versions reject stale and duplicate values around tombstones":
+    var st = openStore("")
+    let base = Particle(parent: 14'u64, seq: 0'u32, period: 60.0,
+                        head: 0.2, tWrite: 1.0, payload: "v2",
+                        version: mutationVersion(2))
+    check st.upsert(base, preserveVersion = true)
+
+    var stale = base
+    stale.payload = "v1"
+    stale.version = mutationVersion(1)
+    check not st.upsert(stale, preserveVersion = true)
+    check st.getParticle(14'u64, 0'u32).payload == "v2"
+
+    var duplicate = base
+    duplicate.payload = "duplicate"
+    check not st.upsert(duplicate, preserveVersion = true)
+    check st.getParticle(14'u64, 0'u32).payload == "v2"
+
+    let deleted = Tombstone(parent: base.parent, seq: base.seq,
+                            period: base.period, head: base.head,
+                            tWrite: base.tWrite, version: mutationVersion(3))
+    check st.applyTombstone(deleted)
+    check not st.contains(base.parent, base.seq)
+    check st.tombstones[(base.parent, base.seq)].version == deleted.version
+    check not st.upsert(base, preserveVersion = true)
+
+    var recreated = base
+    recreated.payload = "v4"
+    recreated.version = mutationVersion(4)
+    check st.upsert(recreated, preserveVersion = true)
+    check st.getParticle(base.parent, base.seq).payload == "v4"
+    check (base.parent, base.seq) notin st.tombstones
+    st.close()
+
+  test "mutation version clock remains monotonic after observing future state":
+    var st = openStore("")
+    let future = MutationVersion(
+      physicalMicros: int64.high - 10_000, logical: 7, origin: 3)
+    check st.upsert(Particle(
+      parent: 141'u64, seq: 0'u32, period: 60.0, head: 0.1,
+      tWrite: 1.0, payload: "future", version: future),
+      preserveVersion = true)
+    let next = st.nextMutationVersion(origin = 4)
+    check next > future
+    let nextAgain = st.nextMutationVersion(origin = 4)
+    check nextAgain > next
+
+    expect ValueError:
+      discard st.upsert(Particle(
+        parent: 141'u64, seq: 1'u32, period: 60.0, head: 0.1,
+        tWrite: 1.0, payload: "invalid",
+        version: MutationVersion(
+          physicalMicros: 0, logical: 1, origin: 1)),
+        preserveVersion = true)
+    st.close()
+
+  test "logical delete ordering survives replay compact backup and restore":
+    let dir = createTempDir("kouten-store", "mutation-order")
+    let backupDir = createTempDir("kouten-store", "mutation-order-backup")
+    let restoreDir = createTempDir("kouten-store", "mutation-order-restore")
+    let original = Particle(parent: 15'u64, seq: 2'u32, period: 120.0,
+                            head: 0.4, tWrite: 2.0, payload: "live",
+                            version: mutationVersion(10, 2))
+    var st = openStore(dir)
+    check st.upsert(original, preserveVersion = true)
+    let deleted = Tombstone(parent: original.parent, seq: original.seq,
+                            period: original.period, head: original.head,
+                            tWrite: original.tWrite,
+                            version: mutationVersion(11, 2),
+                            acknowledgedNodes: @[0'u16, 2'u16],
+                            reclaimAfter: 9_999_999_999.0)
+    check st.applyTombstone(deleted)
+    st.close()
+
+    var replayed = openStore(dir)
+    check not replayed.contains(original.parent, original.seq)
+    check replayed.tombstones[(original.parent, original.seq)].version ==
+      deleted.version
+    check replayed.tombstones[(original.parent, original.seq)].acknowledgedNodes ==
+      @[0'u16, 2'u16]
+    check replayed.tombstones[(original.parent, original.seq)].reclaimAfter ==
+      deleted.reclaimAfter
+    check not replayed.upsert(original, preserveVersion = true)
+    let compactStats = replayed.compact()
+    check compactStats.tombstones == 1
+    let backupStats = replayed.backup(backupDir)
+    check backupStats.tombstones == 1
+    replayed.close()
+
+    var compacted = openStore(dir)
+    check not compacted.upsert(original, preserveVersion = true)
+    compacted.close()
+
+    discard restoreBackup(backupDir, restoreDir)
+    var restored = openStore(restoreDir)
+    check restored.tombstones[(original.parent, original.seq)].version ==
+      deleted.version
+    check restored.tombstones[(original.parent, original.seq)].acknowledgedNodes ==
+      @[0'u16, 2'u16]
+    check restored.tombstones[(original.parent, original.seq)].reclaimAfter ==
+      deleted.reclaimAfter
+    check not restored.upsert(original, preserveVersion = true)
+    restored.close()
+    removeDir(dir)
+    removeDir(backupDir)
+    removeDir(restoreDir)
+
+  test "equal tombstone versions merge acknowledgements and final reclaim replays":
+    let dir = createTempDir("kouten-store", "tombstone-reclaim")
+    let k = (151'u64, 4'u32)
+    let version = mutationVersion(20, 1)
+    var st = openStore(dir)
+    check st.applyTombstone(Tombstone(
+      parent: k[0], seq: k[1], period: 60.0, head: 0.4, tWrite: 2.0,
+      version: version, acknowledgedNodes: @[2'u16, 0'u16]))
+    check st.tombstones[k].acknowledgedNodes == @[0'u16, 2'u16]
+    check st.applyTombstone(Tombstone(
+      parent: k[0], seq: k[1], period: 60.0, head: 0.4, tWrite: 2.0,
+      version: version, acknowledgedNodes: @[1'u16, 2'u16],
+      reclaimAfter: 12345.0))
+    check st.tombstones[k].acknowledgedNodes == @[0'u16, 1'u16, 2'u16]
+    check st.tombstones[k].reclaimAfter == 12345.0
+    check not st.applyTombstone(Tombstone(
+      parent: k[0], seq: k[1], period: 60.0, head: 0.4, tWrite: 2.0,
+      version: version, acknowledgedNodes: @[0'u16]))
+    expect ValueError:
+      discard st.applyTombstone(Tombstone(
+        parent: k[0], seq: k[1], period: 60.0, head: 0.4, tWrite: 2.0,
+        version: version, reclaimAfter: -1.0))
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.tombstones[k].acknowledgedNodes == @[0'u16, 1'u16, 2'u16]
+    check replayed.tombstones[k].reclaimAfter == 12345.0
+    check replayed.reclaimTombstone(k[0], k[1])
+    check k notin replayed.tombstones
+    replayed.close()
+
+    var reclaimed = openStore(dir)
+    check k notin reclaimed.tombstones
+    check not reclaimed.reclaimTombstone(k[0], k[1])
+    reclaimed.close()
+    removeDir(dir)
+
+  test "tombstone acknowledgement encoding is canonical and strict":
+    check canonicalAcknowledgedNodes(@[3'u16, 1'u16, 3'u16, 0'u16]) ==
+      @[0'u16, 1'u16, 3'u16]
+    check acknowledgedNodesField(@[2'u16, 0'u16, 2'u16]) == "0,2"
+    check parseAcknowledgedNodes("2,0,2") == @[0'u16, 2'u16]
+    check @[0'u16, 1'u16, 2'u16].acknowledgesAllNodes(3)
+    check not @[0'u16, 2'u16].acknowledgesAllNodes(3)
+    expect ValueError:
+      discard parseAcknowledgedNodes("0,,2")
+    expect ValueError:
+      discard parseAcknowledgedNodes("65536")
+    expect ValueError:
+      discard parseMutationVersion(@["1", "4294967296", "1"], 0, 1.0)
+    expect ValueError:
+      discard parseMutationVersion(@["1", "0", "4294967296"], 0, 1.0)
+
+  test "transaction delete persists a tombstone while handoff eviction does not":
+    let dir = createTempDir("kouten-store", "transaction-tombstone")
+    var st = openStore(dir)
+    st.upsert Particle(parent: 16'u64, seq: 0'u32, period: 60.0,
+                       head: 0.5, tWrite: 3.0, payload: "delete-me")
+    let tx = st.beginTxn()
+    tx.remove(16'u64, 0'u32)
+    tx.commit()
+    check not st.contains(16'u64, 0'u32)
+    check (16'u64, 0'u32) in st.tombstones
+
+    st.upsert Particle(parent: 17'u64, seq: 0'u32, period: 60.0,
+                       head: 0.6, tWrite: 4.0, payload: "move-me")
+    st.evict(17'u64, 0'u32)
+    check not st.contains(17'u64, 0'u32)
+    check (17'u64, 0'u32) notin st.tombstones
+    st.close()
+
+    var restored = openStore(dir)
+    check (16'u64, 0'u32) in restored.tombstones
+    check (17'u64, 0'u32) notin restored.tombstones
+    restored.close()
+    removeDir(dir)
+
+  test "transaction delete uses the latest staged particle metadata":
+    let dir = createTempDir("kouten-store", "transaction-staged-delete")
+    var st = openStore(dir)
+    let tx = st.beginTxn()
+    tx.upsert Particle(parent: 18'u64, seq: 2'u32, period: 720.0,
+                       head: 1.75, tWrite: 42.5, payload: "staged")
+    tx.remove(18'u64, 2'u32)
+    tx.commit()
+    check not st.contains(18'u64, 2'u32)
+    check (18'u64, 2'u32) in st.tombstones
+    let tombstone = st.tombstones[(18'u64, 2'u32)]
+    check tombstone.period == 720.0
+    check tombstone.head == 1.75
+    check tombstone.tWrite == 42.5
+
+    let noOp = st.beginTxn()
+    noOp.remove(18'u64, 99'u32)
+    noOp.commit()
+    check (18'u64, 99'u32) notin st.tombstones
+    st.close()
+
+    var restored = openStore(dir)
+    check restored.tombstones[(18'u64, 2'u32)].period == 720.0
+    check (18'u64, 99'u32) notin restored.tombstones
+    restored.close()
+    removeDir(dir)
 
   test "stellar map blobs are validated before write and replay":
     let dir = createTempDir("kouten-store", "stellar-map-validate")
@@ -362,6 +576,18 @@ suite "store persistence":
               "XP 7 2 0 60.0 0.0 1.0 5 0\nhello\n")
     var st = openStore(dir)
     check not st.contains(2'u64, 0'u32)
+    st.close()
+    removeDir(dir)
+
+  test "legacy transaction delete of a missing key remains a no-op":
+    let dir = createTempDir("kouten-store", "legacy-missing-delete")
+    writeFile(dir / "kouten.log",
+              "T 7\n" &
+              "XD 7 2 0\n" &
+              "C 7\n")
+    var st = openStore(dir)
+    check not st.contains(2'u64, 0'u32)
+    check (2'u64, 0'u32) notin st.tombstones
     st.close()
     removeDir(dir)
 
