@@ -542,6 +542,7 @@ proc printBackupVerifyStats(stats: BackupStats; encrypted: bool;
     echo &"verifyBackupEncrypted {int(encrypted)}"
     echo &"verifyBackupBytes {stats.bytes}"
     echo &"verifyBackupItems {stats.items}"
+    echo &"verifyBackupTombstones {stats.tombstones}"
     echo &"verifyBackupForwarders {stats.forwarders}"
     echo &"verifyBackupRings {stats.ringMeta}"
     echo &"verifyBackupRingNames {stats.ringNames}"
@@ -558,6 +559,7 @@ proc printBackupVerifyStats(stats: BackupStats; encrypted: bool;
       "encrypted": encrypted,
       "bytes": stats.bytes,
       "items": stats.items,
+      "tombstones": stats.tombstones,
       "forwarders": stats.forwarders,
       "rings": stats.ringMeta,
       "ringNames": stats.ringNames,
@@ -572,7 +574,7 @@ proc printBackupVerifyStats(stats: BackupStats; encrypted: bool;
 
   let kind = if encrypted: "encrypted backup" else: "backup"
   echo &"verify status: ok"
-  echo &"{kind}: bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} source={stats.source} destination={stats.destination}"
+  echo &"{kind}: bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} source={stats.source} destination={stats.destination}"
 
 proc addConfigCheck(checks: var seq[KoutenOperationalCheck], name: string,
                     ok: bool, message: string) =
@@ -2058,7 +2060,7 @@ proc runCompact(dataDir: string, durability: KoutenDurability) =
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.compact()
   db.close()
-  echo &"compact OK before={stats.beforeBytes} after={stats.afterBytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} clusterTx={stats.clusterTx}"
+  echo &"compact OK before={stats.beforeBytes} after={stats.afterBytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} clusterTx={stats.clusterTx}"
 
 proc runLocality(dataDir: string, metricsFormat: bool) =
   if dataDir.len == 0:
@@ -2087,7 +2089,7 @@ proc runBackup(dataDir, backupDir: string, durability: KoutenDurability) =
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.backup(backupDir)
   db.close()
-  echo &"backup OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"backup OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 proc runRestore(backupDir, dataDir: string, overwrite: bool,
                 durability: KoutenDurability) =
@@ -2095,7 +2097,7 @@ proc runRestore(backupDir, dataDir: string, overwrite: bool,
     raise newException(ValueError, "restore requires --backup=DIR --data=DIR")
   let stats = restoreBackup(backupDir, dataDir, overwrite = overwrite,
                             durability = durability)
-  echo &"restore OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"restore OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 proc runBackupEncrypted(dataDir, backupDir, passphrase: string,
                         durability: KoutenDurability) =
@@ -2105,7 +2107,7 @@ proc runBackupEncrypted(dataDir, backupDir, passphrase: string,
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.backupEncrypted(backupDir, passphrase)
   db.close()
-  echo &"backup-encrypted OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"backup-encrypted OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 proc runRestoreEncrypted(backupDir, dataDir, passphrase: string,
                          overwrite: bool, durability: KoutenDurability) =
@@ -2115,7 +2117,7 @@ proc runRestoreEncrypted(backupDir, dataDir, passphrase: string,
   let stats = restoreEncryptedBackup(backupDir, dataDir, passphrase,
                                      overwrite = overwrite,
                                      durability = durability)
-  echo &"restore-encrypted OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"restore-encrypted OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 type
   RecoveryCandidate = object
@@ -2370,6 +2372,7 @@ proc recoveryManifest(encrypted: bool, archive, backupFile, universeName,
     "checksum": artifactChecksum(backupFile),
     "bytes": stats.bytes,
     "items": stats.items,
+    "tombstones": stats.tombstones,
     "rings": stats.ringMeta,
     "names": stats.ringNames,
     "clusterTx": stats.clusterTx,
@@ -2441,6 +2444,9 @@ proc verifyRecoveryMirror(archive, passphrase: string): RecoveryCandidate =
       raise newException(IOError, "recovery manifest checksum mismatch")
     if manifest.hasKey("items") and manifest["items"].getInt() != stats.items:
       raise newException(IOError, "recovery manifest item count mismatch")
+    if manifest.hasKey("tombstones") and
+        manifest["tombstones"].getInt() != stats.tombstones:
+      raise newException(IOError, "recovery manifest tombstone count mismatch")
     if manifest.hasKey("rings") and manifest["rings"].getInt() != stats.ringMeta:
       raise newException(IOError, "recovery manifest ring count mismatch")
     if manifest.hasKey("names") and manifest["names"].getInt() != stats.ringNames:
@@ -2457,9 +2463,9 @@ proc runRecoveryVerify(archive, passphrase: string, metricsFormat: bool) =
   let candidate = verifyRecoveryMirror(archive, passphrase)
   let stats = candidate.stats
   if metricsFormat:
-    echo &"recoveryMirrorHealthy 1 recoveryMirrorEncrypted {int(candidate.encrypted)} recoveryMirrorReadonly {int(candidate.readonly)} recoveryMirrorBytes {stats.bytes} recoveryMirrorItems {stats.items} recoveryMirrorRings {stats.ringMeta} recoveryMirrorNames {stats.ringNames} recoveryMirrorClusterTx {stats.clusterTx} recoveryMirrorWarpJobs {stats.warpJobs} recoveryMirrorUniverseSyncEvents {stats.universeSyncEvents} recoveryMirrorPriority {candidate.priority} recoveryMirrorSnapshotSeq {candidate.snapshotSeq}"
+    echo &"recoveryMirrorHealthy 1 recoveryMirrorEncrypted {int(candidate.encrypted)} recoveryMirrorReadonly {int(candidate.readonly)} recoveryMirrorBytes {stats.bytes} recoveryMirrorItems {stats.items} recoveryMirrorTombstones {stats.tombstones} recoveryMirrorRings {stats.ringMeta} recoveryMirrorNames {stats.ringNames} recoveryMirrorClusterTx {stats.clusterTx} recoveryMirrorWarpJobs {stats.warpJobs} recoveryMirrorUniverseSyncEvents {stats.universeSyncEvents} recoveryMirrorPriority {candidate.priority} recoveryMirrorSnapshotSeq {candidate.snapshotSeq}"
   else:
-    echo &"recovery-verify OK archive={archive} encrypted={candidate.encrypted} readonly={candidate.readonly} bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} priority={candidate.priority} snapshotSeq={candidate.snapshotSeq}"
+    echo &"recovery-verify OK archive={archive} encrypted={candidate.encrypted} readonly={candidate.readonly} bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} priority={candidate.priority} snapshotSeq={candidate.snapshotSeq}"
 
 proc recoveryCandidateCmp(a, b: RecoveryCandidate): int =
   result = cmp(b.priority, a.priority)

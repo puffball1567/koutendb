@@ -25,8 +25,12 @@
 ##         | FWD <parent> <seq> <tWrite> [owner]\n
 ##   BGET <n> <bodyLen>\n repeated: <parent> <seq> <period> <head> <tWrite>\n
 ##       → BVAL <n> <payloadLen>\n repeated: <len>\n<payload>
-##   TRF <parent> <seq> <period> <head> <tWrite> <len> <vecDim>\n<payload><vec> → OK\n
+##   TRF <parent> <seq> <period> <head> <tWrite> <len> <vecDim> <codec>
+##       [<physicalMicros> <logical> <origin>]\n<payload><vec> → OK APPLIED|SKIPPED\n
 ##     （ノード間ハンドオフ）
+##   TRFD <parent> <seq> <period> <head> <tWrite>
+##       <physicalMicros> <logical> <origin> [<ackedNodes> <reclaimAfter>]\n
+##       → OK APPLIED|SKIPPED\n
 ##   TXBEGIN\n                                                  → OK <txid>\n
 ##   TXRESERVE <txid> <ringKey> <period> <head>\n              → OK <seq> <tWrite>\n
 ##   TXCOMMIT <txid> <n>\n repeated: <parent> ... <vecDim>\n<payload><vec> → OK\n
@@ -44,9 +48,10 @@
 ##   STATS\n                                                   → OK <node> <count>\n
 
 import std/[net, strutils, tables]
-import ./[auth, payload]
+import ./[auth, payload, mutation]
 
 export payload
+export mutation
 
 const
   WireProtocolVersion* = 1
@@ -76,6 +81,7 @@ type
     payload*: string
     codec*: PayloadCodec
     vec*: seq[float32]
+    version*: MutationVersion
 
   WireId* = object
     parent*: uint64
@@ -593,6 +599,7 @@ proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                   period, head, tWrite: float, payload: string,
                   vec: seq[float32] = @[],
                   codec = pcRaw,
+                  version = MutationVersion(),
                   timeoutMs = 10_000) =
   ## Inter-node handoff. koutend is single-threaded, so callers should pass a
   ## short timeoutMs to avoid long blocking during mutual transfer.
@@ -601,9 +608,23 @@ proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
     else: payload & vec.vecBytes
   let r = c.rpc(node, "TRF " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " & $payload.len & " " & $vec.len &
-                " " & codec.payloadCodecName, body,
+                " " & codec.payloadCodecName & " " &
+                version.mutationVersionFields, body,
                 timeoutMs = timeoutMs)
   expect(r, "OK", "TRF")
+
+proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
+                        seq: uint32, period, head, tWrite: float,
+                        version: MutationVersion,
+                        acknowledgedNodes: seq[uint16] = @[],
+                        reclaimAfter = 0.0,
+                        timeoutMs = 10_000) =
+  let r = c.rpc(node, "TRFD " & $parent & " " & $seq & " " & $period & " " &
+                $head & " " & $tWrite & " " &
+                version.mutationVersionFields & " " &
+                acknowledgedNodes.acknowledgedNodesField & " " &
+                $reclaimAfter, timeoutMs = timeoutMs)
+  expect(r, "OK", "TRFD")
 
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
   let r = c.rpc(node, "TXBEGIN")
@@ -620,9 +641,13 @@ proc txReserveReq*(c: ClusterClient, node: int, txid, ringKey: uint64,
 proc txCommitReq*(c: ClusterClient, node: int, txid: uint64, ops: seq[TxWireOp]) =
   var body = ""
   for op in ops:
-    body.add((if op.delete: "D " else: "P ") & $op.parent & " " & $op.seq & " " & $op.period & " " &
-             $op.head & " " & $op.tWrite & " " & $op.payload.len & " " &
-             $op.vec.len & " " & op.codec.payloadCodecName & "\n")
+    body.add((if op.delete: "D " else: "P ") & $op.parent & " " & $op.seq &
+             " " & $op.period & " " & $op.head & " " & $op.tWrite & " " &
+             $op.payload.len & " " & $op.vec.len & " " &
+             op.codec.payloadCodecName)
+    if not op.version.isZero:
+      body.add " " & op.version.mutationVersionFields
+    body.add "\n"
     body.add(op.payload)
     if op.vec.len > 0:
       body.add(op.vec.vecBytes)
@@ -669,7 +694,8 @@ proc applyTxReq*(c: ClusterClient, node: int, txid: uint64, op: TxWireOp,
   let r = c.rpc(node, "APPLYTX " & $txid & " " & kind & " " & $op.parent & " " & $op.seq & " " &
                 $op.period & " " & $op.head & " " & $op.tWrite & " " &
                 $op.payload.len & " " & $op.vec.len & " " &
-                op.codec.payloadCodecName, body, timeoutMs = timeoutMs)
+                op.codec.payloadCodecName & " " &
+                op.version.mutationVersionFields, body, timeoutMs = timeoutMs)
   expect(r, "OK", "APPLYTX")
 
 proc retrieveReq*(c: ClusterClient, node: int, hasRing: bool, ringKey: uint64,

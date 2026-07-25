@@ -8,8 +8,8 @@
 ##   - --data を与えると追記ログに永続化（§16）。再起動後は再生 → 自分の弧に
 ##     ないものはハンドオフが自然に掃き出す（自己修復）
 
-import std/[algorithm, selectors, net, os, strutils, times, monotimes, json,
-            tables, parseopt, hashes, atomics]
+import std/[algorithm, math, selectors, net, os, strutils, times, monotimes,
+            json, tables, parseopt, hashes, atomics]
 when not defined(windows):
   import std/posix
 import kouten/[core, store, select, wire, field, auth]
@@ -22,6 +22,11 @@ const
   MaxTransfersPerTick = 256   # cheap queue submissions; worker provides backpressure
   HandoffQueueCapacity = 1024
   HandoffTimeoutMs = 500      # worker-only timeout; never blocks foreground reads
+  TombstoneQueueDrainGraceSec =
+    when defined(koutenTestFastTombstoneGc): 0.2
+    else:
+      2.0 * float(HandoffQueueCapacity * HandoffTimeoutMs) / 1000.0 +
+      2.0 * Grace
   MaxPreparedSelections = 1024
   MaxPreparedSelectionSourceBytes = 64 * 1024
   MaxPreparedSelectionCacheBytes = 1024 * 1024
@@ -54,6 +59,10 @@ type
     payload: string
     codec: PayloadCodec
     vec: seq[float32]
+    version: MutationVersion
+    deleted: bool
+    acknowledgedNodes: seq[uint16]
+    reclaimAfter: float
 
   HandoffResult = object
     attempt: uint64
@@ -81,6 +90,10 @@ type
     payload: string
     codec: PayloadCodec
     vec: seq[float32]
+    version: MutationVersion
+    deleted: bool
+    acknowledgedNodes: seq[uint16]
+    reclaimAfter: float
 
   UserRole = enum
     roleReader, roleWriter, roleAdmin
@@ -105,6 +118,7 @@ type
     handoffFailed: uint64
     handoffStaleAck: uint64
     handoffQueueFull: uint64
+    tombstonesReclaimed: uint64
     slowTickSec: float
     running: bool
     draining: bool
@@ -167,9 +181,18 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
         break
       var applied = false
       try:
-        client.transferReq(task.target, task.parent, task.seq, task.period,
-                           task.head, task.tWrite, task.payload, task.vec,
-                           task.codec, timeoutMs = HandoffTimeoutMs)
+        if task.deleted:
+          client.transferDeleteReq(task.target, task.parent, task.seq,
+                                   task.period, task.head, task.tWrite,
+                                   task.version,
+                                   acknowledgedNodes = task.acknowledgedNodes,
+                                   reclaimAfter = task.reclaimAfter,
+                                   timeoutMs = HandoffTimeoutMs)
+        else:
+          client.transferReq(task.target, task.parent, task.seq, task.period,
+                             task.head, task.tWrite, task.payload, task.vec,
+                             task.codec, task.version,
+                             timeoutMs = HandoffTimeoutMs)
         applied = true
       except CatchableError:
         discard
@@ -291,6 +314,45 @@ proc codecSuffix(sv: Server, sock: Socket, codec: PayloadCodec): string =
 proc orbitOf(p: Particle): Orbit =
   OrbitalId(parent: p.parent, epoch: 1, tWrite: p.tWrite, seq: p.seq)
     .ringOrbit(p.period, p.head)
+
+proc orbitOf(tombstone: Tombstone): Orbit =
+  OrbitalId(parent: tombstone.parent, epoch: 1,
+            tWrite: tombstone.tWrite, seq: tombstone.seq)
+    .ringOrbit(tombstone.period, tombstone.head)
+
+proc prepareTombstoneForNode(sv: Server, tombstone: Tombstone,
+                             now: float): Tombstone =
+  result = tombstone
+  for node in result.acknowledgedNodes:
+    if int(node) >= sv.peers.len:
+      raise newException(ValueError,
+        "tombstone acknowledgement references an unknown node")
+  let wasComplete =
+    result.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len)
+  discard result.acknowledgedNodes.acknowledgeNode(uint16(sv.myId))
+  if not wasComplete and
+      result.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len):
+    # Keep the completed acknowledgement set alive long enough to make one
+    # full orbit through every guard copy, in addition to draining stale
+    # handoff work that was queued before the delete reached all nodes.
+    let periodClass = result.period.classify
+    if result.period > 0 and
+        periodClass notin {fcNan, fcInf, fcNegInf} and
+        result.period <= (float.high - 2.0 * Grace) / 2.0:
+      let propagationGrace = 2.0 * result.period + 2.0 * Grace
+      result.reclaimAfter =
+        max(result.reclaimAfter,
+            now + max(TombstoneQueueDrainGraceSec, propagationGrace))
+
+proc reclaimReadyTombstones(sv: Server, now: float) =
+  var reclaim: seq[(uint64, uint32)] = @[]
+  for k, tombstone in sv.st.tombstones:
+    if tombstone.reclaimAfter > 0 and tombstone.reclaimAfter <= now and
+        tombstone.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len):
+      reclaim.add k
+  for k in reclaim:
+    if sv.st.reclaimTombstone(k[0], k[1]):
+      inc sv.tombstonesReclaimed
 
 proc ringInfo(sv: Server, name: string): tuple[key: uint64, period, head: float] =
   if name == "halo":
@@ -709,6 +771,7 @@ proc ownerOf(sv: Server, parent: uint64, seq: uint32, period, head, tWrite: floa
 proc handoffTick(sv: Server) =
   let now = epochTime()
   let n = sv.peers.len
+  sv.reclaimReadyTombstones(now)
   if n <= 1:
     return
 
@@ -727,26 +790,41 @@ proc handoffTick(sv: Server) =
     if not r.applied:
       inc sv.handoffFailed
       continue
-    if k notin sv.st.items:
-      inc sv.handoffStaleAck
-      continue
-    template current: untyped = sv.st.items[k]
-    let unchanged =
-      current.period == pending.period and
-      current.head == pending.head and
-      current.tWrite == pending.tWrite and
-      current.payload == pending.payload and
-      current.codec == pending.codec and
-      current.vec == pending.vec
-    if not unchanged:
-      inc sv.handoffStaleAck
-      continue
-    let owner = int(sv.tbl.node(orbitOf(current), now))
+    var owner = -1
+    if pending.deleted:
+      if k notin sv.st.tombstones:
+        inc sv.handoffStaleAck
+        continue
+      template current: untyped = sv.st.tombstones[k]
+      if current.version != pending.version:
+        inc sv.handoffStaleAck
+        continue
+      owner = int(sv.tbl.node(orbitOf(current), now))
+    else:
+      if k notin sv.st.items:
+        inc sv.handoffStaleAck
+        continue
+      template current: untyped = sv.st.items[k]
+      let unchanged =
+        current.period == pending.period and
+        current.head == pending.head and
+        current.tWrite == pending.tWrite and
+        current.payload == pending.payload and
+        current.codec == pending.codec and
+        current.vec == pending.vec and
+        current.version == pending.version
+      if not unchanged:
+        inc sv.handoffStaleAck
+        continue
+      owner = int(sv.tbl.node(orbitOf(current), now))
     let validTarget =
       r.target == owner or
       (owner == sv.myId and r.target == (sv.myId + 1) mod n)
     if validTarget:
-      current.sentAhead = true
+      if pending.deleted:
+        sv.st.tombstones[k].sentAhead = true
+      else:
+        sv.st.items[k].sentAhead = true
       inc sv.handoffApplied
     else:
       inc sv.handoffStaleAck
@@ -767,7 +845,9 @@ proc handoffTick(sv: Server) =
       tWrite: p.tWrite,
       payload: p.payload,
       codec: p.codec,
-      vec: p.vec)
+      vec: p.vec,
+      version: p.version,
+      deleted: false)
     let task = HandoffTask(
       kind: htkTransfer,
       attempt: attempt,
@@ -779,7 +859,9 @@ proc handoffTick(sv: Server) =
       tWrite: p.tWrite,
       payload: p.payload,
       codec: p.codec,
-      vec: p.vec)
+      vec: p.vec,
+      version: p.version,
+      deleted: false)
     if not handoffTasks.trySend(task):
       inc sv.handoffQueueFull
       return false
@@ -814,7 +896,59 @@ proc handoffTick(sv: Server) =
       if p.sentAhead and now - p.lastHere > Grace:
         doomed.add k
   for k in doomed:
-    sv.st.remove(k[0], k[1])
+    sv.st.evict(k[0], k[1])
+
+  proc enqueueTombstone(k: (uint64, uint32), target: int,
+                        tombstone: Tombstone): bool =
+    if k in sv.pendingHandoffs:
+      return false
+    inc sv.nextHandoffAttempt
+    let attempt = sv.nextHandoffAttempt
+    let pending = PendingHandoff(
+      attempt: attempt, target: target,
+      period: tombstone.period, head: tombstone.head,
+      tWrite: tombstone.tWrite, version: tombstone.version,
+      deleted: true,
+      acknowledgedNodes: tombstone.acknowledgedNodes,
+      reclaimAfter: tombstone.reclaimAfter)
+    let task = HandoffTask(
+      kind: htkTransfer, attempt: attempt, target: target,
+      parent: tombstone.parent, seq: tombstone.seq,
+      period: tombstone.period, head: tombstone.head,
+      tWrite: tombstone.tWrite, version: tombstone.version,
+      deleted: true,
+      acknowledgedNodes: tombstone.acknowledgedNodes,
+      reclaimAfter: tombstone.reclaimAfter)
+    if not handoffTasks.trySend(task):
+      inc sv.handoffQueueFull
+      return false
+    sv.pendingHandoffs[k] = pending
+    inc sv.handoffQueued
+    true
+
+  for k in sv.st.tombstones.keys:
+    if budget <= 0:
+      break
+    template tombstone: untyped = sv.st.tombstones[k]
+    if tombstone.reclaimAfter > 0 and tombstone.reclaimAfter <= now:
+      continue
+    let o = orbitOf(tombstone)
+    let ownNow = int(sv.tbl.node(o, now))
+    if ownNow == sv.myId:
+      tombstone.lastHere = now
+      let nextNode = (sv.myId + 1) mod n
+      let tCross = o.nextArrival(sv.tbl.arcStart(NodeId(nextNode)), now)
+      if tCross - now < Lookahead:
+        if not tombstone.sentAhead and
+            enqueueTombstone(k, nextNode, tombstone):
+          dec budget
+      else:
+        tombstone.sentAhead = false
+    else:
+      # Logical-delete markers remain as local guards. Only the current owner
+      # advances the acknowledgement baton; non-owners must not remove their
+      # guard or independently fan it out.
+      discard
 
 proc rebuildFieldState(sv: Server) =
   sv.fs.forwarders = sv.st.forwarders
@@ -899,7 +1033,8 @@ proc applyClusterTxTick(sv: Server) =
           TxWireOp(delete: op.kind == ctxDelete,
                    parent: op.parent, seq: op.seq, period: op.period,
                    head: op.head, tWrite: op.tWrite,
-                   payload: op.payload, codec: op.codec, vec: op.vec),
+                   payload: op.payload, codec: op.codec, vec: op.vec,
+                   version: op.version),
           timeoutMs = 500)
       except CatchableError:
         allApplied = false
@@ -1023,6 +1158,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       let payloadLen = parseInt(h[data + 5])
       let vecDim = parseInt(h[data + 6])
       op.codec = if h.len > data + 7: parsePayloadCodec(h[data + 7]) else: pcRaw
+      if h.len >= data + 11:
+        op.version = parseMutationVersion(h, data + 8, op.tWrite)
       let bodyBytes = checkedFrameBytes(payloadLen, vecDim, extra = 1)
       if not sv.ringKeyAllowed(sock, op.parent):
         sock.drainBytes(bodyBytes)
@@ -1141,14 +1278,17 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                      tWrite: parseFloat(parts[data + 4]),
                      codec: codec,
                      lastHere: now)
+    p.version = parseMutationVersion(parts, data + 8, p.tWrite)
     p.payload = sock.readExact(payloadLen)
     p.vec =
       if vecDim == 0: @[]
       else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
     if isDelete:
-      if sv.st.contains(parent, seq):
-        sv.st.remove(parent, seq)
-      sock.sendFrame("OK")
+      var tombstone = sv.prepareTombstoneForNode(Tombstone(
+        parent: parent, seq: seq, period: p.period, head: p.head,
+        tWrite: p.tWrite, version: p.version, lastHere: now), now)
+      let applied = sv.st.applyTombstone(tombstone)
+      sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
       return true
     if p.parent notin sv.st.ringMeta:
       sv.st.putRingMeta(p.parent, p.period, p.head)
@@ -1156,10 +1296,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       sv.st.seqs[p.parent] = p.seq + 1
     if sv.st.contains(p.parent, p.seq) and p.vec.len == 0:
       p.vec = sv.st.items[(p.parent, p.seq)].vec
-    sv.st.upsert p
-    if p.parent != HaloKey:
+    let applied = sv.st.upsert(p, origin = uint32(sv.myId + 1),
+                               preserveVersion = true)
+    if applied and p.parent != HaloKey:
       sv.fs.observeRingPut(p.parent, p.vec)
-    sock.sendFrame("OK")
+    sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "TXGETID", "TXQRYID":
     doAssert sv.myId == 0, "TXGETID/TXQRYID は node0 の landing zone で処理する"
     requireParts(parts, parts[0], if parts[0] == "TXQRYID": 8 else: 7)
@@ -1463,6 +1604,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let payloadLen = parseInt(parts[6])
     let vecDim = if parts.len >= 8: parseInt(parts[7]) else: 0
     p.codec = if parts.len >= 9: parsePayloadCodec(parts[8]) else: pcRaw
+    p.version = parseMutationVersion(parts, 9, p.tWrite)
     let bodyBytes = checkedFrameBytes(payloadLen, vecDim)
     if sv.draining:
       sock.drainBytes(bodyBytes)
@@ -1487,10 +1629,41 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     # 追い越し対策: 相手起点の seq 採番と衝突しないよう max を取る
     if p.seq >= sv.st.seqs.getOrDefault(p.parent, 0'u32):
       sv.st.seqs[p.parent] = p.seq + 1
-    sv.st.upsert p
-    if p.parent != HaloKey:
+    let applied = sv.st.upsert(p, origin = uint32(sv.myId + 1),
+                               preserveVersion = true)
+    if applied and p.parent != HaloKey:
       sv.fs.observeRingPut(p.parent, p.vec)
-    sock.sendFrame("OK")
+    sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
+  of "TRFD":
+    if not sv.requireRole(sock, roleWriter):
+      return false
+    requireParts(parts, "TRFD", 9)
+    var tombstone = Tombstone(
+      parent: parseBiggestUInt(parts[1]).uint64,
+      seq: parseUInt(parts[2]).uint32,
+      period: parseFloat(parts[3]),
+      head: parseFloat(parts[4]),
+      tWrite: parseFloat(parts[5]),
+      version: parseMutationVersion(parts, 6, parseFloat(parts[5])),
+      lastHere: now)
+    if parts.len > 9:
+      tombstone.acknowledgedNodes = parseAcknowledgedNodes(parts[9])
+    if parts.len > 10:
+      tombstone.reclaimAfter = parseFloat(parts[10])
+      if tombstone.reclaimAfter < 0 or
+          tombstone.reclaimAfter.classify in {fcNan, fcInf, fcNegInf}:
+        raise newException(ValueError,
+          "tombstone reclaimAfter must be finite and non-negative")
+    if sv.draining:
+      sv.rejectDrainedWrite(sock, "TRFD")
+      return true
+    if not sv.requireRingKey(sock, tombstone.parent):
+      return true
+    var effective = sv.prepareTombstoneForNode(tombstone, now)
+    effective.sentAhead =
+      int(sv.tbl.node(orbitOf(effective), now)) != sv.myId
+    let applied = sv.st.applyTombstone(effective)
+    sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "STATS":
     sock.sendFrame("OK " & $sv.myId & " " & $sv.st.count)
   of "HEALTH":
@@ -1516,6 +1689,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "connectionsAccepted " & $sv.connectionsAccepted & " " &
                    "activeConnections " & $sv.activeConnections & " " &
                    "items " & $sv.st.count & " " &
+                   "tombstones " & $sv.st.tombstones.len & " " &
+                   "tombstonesReclaimed " & $sv.tombstonesReclaimed & " " &
                    "rings " & $sv.st.ringMeta.len & " " &
                    "forwarders " & $sv.st.forwarders.len & " " &
                    "handoffPending " & $sv.pendingHandoffs.len & " " &
@@ -1728,7 +1903,8 @@ proc main() =
 
   let sv = Server(myId: id, peers: peers,
                   tbl: ArcTable(epoch: 1, nNodes: uint16(peers.len)),
-                  st: openStore(dataDir, durability = durability),
+                  st: openStore(dataDir, durability = durability,
+                                mutationOrigin = uint32(id + 1)),
                   dataDir: dataDir,
                   fs: newFieldState(),
                   peerLink: newClusterClient(peers, username = authUser,

@@ -2101,9 +2101,9 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
   let ri = db.rings[id.parent]
   let n = int(db.tbl.nNodes)
   let orbitalPrimary = int(db.tbl.node(db.orbitOf(id), epochTime()))
-  # Keep point reads bounded and fail closed. A previous owner may retain a
-  # handoff copy, but it cannot safely prove that a newer delete or update does
-  # not exist until mutation versions and tombstones are implemented.
+  # Keep point reads bounded and owner-routed. Mutation versions and durable
+  # tombstones protect destination writes, but a tail copy is still not an
+  # authoritative read source.
   var candidates = @[orbitalPrimary]
   var redirectsLeft = 2
   proc addTarget(node, at: int) =

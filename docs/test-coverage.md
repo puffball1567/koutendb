@@ -16,12 +16,13 @@ matrix used before releases.
 | CLI embedded usage | `scripts/cli_crud_smoke.sh` | Smoke-covered: help, put/get/query/list/count, readRing options, `--near` placement, `--stellar`, stellar attach/detach, `--subring` neighborhood narrowing, codec display, ring profile auto codec, time-orbit put/get, dump/import JSONL round-trip, operational data/backup/server-config verify, shell, auth error text |
 | C ABI | `examples/cabi_contract.c`, `examples/cabi_tls_contract.c`, `scripts/cabi_tls_smoke.sh`, `scripts/driver_compat.sh` | Contract-covered: ABI version, put/get, codec metadata, read ring page shape, validation errors, NULL output pointers, oversized payload/vector/batch lengths, invalid codecs, handle close/reuse safety, atlas, CA-verified TLS-enabled connect path |
 | Wire protocol | `tests/twire_driver.nim`, `scripts/cluster_wire_driver_smoke.sh`, `scripts/cluster_wire_fuzz_smoke.sh` | Smoke-covered: driver-facing PUTR/GETID/QRYID, codec metadata negotiation, malformed frame behavior, oversized/deep JSON rejection, `RETRIEVE` query-cost rejection, and broad-scan-denied server audit emission |
-| TLS transport | `scripts/cluster_tls_smoke.sh` | Smoke-covered: TLS-enabled `koutend`/CLI build, three-node CA-verified authenticated TLS health, secret-key auth transport, JSON put/get, a full ownership-boundary handoff, post-handoff ID query, and plain-client rejection |
+| TLS transport | `scripts/cluster_tls_smoke.sh` | Smoke-covered: TLS-enabled `koutend`/CLI build, three-node CA-verified authenticated TLS health, secret-key auth transport, JSON put/get, destination-side mutation/tombstone ordering, a full ownership-boundary handoff, post-handoff ID query, and plain-client rejection |
+| Handoff mutation ordering | `tests/tstore.nim`, `tests/twire_driver.nim`, `tests/thandoff_ordering.nim`, `tests/thandoff_ordering_remote.nim`, `tests/thandoff_reclamation.nim` | Matrix-covered: stale and duplicate values, delete-before-delayed-transfer protection, newer recreation, WAL replay, compact, backup/restore, transaction delete, destination restart, TLS/authenticated transfer, canonical acknowledgement merging, all-node guard propagation, and bounded final reclamation |
 | Cluster transactions | `tests/tcluster_tx.nim`, `scripts/cluster_tx_smoke.sh` | Smoke-covered: landing intent, apply retry, basic owner failure path |
 | Cluster auth / RBAC | `tests/tcluster_authz.nim`, `tests/tcluster_rbac.nim`, related scripts | Smoke-covered: username/password/secret key, unusable auth config fail-fast, server JSON config loading, role/ring-prefix authorization, admin-only metrics/drain/snapshot, minimal non-admin health, drain-mode write rejection with readable connection preservation, and auth/authz server audit emission |
 | Cluster failure | `tests/tcluster_failure.nim`, `scripts/cluster_failure_smoke.sh` | Smoke-covered: owner restart and retry boundaries |
 | Universe sync | `examples/universe_sync_demo.nim`, `scripts/universe_sync_*_smoke.sh` | Smoke-covered: local export/apply, remote apply, idempotency, retry/dead-letter handling, applied-key retention, malformed JSONL handling |
-| Recovery | `scripts/recovery_smoke.sh` | Smoke-covered: backup/restore and recovery status paths |
+| Recovery | `scripts/recovery_smoke.sh` | Smoke-covered: backup/restore, recovery status, checksum/item/tombstone manifest mismatch rejection, and encrypted/readonly mirror paths |
 | Compose examples | `scripts/compose_config_smoke.sh` | Smoke-covered: every `examples/compose/*.compose.yml` file parses with Docker Compose, including the optional tools profile |
 | Soak testing | `examples/soak_72h.sh`, `examples/soak_runner.nim` | Optional local runner: long-running three-node cluster validation with mixed writes, point reads, query projection, ring reads, retrieval, metrics, snapshot, and offline verify. Not part of CI. |
 | Driver compatibility | `scripts/driver_compat.sh` | Optional smoke: C, C++, and published driver-facing C ABI paths when enabled |
@@ -38,7 +39,10 @@ scripts/cluster_tx_smoke.sh
 scripts/cluster_failure_smoke.sh
 scripts/cluster_authz_smoke.sh
 scripts/cluster_rbac_smoke.sh
+scripts/cluster_wire_driver_smoke.sh
 scripts/cluster_wire_fuzz_smoke.sh
+scripts/handoff_reclamation_smoke.sh
+scripts/cluster_tls_smoke.sh
 scripts/recovery_smoke.sh
 scripts/universe_sync_failure_smoke.sh
 scripts/universe_sync_remote_smoke.sh

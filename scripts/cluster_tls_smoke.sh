@@ -99,6 +99,17 @@ echo "$GET_OUTPUT"
 printf '%s\n' "$GET_OUTPUT" | grep -q '"title": "tls smoke"'
 printf '%s\n' "$GET_OUTPUT" | grep -q '"ok": true'
 
+echo "[cluster-tls] verify authenticated handoff mutation ordering"
+nim c -d:ssl -d:release --nimcache:/tmp/nimcache_kouten_handoff_tls \
+  -o:bin/handoff_ordering_remote tests/thandoff_ordering_remote.nim >/dev/null
+KOUTEN_TEST_PEERS="$PEERS" \
+KOUTEN_TEST_CA="$CA_CERT" \
+KOUTEN_TEST_USER=alice \
+KOUTEN_TEST_PASSWORD=secret \
+KOUTEN_TEST_SECRET_KEY=shared-secret \
+KOUTEN_TEST_SERVER_NAME=localhost \
+  bin/handoff_ordering_remote
+
 echo "[cluster-tls] wait for one 3-node ownership transition"
 sleep 22
 
