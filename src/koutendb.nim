@@ -876,19 +876,26 @@ proc connect*(peers: string, username: string = "", password: string = "",
   ## クラスタモードで開く。peers = "host:port,host:port,..."（koutend の並び順）。
   ## 時計は wall clock。API は open() と同じに使える。
   let ps = parsePeers(peers)
-  KoutenDb(mode: mCluster,
-          tbl: ArcTable(epoch: 1, nNodes: uint16(ps.len)),
-          client: newClusterClient(ps, username = username,
-                                   password = password,
-                                   authToken = authToken,
-                                   secretKey = secretKey,
-                                   galaxy = galaxy,
-                                   tls = tls,
-                                   tlsCaFile = tlsCaFile,
-                                   tlsServerName = tlsServerName,
-                                   tlsInsecureSkipVerify = tlsInsecureSkipVerify),
-          plannerBackend: newHeuristicPlannerBackend(),
-          galaxy: galaxy)
+  let client = newClusterClient(ps, username = username,
+                                password = password,
+                                authToken = authToken,
+                                secretKey = secretKey,
+                                galaxy = galaxy,
+                                tls = tls,
+                                tlsCaFile = tlsCaFile,
+                                tlsServerName = tlsServerName,
+                                tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  var tbl: ArcTable
+  try:
+    tbl = client.topologyReq(0)
+    if int(tbl.nNodes) != ps.len:
+      raise newException(IOError,
+        "server topology node count does not match configured peers")
+  except CatchableError:
+    client.close()
+    raise
+  KoutenDb(mode: mCluster, tbl: tbl, client: client,
+           plannerBackend: newHeuristicPlannerBackend(), galaxy: galaxy)
 
 proc openGalaxyRouter*(): GalaxyRouter =
   GalaxyRouter()
@@ -1742,8 +1749,8 @@ proc put*(db: KoutenDb, encoded: EncodedPayload, ring: string = "default",
                         "vectorDim": vec.len,
                         "codec": $encoded.codec})
   of mCluster:
-    # 書き込み先 = 環ヘッド角の所有ノード（決定論的 write leader, §7 の最小版）
-    let node = int(db.tbl.owner(ri.headAngle))
+    # Stable physical ring owner. Logical orbit timing is independent.
+    let node = int(db.tbl.placementOwner(key))
     let (seq, tWrite) = db.client.putReq(node, key, ri.period, ri.headAngle,
                                          encoded.data, normVec, encoded.codec)
     result = KoutenId(parent: key, epoch: db.tbl.epoch, seq: seq, tWrite: tWrite)
@@ -2100,11 +2107,11 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
   ## レースを閉じる（移動は常に前方向なので、primary 再訪で必ず追いつく）。
   let ri = db.rings[id.parent]
   let n = int(db.tbl.nNodes)
-  let orbitalPrimary = int(db.tbl.node(db.orbitOf(id), epochTime()))
+  let physicalPrimary = int(db.tbl.placementOwner(id.parent))
   # Keep point reads bounded and owner-routed. Mutation versions and durable
   # tombstones protect destination writes, but a tail copy is still not an
   # authoritative read source.
-  var candidates = @[orbitalPrimary]
+  var candidates = @[physicalPrimary]
   var redirectsLeft = 2
   proc addTarget(node, at: int) =
     if redirectsLeft > 0 and node >= 0 and node < n:
@@ -2161,7 +2168,7 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
       return encodedPayload(r.value, r.codec)
     if r.forwarded:
       if r.targetNode >= 0:
-        # Ownership changed after the client calculated orbitalPrimary. Follow
+        # Ownership changed after the client calculated physicalPrimary. Follow
         # the server's current target without probing unrelated nodes.
         addTarget(r.targetNode, candidateIndex)
         continue
@@ -2205,10 +2212,9 @@ proc batchGet*(db: KoutenDb, ids: seq[KoutenId]): seq[string] =
       result.add db.get(id)
   of mCluster:
     var byNode = initTable[int, seq[tuple[idx: int, id: KoutenId]]]()
-    let t = epochTime()
     result = newSeq[string](ids.len)
     for i, id in ids:
-      let node = int(db.tbl.node(db.orbitOf(id), t))
+      let node = int(db.tbl.placementOwner(id.parent))
       byNode.mgetOrPut(node, @[]).add (idx: i, id: id)
     for node, entries in byNode:
       var req: seq[tuple[parent: uint64, seq: uint32, period: float,

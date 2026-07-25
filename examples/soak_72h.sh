@@ -9,8 +9,14 @@ SECONDS_TO_RUN="${KOUTEN_SOAK_SECONDS:-259200}"
 INTERVAL_MS="${KOUTEN_SOAK_INTERVAL_MS:-250}"
 REPORT_EVERY="${KOUTEN_SOAK_REPORT_EVERY_SECONDS:-60}"
 PIDS=()
+RUNNER_PID=""
 
 cleanup() {
+  if [[ -n "$RUNNER_PID" ]]; then
+    kill "$RUNNER_PID" 2>/dev/null || true
+    wait "$RUNNER_PID" 2>/dev/null || true
+    RUNNER_PID=""
+  fi
   if ((${#PIDS[@]} > 0)); then
     kill "${PIDS[@]}" 2>/dev/null || true
     wait "${PIDS[@]}" 2>/dev/null || true
@@ -56,7 +62,10 @@ KOUTEN_SOAK_SECONDS="$SECONDS_TO_RUN" \
 KOUTEN_SOAK_INTERVAL_MS="$INTERVAL_MS" \
 KOUTEN_SOAK_REPORT_EVERY_SECONDS="$REPORT_EVERY" \
 KOUTEN_SOAK_OUT="$WORKDIR/soak-progress.jsonl" \
-  bin/soak_runner
+  bin/soak_runner &
+RUNNER_PID="$!"
+wait "$RUNNER_PID"
+RUNNER_PID=""
 
 echo "[soak] snapshot and metrics before shutdown"
 src/koutencli snapshot --peers="$PEERS" | tee "$WORKDIR/snapshot-final.txt"

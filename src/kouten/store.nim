@@ -218,6 +218,9 @@ type
     stellarMaps*: Table[string, string]
     galaxy*: string
     galaxyDescription*: string
+    placementEpoch*: uint32
+    placementNodes*: uint16
+    placementVirtualArcs*: int
     clusterTx*: Table[uint64, ClusterTxIntent]
     appliedClusterTx*: Table[uint64, bool]
     warpJobs*: Table[uint64, string]
@@ -1188,6 +1191,20 @@ proc replay(s: Store, path: string, repair = true) =
         else:
           s.stellarMaps[stellar] = raw
         recordStream.readRecordSep()
+      of "PM":
+        if parts.len != 4:
+          raise newException(WalCorruptionError,
+            "invalid placement metadata record")
+        let epoch = parseUInt(parts[1])
+        let nodes = parseUInt(parts[2])
+        let virtualArcs = parseInt(parts[3])
+        if epoch == 0 or epoch > uint32.high.uint64 or
+            nodes == 0 or nodes > uint16.high.uint64 or virtualArcs <= 0:
+          raise newException(WalCorruptionError,
+            "invalid placement metadata values")
+        s.placementEpoch = uint32(epoch)
+        s.placementNodes = uint16(nodes)
+        s.placementVirtualArcs = virtualArcs
       of "P":
         let p = recordStream.readParticleRecord(parts, 1)
         s.applyOp(TxOp(kind: txUpsert, p: p, walOffset: recordStart,
@@ -1458,6 +1475,38 @@ proc setGalaxy*(s: Store, galaxy: string) =
     s.logFile.writeWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
     s.flushMaybe(force = true)
 
+proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
+                         virtualArcs: int) =
+  ## Persist and fence the physical placement topology. Changing membership or
+  ## virtual-arc density requires an explicit epoch increase; rollback is
+  ## rejected because it could silently reintroduce stale ownership.
+  if epoch == 0:
+    raise newException(ValueError, "placement epoch must be positive")
+  if nodes == 0:
+    raise newException(ValueError, "placement nodes must be positive")
+  if virtualArcs <= 0:
+    raise newException(ValueError, "placement virtual arcs must be positive")
+  s.ensureWritable()
+  if s.placementEpoch > epoch:
+    raise newException(ValueError,
+      "placement epoch rollback is not allowed (stored=" &
+      $s.placementEpoch & ", requested=" & $epoch & ")")
+  if s.placementEpoch != 0 and nodes < s.placementNodes:
+    raise newException(ValueError,
+      "placement node removal requires an explicit drain/export workflow; " &
+      "automatic scale-in is not supported")
+  if s.placementEpoch == epoch and s.placementEpoch != 0:
+    if s.placementNodes != nodes or s.placementVirtualArcs != virtualArcs:
+      raise newException(ValueError,
+        "placement topology changed without increasing placement epoch")
+    return
+  s.placementEpoch = epoch
+  s.placementNodes = nodes
+  s.placementVirtualArcs = virtualArcs
+  if s.persistent:
+    s.logFile.writeWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
+    s.flushMaybe(force = true)
+
 proc flushMaybe(s: Store, force: bool) =
   if not s.persistent: return
   s.ensureWritable()
@@ -1515,6 +1564,9 @@ proc writeSnapshotFile(s: Store, path: string) =
     if s.galaxyDescription.len > 0:
       file.writeWalRecord("GD " & $s.galaxyDescription.len & "\n" &
                           s.galaxyDescription & "\n")
+    if s.placementEpoch > 0:
+      file.writeWalLine("PM " & $s.placementEpoch & " " &
+                        $s.placementNodes & " " & $s.placementVirtualArcs)
     file.writeWalLine("Q " & $s.nextTxId)
     file.writeWalLine("UQ " & $s.nextUniverseSyncId)
     file.writeWalLine("M " & $s.maxTWrite)

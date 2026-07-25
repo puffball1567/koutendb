@@ -39,10 +39,17 @@ Ownership redirects may append the calculated owner node to `FWD` responses.
 The field is additive: older clients may ignore it, while current clients use
 it to redirect directly instead of probing every node.
 
-Point reads are served only by the calculated current owner. A previous owner
-may retain a short handoff copy, but it is not exposed as a read fallback
-because it is not the authoritative serving location. Clients follow at most
-two explicit owner redirects and never perform all-node fan-out.
+`TOPOLOGY` reports the physical placement epoch, node count, and virtual arcs
+per node. Current clients use this response to reconstruct the same deterministic
+virtual-arc table as the server. Cluster connections fail closed if this
+metadata is unavailable or disagrees with the configured peer count; silently
+falling back to legacy equal arcs would risk misrouting writes. Point reads are served only by the stable
+physical ring owner. During topology migration, a source retains its copy until
+the destination has applied the versioned transfer. Internal transfer frames
+also carry an optional placement fence (`epoch`, node count, and virtual-arc
+density), which the destination validates immediately before applying the
+mutation. Clients follow at most two explicit owner redirects and never perform
+all-node fan-out.
 
 ## Mutation Ordering
 
@@ -71,25 +78,22 @@ Moving an acknowledged source copy writes a physical `D` record; application
 deletion writes a versioned logical `L` tombstone. This prevents a normal
 handoff departure from deleting the accepted destination value.
 
-Tombstones survive WAL replay, compaction, backup, and restore. Each node keeps
-a local guard copy instead of deleting the marker when ownership moves. The
-current orbital owner advances an acknowledgement set in `TRFD`; non-owners do
-not independently fan out the marker. Once every configured peer ID has
-durably applied the same delete version, the owner assigns a reclamation
-deadline. The deadline covers both the bounded handoff queue and enough time
-for the completed acknowledgement set to make another full orbit through the
-guard copies. Final reclamation writes `LG`, so a restart cannot restore the
-marker after it was safely collected.
+Tombstones survive WAL replay, compaction, backup, and restore. Delete
+propagation is explicit and bounded by the configured peer count; it no longer
+depends on a logical orbit carrying the marker through every node. Once every
+configured peer ID has durably applied the same delete version, the completed
+acknowledgement set is sent to every guard copy. Reclamation waits for that
+fanout and the bounded stale-transfer drain window. Final reclamation writes
+`LG`, so a restart cannot restore the marker after it was safely collected.
 
 This is deliberately not a time-only tombstone TTL. Reclamation remains
-fail-closed while any configured peer is missing. The peer set must remain
-stable during an acknowledgement epoch; a tombstone that names a node outside
-the configured peer set is rejected rather than guessed through. Restoring an
+fail-closed while any configured peer is missing. Handoff workers also verify
+the destination's placement epoch and topology before transferring a record.
+A tombstone that names a node outside the configured peer set is rejected
+rather than guessed through. Restoring an
 arbitrarily old node image after reclamation is also outside the direct-restart
 contract: operators must restore from a current recovery snapshot and complete
-catch-up before the node may serve or hand off data. Explicit topology
-generations and stale-snapshot fencing remain part of the physical placement
-work.
+catch-up before the node may serve or hand off data.
 
 ## Payload Codec Metadata
 

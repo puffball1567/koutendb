@@ -4,7 +4,7 @@
 ## frames that previously could block or escape the connection boundary.
 
 import std/[net, os, strutils, unittest]
-import ../src/kouten/payload
+import ../src/kouten/[core, payload]
 import ../src/kouten/wire
 
 type FuzzCase = object
@@ -131,10 +131,13 @@ suite "cluster wire fuzz":
         break
     check rejected
 
+    var costId: WireId
     for i in 0 ..< 5:
-      discard c.putRingReq(0, "allowed/fuzz/retrieve-cost/" & $i,
-                           "cost-" & $i, @[1.0'f32, float32(i) / 10.0])
+      costId = c.putRingReq(0, "allowed/fuzz/retrieve-cost",
+                            "cost-" & $i, @[1.0'f32, float32(i) / 10.0])
+    let costOwner = int(c.topologyReq(0).placementOwner(costId.parent))
     expect IOError:
-      discard c.retrieveReq(0, false, 0'u64, @[1.0'f32, 0.0'f32], 2)
+      discard c.retrieveReq(costOwner, false, 0'u64,
+                            @[1.0'f32, 0.0'f32], 2)
     c.close()
     checkAlive(ps, "retrieve-cost-limit")

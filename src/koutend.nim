@@ -1,27 +1,30 @@
-## koutend — KoutenDB ノードサーバ（設計書 §14: スケールアウト実装）
+## koutend - KoutenDB node server (design section 14: scale-out)
 ##
 ## usage: koutend --id=0 --peers=127.0.0.1:7301,127.0.0.1:7302,127.0.0.1:7303 [--data=DIR]
-##   - peers リスト内の自分の位置が弧の担当を決める（等分割, epoch 1）
-##   - 時計は wall clock（NTP 有界スキュー前提 = 設計書 §6.3 の guard band 側で吸収）
-##   - ハンドオフ: 粒子が弧境界を越える前に後続ノードへ先送り（lookahead）し、
-##     転送先の適用応答後も猶予期間（grace）は手元に残す。
-##   - --data を与えると追記ログに永続化（§16）。再起動後は再生 → 自分の弧に
-##     ないものはハンドオフが自然に掃き出す（自己修復）
+##   - Stable physical ownership is derived from a ring key and a persisted
+##     topology epoch. Logical orbital time does not move durable records.
+##   - Topology changes create a bounded startup migration plan. A source copy
+##     remains authoritative until the destination acknowledges the same
+##     mutation version under the expected topology.
+##   - --data enables WAL persistence. Recovery rebuilds only the migration
+##     work required by the active topology instead of periodically rescanning
+##     every record.
 
 import std/[algorithm, math, selectors, net, os, strutils, times, monotimes,
-            json, tables, parseopt, hashes, atomics]
+            json, tables, parseopt, hashes, atomics, heapqueue]
 when not defined(windows):
   import std/posix
 import kouten/[core, store, select, wire, field, auth]
 
 const
-  Lookahead = 0.5   # [s] 境界のこれだけ前に後続へ複製を送る
   Grace = 1.0       # [s] 転送 ACK 後も尾流コピーを残す猶予
   TickMs = 100      # ハンドオフ判定の周期
   DefaultSlowTickSec = 10.0
   MaxTransfersPerTick = 256   # cheap queue submissions; worker provides backpressure
   HandoffQueueCapacity = 1024
   HandoffTimeoutMs = 500      # worker-only timeout; never blocks foreground reads
+  DefaultPlacementEpoch = 1'u32
+  DefaultVirtualArcsPerNode = 64
   TombstoneQueueDrainGraceSec =
     when defined(koutenTestFastTombstoneGc): 0.2
     else:
@@ -80,6 +83,9 @@ type
     tlsCaFile: string
     tlsServerName: string
     tlsInsecureSkipVerify: bool
+    placementEpoch: uint32
+    placementNodes: uint16
+    virtualArcsPerNode: int
 
   PendingHandoff = object
     attempt: uint64
@@ -94,6 +100,25 @@ type
     deleted: bool
     acknowledgedNodes: seq[uint16]
     reclaimAfter: float
+    queuedAt: float
+    retries: int
+    migration: bool
+
+  HandoffWork = object
+    parent: uint64
+    seq: uint32
+    target: int
+    deleted: bool
+    queuedAt: float
+    notBefore: float
+    retries: int
+    migration: bool
+
+  TombstoneReclaim = object
+    due: float
+    parent: uint64
+    seq: uint32
+    version: MutationVersion
 
   UserRole = enum
     roleReader, roleWriter, roleAdmin
@@ -107,11 +132,24 @@ type
     myId: int
     peers: seq[Peer]
     tbl: ArcTable
+    virtualArcsPerNode: int
     st: Store
     dataDir: string
     fs: FieldState
     peerLink: ClusterClient
     pendingHandoffs: Table[(uint64, uint32), PendingHandoff]
+    handoffWork: seq[HandoffWork]
+    handoffWorkHead: int
+    scheduledHandoffs: Table[(uint64, uint32, int, bool), bool]
+    migrationRings: seq[uint64]
+    migrationRingIndex: int
+    migrationItemIndex: int
+    migrationRemaining: int
+    migrationStartedAt: float
+    tombstoneStartupKeys: seq[(uint64, uint32)]
+    tombstoneStartupIndex: int
+    tombstoneCompletionSent: Table[(uint64, uint32, int), bool]
+    tombstoneReclaims: HeapQueue[TombstoneReclaim]
     nextHandoffAttempt: uint64
     handoffQueued: uint64
     handoffApplied: uint64
@@ -159,6 +197,9 @@ type
     preparedSelectionBytes: int
     codecMetadata: Table[int, bool]
 
+proc `<`(a, b: TombstoneReclaim): bool =
+  a.due < b.due
+
 var
   handoffTasks: Channel[HandoffTask]
   handoffResults: Channel[HandoffResult]
@@ -181,17 +222,34 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
         break
       var applied = false
       try:
+        let remoteTopology = client.topologyReq(task.target)
+        if remoteTopology.epoch != config.placementEpoch or
+            remoteTopology.nNodes != config.placementNodes or
+            remoteTopology.arcs.len !=
+              int(config.placementNodes) * config.virtualArcsPerNode:
+          raise newException(IOError,
+            "handoff destination has incompatible placement topology")
         if task.deleted:
           client.transferDeleteReq(task.target, task.parent, task.seq,
                                    task.period, task.head, task.tWrite,
                                    task.version,
                                    acknowledgedNodes = task.acknowledgedNodes,
                                    reclaimAfter = task.reclaimAfter,
+                                   expectedPlacementEpoch =
+                                     config.placementEpoch,
+                                   expectedPlacementNodes =
+                                     config.placementNodes,
+                                   expectedVirtualArcs =
+                                     config.virtualArcsPerNode,
                                    timeoutMs = HandoffTimeoutMs)
         else:
           client.transferReq(task.target, task.parent, task.seq, task.period,
                              task.head, task.tWrite, task.payload, task.vec,
                              task.codec, task.version,
+                             expectedPlacementEpoch = config.placementEpoch,
+                             expectedPlacementNodes = config.placementNodes,
+                             expectedVirtualArcs =
+                               config.virtualArcsPerNode,
                              timeoutMs = HandoffTimeoutMs)
         applied = true
       except CatchableError:
@@ -311,15 +369,6 @@ proc codecSuffix(sv: Server, sock: Socket, codec: PayloadCodec): string =
   else:
     ""
 
-proc orbitOf(p: Particle): Orbit =
-  OrbitalId(parent: p.parent, epoch: 1, tWrite: p.tWrite, seq: p.seq)
-    .ringOrbit(p.period, p.head)
-
-proc orbitOf(tombstone: Tombstone): Orbit =
-  OrbitalId(parent: tombstone.parent, epoch: 1,
-            tWrite: tombstone.tWrite, seq: tombstone.seq)
-    .ringOrbit(tombstone.period, tombstone.head)
-
 proc prepareTombstoneForNode(sv: Server, tombstone: Tombstone,
                              now: float): Tombstone =
   result = tombstone
@@ -332,27 +381,35 @@ proc prepareTombstoneForNode(sv: Server, tombstone: Tombstone,
   discard result.acknowledgedNodes.acknowledgeNode(uint16(sv.myId))
   if not wasComplete and
       result.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len):
-    # Keep the completed acknowledgement set alive long enough to make one
-    # full orbit through every guard copy, in addition to draining stale
-    # handoff work that was queued before the delete reached all nodes.
-    let periodClass = result.period.classify
-    if result.period > 0 and
-        periodClass notin {fcNan, fcInf, fcNegInf} and
-        result.period <= (float.high - 2.0 * Grace) / 2.0:
-      let propagationGrace = 2.0 * result.period + 2.0 * Grace
-      result.reclaimAfter =
-        max(result.reclaimAfter,
-            now + max(TombstoneQueueDrainGraceSec, propagationGrace))
+    # Physical placement no longer follows the logical orbit. Keep guards
+    # through the bounded handoff drain window instead of waiting for an orbit.
+    result.reclaimAfter =
+      max(result.reclaimAfter, now + TombstoneQueueDrainGraceSec)
 
 proc reclaimReadyTombstones(sv: Server, now: float) =
-  var reclaim: seq[(uint64, uint32)] = @[]
-  for k, tombstone in sv.st.tombstones:
-    if tombstone.reclaimAfter > 0 and tombstone.reclaimAfter <= now and
-        tombstone.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len):
-      reclaim.add k
-  for k in reclaim:
-    if sv.st.reclaimTombstone(k[0], k[1]):
+  while sv.tombstoneReclaims.len > 0 and sv.tombstoneReclaims[0].due <= now:
+    let entry = sv.tombstoneReclaims.pop()
+    let k = (entry.parent, entry.seq)
+    if k notin sv.st.tombstones:
+      continue
+    let tombstone = sv.st.tombstones[k]
+    if tombstone.version != entry.version or
+        tombstone.reclaimAfter <= 0 or tombstone.reclaimAfter > now or
+        not tombstone.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len):
+      continue
+    var fanoutComplete = true
+    for target in 0 ..< sv.peers.len:
+      if target != sv.myId and
+          not sv.tombstoneCompletionSent.getOrDefault(
+            (entry.parent, entry.seq, target), false):
+        fanoutComplete = false
+        break
+    if fanoutComplete and sv.st.reclaimTombstone(entry.parent, entry.seq):
       inc sv.tombstonesReclaimed
+    elif not fanoutComplete:
+      var retry = entry
+      retry.due = now + Grace
+      sv.tombstoneReclaims.push retry
 
 proc ringInfo(sv: Server, name: string): tuple[key: uint64, period, head: float] =
   if name == "halo":
@@ -496,7 +553,9 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
                       tlsInsecureSkipVerify: var bool,
                       users: var Table[string, UserRule], galaxy: var string,
                       allowedRingPrefixes: var seq[string],
-                      durability: var StoreDurability) =
+                      durability: var StoreDurability,
+                      placementEpoch: var uint32,
+                      virtualArcsPerNode: var int) =
   let cfg = parseFile(path)
   if cfg.kind != JObject:
     raise newException(ValueError, "server config file must contain a JSON object")
@@ -534,6 +593,15 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
     allowedRingPrefixes.add prefix
   if cfg.hasKey("durability"):
     durability = parseDurabilityValue(cfg["durability"].getStr())
+  let configuredEpoch =
+    jsonIntOpt(cfg, "placementEpoch",
+      jsonIntOpt(cfg, "placement-epoch", int(placementEpoch)))
+  if configuredEpoch <= 0:
+    raise newException(ValueError, "placementEpoch must be positive")
+  placementEpoch = uint32(configuredEpoch)
+  virtualArcsPerNode =
+    jsonIntOpt(cfg, "virtualArcsPerNode",
+      jsonIntOpt(cfg, "virtual-arcs-per-node", virtualArcsPerNode))
   if cfg.hasKey("authToken"):
     authUser = "token"
     authPassword = cfg["authToken"].getStr()
@@ -763,17 +831,170 @@ proc applyUniverseEvent(sv: Server, event: JsonNode, now: float): string =
   sv.st.markUniverseSyncEventApplied(eventKey)
   "APPLIED"
 
-proc ownerOf(sv: Server, parent: uint64, seq: uint32, period, head, tWrite: float): int =
-  let o = OrbitalId(parent: parent, epoch: 1, tWrite: tWrite, seq: seq)
-    .ringOrbit(period, head)
-  int(sv.tbl.node(o, epochTime()))
+proc ownerOf(sv: Server, parent: uint64, seq: uint32, period, head,
+             tWrite: float): int =
+  ## Physical ownership is stable for a placement epoch. The remaining
+  ## arguments stay in the wire signature for protocol compatibility.
+  discard seq
+  discard period
+  discard head
+  discard tWrite
+  int(sv.tbl.placementOwner(parent))
+
+proc queueHandoffWork(sv: Server, parent: uint64, seq: uint32, target: int,
+                      deleted: bool, queuedAt = 0.0,
+                      migration = false): bool =
+  if target < 0 or target >= sv.peers.len or target == sv.myId:
+    return false
+  let workKey = (parent, seq, target, deleted)
+  if sv.scheduledHandoffs.getOrDefault(workKey, false):
+    return true
+  let now = if queuedAt > 0: queuedAt else: epochTime()
+  sv.scheduledHandoffs[workKey] = true
+  sv.handoffWork.add HandoffWork(
+    parent: parent, seq: seq, target: target, deleted: deleted,
+    queuedAt: now, notBefore: now, migration: migration)
+  true
+
+proc queueTombstonePropagation(sv: Server, k: (uint64, uint32)) =
+  if k notin sv.st.tombstones:
+    return
+  let tombstone = sv.st.tombstones[k]
+  if sv.peers.len <= 1:
+    if tombstone.reclaimAfter > 0:
+      sv.tombstoneReclaims.push TombstoneReclaim(
+        due: tombstone.reclaimAfter, parent: k[0], seq: k[1],
+        version: tombstone.version)
+    return
+  if not tombstone.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len):
+    for target in 0 ..< sv.peers.len:
+      if target != sv.myId and
+          uint16(target) notin tombstone.acknowledgedNodes:
+        discard sv.queueHandoffWork(k[0], k[1], target, true)
+        return
+  else:
+    for target in 0 ..< sv.peers.len:
+      if target != sv.myId and
+          not sv.tombstoneCompletionSent.getOrDefault(
+            (k[0], k[1], target), false):
+        discard sv.queueHandoffWork(k[0], k[1], target, true)
+    if tombstone.reclaimAfter > 0:
+      sv.tombstoneReclaims.push TombstoneReclaim(
+        due: tombstone.reclaimAfter, parent: k[0], seq: k[1],
+        version: tombstone.version)
+
+proc preparePlacementMigration(sv: Server) =
+  ## Build a ring-level cursor once at startup. Tick processing walks only this
+  ## bounded migration plan; it never rescans the live store periodically.
+  for ring, keys in sv.st.itemsByRing:
+    if int(sv.tbl.placementOwner(ring)) != sv.myId:
+      sv.migrationRings.add ring
+      for k in keys:
+        if sv.st.contains(k[0], k[1]):
+          inc sv.migrationRemaining
+  sv.migrationRings.sort()
+  for k in sv.st.tombstones.keys:
+    sv.tombstoneStartupKeys.add k
+  sv.tombstoneStartupKeys.sort(proc(a, b: (uint64, uint32)): int =
+    result = cmp(a[0], b[0])
+    if result == 0:
+      result = cmp(a[1], b[1]))
+  sv.migrationStartedAt = epochTime()
+
+proc fillPlacementWork(sv: Server, limit: int) =
+  var added = 0
+  while added < limit and sv.migrationRingIndex < sv.migrationRings.len:
+    let ring = sv.migrationRings[sv.migrationRingIndex]
+    let keys = sv.st.itemsByRing.getOrDefault(ring, @[])
+    if sv.migrationItemIndex >= keys.len:
+      inc sv.migrationRingIndex
+      sv.migrationItemIndex = 0
+      continue
+    let k = keys[sv.migrationItemIndex]
+    inc sv.migrationItemIndex
+    if not sv.st.contains(k[0], k[1]):
+      continue
+    let target = int(sv.tbl.placementOwner(k[0]))
+    if target == sv.myId:
+      if sv.migrationRemaining > 0:
+        dec sv.migrationRemaining
+      continue
+    if sv.queueHandoffWork(k[0], k[1], target, false, migration = true):
+      inc added
+  while added < limit and
+      sv.tombstoneStartupIndex < sv.tombstoneStartupKeys.len:
+    let k = sv.tombstoneStartupKeys[sv.tombstoneStartupIndex]
+    inc sv.tombstoneStartupIndex
+    sv.queueTombstonePropagation(k)
+    inc added
+
+proc submitHandoff(sv: Server, work: HandoffWork): bool =
+  let k = (work.parent, work.seq)
+  if k in sv.pendingHandoffs:
+    return false
+  inc sv.nextHandoffAttempt
+  let attempt = sv.nextHandoffAttempt
+  var pending = PendingHandoff(
+    attempt: attempt, target: work.target, deleted: work.deleted,
+    queuedAt: work.queuedAt, retries: work.retries,
+    migration: work.migration)
+  var task = HandoffTask(kind: htkTransfer, attempt: attempt,
+                         target: work.target, parent: work.parent,
+                         seq: work.seq, deleted: work.deleted)
+  if work.deleted:
+    if k notin sv.st.tombstones:
+      sv.scheduledHandoffs.del((work.parent, work.seq, work.target, true))
+      return true
+    let tombstone = sv.st.tombstones[k]
+    pending.period = tombstone.period
+    pending.head = tombstone.head
+    pending.tWrite = tombstone.tWrite
+    pending.version = tombstone.version
+    pending.acknowledgedNodes = tombstone.acknowledgedNodes
+    pending.reclaimAfter = tombstone.reclaimAfter
+    task.period = tombstone.period
+    task.head = tombstone.head
+    task.tWrite = tombstone.tWrite
+    task.version = tombstone.version
+    task.acknowledgedNodes = tombstone.acknowledgedNodes
+    task.reclaimAfter = tombstone.reclaimAfter
+  else:
+    if not sv.st.contains(k[0], k[1]):
+      sv.scheduledHandoffs.del((work.parent, work.seq, work.target, false))
+      if work.migration and sv.migrationRemaining > 0:
+        dec sv.migrationRemaining
+      return true
+    let p = sv.st.getParticle(k[0], k[1])
+    let owner = int(sv.tbl.placementOwner(p.parent))
+    if owner == sv.myId or owner != work.target:
+      sv.scheduledHandoffs.del((work.parent, work.seq, work.target, false))
+      if work.migration and sv.migrationRemaining > 0:
+        dec sv.migrationRemaining
+      return true
+    pending.period = p.period
+    pending.head = p.head
+    pending.tWrite = p.tWrite
+    pending.payload = p.payload
+    pending.codec = p.codec
+    pending.vec = p.vec
+    pending.version = p.version
+    task.period = p.period
+    task.head = p.head
+    task.tWrite = p.tWrite
+    task.payload = p.payload
+    task.codec = p.codec
+    task.vec = p.vec
+    task.version = p.version
+  if not handoffTasks.trySend(task):
+    inc sv.handoffQueueFull
+    return false
+  sv.pendingHandoffs[k] = pending
+  inc sv.handoffQueued
+  true
 
 proc handoffTick(sv: Server) =
   let now = epochTime()
-  let n = sv.peers.len
   sv.reclaimReadyTombstones(now)
-  if n <= 1:
-    return
 
   while true:
     let completed = handoffResults.tryRecv()
@@ -787,168 +1008,88 @@ proc handoffTick(sv: Server) =
     if pending.attempt != r.attempt:
       continue
     sv.pendingHandoffs.del k
+    let workKey = (r.parent, r.seq, r.target, pending.deleted)
     if not r.applied:
       inc sv.handoffFailed
+      var retry = HandoffWork(
+        parent: r.parent, seq: r.seq, target: r.target,
+        deleted: pending.deleted, queuedAt: pending.queuedAt,
+        retries: pending.retries + 1, migration: pending.migration)
+      retry.notBefore = now + min(5.0, 0.1 * float(1 shl min(5, retry.retries)))
+      sv.handoffWork.add retry
       continue
-    var owner = -1
+
     if pending.deleted:
-      if k notin sv.st.tombstones:
+      if k notin sv.st.tombstones or
+          sv.st.tombstones[k].version != pending.version:
+        sv.scheduledHandoffs.del workKey
         inc sv.handoffStaleAck
         continue
-      template current: untyped = sv.st.tombstones[k]
-      if current.version != pending.version:
-        inc sv.handoffStaleAck
-        continue
-      owner = int(sv.tbl.node(orbitOf(current), now))
-    else:
-      if k notin sv.st.items:
-        inc sv.handoffStaleAck
-        continue
-      template current: untyped = sv.st.items[k]
-      let unchanged =
-        current.period == pending.period and
-        current.head == pending.head and
-        current.tWrite == pending.tWrite and
-        current.payload == pending.payload and
-        current.codec == pending.codec and
-        current.vec == pending.vec and
-        current.version == pending.version
-      if not unchanged:
-        inc sv.handoffStaleAck
-        continue
-      owner = int(sv.tbl.node(orbitOf(current), now))
-    let validTarget =
-      r.target == owner or
-      (owner == sv.myId and r.target == (sv.myId + 1) mod n)
-    if validTarget:
-      if pending.deleted:
-        sv.st.tombstones[k].sentAhead = true
-      else:
-        sv.st.items[k].sentAhead = true
+      var updated = sv.st.tombstones[k]
+      let sentComplete =
+        pending.acknowledgedNodes.acknowledgesAllNodes(sv.peers.len)
+      discard updated.acknowledgedNodes.acknowledgeNode(uint16(r.target))
+      updated = sv.prepareTombstoneForNode(updated, now)
+      discard sv.st.applyTombstone(updated)
+      if sentComplete:
+        sv.tombstoneCompletionSent[(k[0], k[1], r.target)] = true
+      sv.scheduledHandoffs.del workKey
+      sv.queueTombstonePropagation(k)
       inc sv.handoffApplied
-    else:
-      inc sv.handoffStaleAck
-
-  var doomed: seq[(uint64, uint32)] = @[]
-  var budget = MaxTransfersPerTick
-
-  proc enqueue(k: (uint64, uint32), target: int, p: Particle): bool =
-    if k in sv.pendingHandoffs:
-      return false
-    inc sv.nextHandoffAttempt
-    let attempt = sv.nextHandoffAttempt
-    let pending = PendingHandoff(
-      attempt: attempt,
-      target: target,
-      period: p.period,
-      head: p.head,
-      tWrite: p.tWrite,
-      payload: p.payload,
-      codec: p.codec,
-      vec: p.vec,
-      version: p.version,
-      deleted: false)
-    let task = HandoffTask(
-      kind: htkTransfer,
-      attempt: attempt,
-      target: target,
-      parent: p.parent,
-      seq: p.seq,
-      period: p.period,
-      head: p.head,
-      tWrite: p.tWrite,
-      payload: p.payload,
-      codec: p.codec,
-      vec: p.vec,
-      version: p.version,
-      deleted: false)
-    if not handoffTasks.trySend(task):
-      inc sv.handoffQueueFull
-      return false
-    sv.pendingHandoffs[k] = pending
-    inc sv.handoffQueued
-    true
-
-  for k in sv.st.items.keys:
-    if budget <= 0:
-      break   # 残りは次の tick（サービス応答性を優先）
-    # Table を書き換えるのは対象確定後（doomed）。sentAhead/lastHere の更新は直接。
-    template p: untyped = sv.st.items[k]
-    let o = orbitOf(p)
-    let ownNow = int(sv.tbl.node(o, now))
-    if ownNow == sv.myId:
-      p.lastHere = now
-      let nextNode = (sv.myId + 1) mod n
-      let tCross = o.nextArrival(sv.tbl.arcStart(NodeId(nextNode)), now)
-      if tCross - now < Lookahead:
-        if not p.sentAhead:
-          if enqueue(k, nextNode, p):
-            dec budget
-      else:
-        p.sentAhead = false   # 新しい周回に入った
-    else:
-      if not p.sentAhead:
-        if enqueue(k, ownNow, p):
-          dec budget
-      # transferReq returns only after the destination has applied TRF. Keep a
-      # short tail copy for boundary races, then remove it. Failed/unknown
-      # transfers never set sentAhead and are retried without deleting source.
-      if p.sentAhead and now - p.lastHere > Grace:
-        doomed.add k
-  for k in doomed:
-    sv.st.evict(k[0], k[1])
-
-  proc enqueueTombstone(k: (uint64, uint32), target: int,
-                        tombstone: Tombstone): bool =
-    if k in sv.pendingHandoffs:
-      return false
-    inc sv.nextHandoffAttempt
-    let attempt = sv.nextHandoffAttempt
-    let pending = PendingHandoff(
-      attempt: attempt, target: target,
-      period: tombstone.period, head: tombstone.head,
-      tWrite: tombstone.tWrite, version: tombstone.version,
-      deleted: true,
-      acknowledgedNodes: tombstone.acknowledgedNodes,
-      reclaimAfter: tombstone.reclaimAfter)
-    let task = HandoffTask(
-      kind: htkTransfer, attempt: attempt, target: target,
-      parent: tombstone.parent, seq: tombstone.seq,
-      period: tombstone.period, head: tombstone.head,
-      tWrite: tombstone.tWrite, version: tombstone.version,
-      deleted: true,
-      acknowledgedNodes: tombstone.acknowledgedNodes,
-      reclaimAfter: tombstone.reclaimAfter)
-    if not handoffTasks.trySend(task):
-      inc sv.handoffQueueFull
-      return false
-    sv.pendingHandoffs[k] = pending
-    inc sv.handoffQueued
-    true
-
-  for k in sv.st.tombstones.keys:
-    if budget <= 0:
-      break
-    template tombstone: untyped = sv.st.tombstones[k]
-    if tombstone.reclaimAfter > 0 and tombstone.reclaimAfter <= now:
       continue
-    let o = orbitOf(tombstone)
-    let ownNow = int(sv.tbl.node(o, now))
-    if ownNow == sv.myId:
-      tombstone.lastHere = now
-      let nextNode = (sv.myId + 1) mod n
-      let tCross = o.nextArrival(sv.tbl.arcStart(NodeId(nextNode)), now)
-      if tCross - now < Lookahead:
-        if not tombstone.sentAhead and
-            enqueueTombstone(k, nextNode, tombstone):
-          dec budget
-      else:
-        tombstone.sentAhead = false
+
+    if not sv.st.contains(k[0], k[1]):
+      sv.scheduledHandoffs.del workKey
+      inc sv.handoffStaleAck
+      continue
+    let current = sv.st.getParticle(k[0], k[1])
+    let unchanged =
+      current.period == pending.period and current.head == pending.head and
+      current.tWrite == pending.tWrite and current.payload == pending.payload and
+      current.codec == pending.codec and current.vec == pending.vec and
+      current.version == pending.version
+    if not unchanged or
+        int(sv.tbl.placementOwner(current.parent)) != r.target:
+      sv.scheduledHandoffs.del workKey
+      let owner = int(sv.tbl.placementOwner(current.parent))
+      if owner != sv.myId:
+        discard sv.queueHandoffWork(k[0], k[1], owner, false,
+                                    queuedAt = pending.queuedAt,
+                                    migration = pending.migration)
+      inc sv.handoffStaleAck
+      continue
+    sv.st.evict(k[0], k[1])
+    sv.scheduledHandoffs.del workKey
+    if pending.migration and sv.migrationRemaining > 0:
+      dec sv.migrationRemaining
+    inc sv.handoffApplied
+
+  if sv.peers.len <= 1:
+    return
+  sv.fillPlacementWork(MaxTransfersPerTick)
+  var budget = MaxTransfersPerTick
+  var inspected = 0
+  let available = sv.handoffWork.len - sv.handoffWorkHead
+  while budget > 0 and inspected < available and
+      sv.handoffWorkHead < sv.handoffWork.len:
+    let work = sv.handoffWork[sv.handoffWorkHead]
+    inc sv.handoffWorkHead
+    inc inspected
+    if work.notBefore > now or (work.parent, work.seq) in sv.pendingHandoffs:
+      sv.handoffWork.add work
+      continue
+    if sv.submitHandoff(work):
+      dec budget
     else:
-      # Logical-delete markers remain as local guards. Only the current owner
-      # advances the acknowledgement baton; non-owners must not remove their
-      # guard or independently fan it out.
-      discard
+      sv.handoffWork.add work
+      break
+  if sv.handoffWorkHead > 4096 and
+      sv.handoffWorkHead * 2 > sv.handoffWork.len:
+    if sv.handoffWorkHead >= sv.handoffWork.len:
+      sv.handoffWork.setLen(0)
+    else:
+      sv.handoffWork = sv.handoffWork[sv.handoffWorkHead .. ^1]
+    sv.handoffWorkHead = 0
 
 proc rebuildFieldState(sv: Server) =
   sv.fs.forwarders = sv.st.forwarders
@@ -1025,9 +1166,7 @@ proc applyClusterTxTick(sv: Server) =
       continue
     var allApplied = true
     for op in intent.ops:
-      let o = OrbitalId(parent: op.parent, epoch: 1, tWrite: op.tWrite, seq: op.seq)
-        .ringOrbit(op.period, op.head)
-      let node = int(sv.tbl.node(o, epochTime()))
+      let node = int(sv.tbl.placementOwner(op.parent))
       try:
         sv.peerLink.applyTxReq(node, txid,
           TxWireOp(delete: op.kind == ctxDelete,
@@ -1205,7 +1344,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         sv.denyRingName(sock, ringName)
         return true
       let ri = sv.ringInfo(ringName)
-      let owner = int(sv.tbl.owner(ri.head))
+      let owner = int(sv.tbl.placementOwner(ri.key))
       if owner != sv.myId:
         let status = sv.peerLink.universeApplyReq(owner, body)
         inc sv.universeApplyForwarded
@@ -1238,6 +1377,9 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    $(int(sv.universeApplyLastError)))
   of "WIREVER":
     sock.sendFrame("WIREVER " & $WireProtocolVersion)
+  of "TOPOLOGY":
+    sock.sendFrame("TOPOLOGY " & $sv.tbl.epoch & " " & $sv.tbl.nNodes & " " &
+                   $sv.virtualArcsPerNode)
   of "CODECS":
     sock.sendFrame("CODECS raw json nif bif")
   of "CODECMETA":
@@ -1288,6 +1430,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         parent: parent, seq: seq, period: p.period, head: p.head,
         tWrite: p.tWrite, version: p.version, lastHere: now), now)
       let applied = sv.st.applyTombstone(tombstone)
+      if applied:
+        sv.queueTombstonePropagation((parent, seq))
       sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
       return true
     if p.parent notin sv.st.ringMeta:
@@ -1386,7 +1530,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       if vecDim == 0: @[]
       else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
     let ri = sv.ringInfo(ringName)
-    let owner = int(sv.tbl.owner(ri.head))
+    let owner = int(sv.tbl.placementOwner(ri.key))
     if owner != sv.myId:
       let id = sv.peerLink.putRingReq(owner, ringName, payload, vec, codec)
       sock.sendFrame("ID " & $id.parent & " " & $id.epoch & " " & $id.seq & " " &
@@ -1423,6 +1567,12 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let vec =
       if vecDim == 0: @[]
       else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
+    let owner = int(sv.tbl.placementOwner(ringKey))
+    if owner != sv.myId:
+      let placed = sv.peerLink.putReq(owner, ringKey, period, head, payload,
+                                      vec, codec)
+      sock.sendFrame("OK " & $placed.seq & " " & $placed.tWrite)
+      return true
     let seq = sv.st.nextSeq(ringKey)
     if ringKey notin sv.st.ringMeta:
       sv.st.putRingMeta(ringKey, period, head)
@@ -1606,6 +1756,17 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     p.codec = if parts.len >= 9: parsePayloadCodec(parts[8]) else: pcRaw
     p.version = parseMutationVersion(parts, 9, p.tWrite)
     let bodyBytes = checkedFrameBytes(payloadLen, vecDim)
+    if parts.len > 12:
+      requireParts(parts, "TRF placement fence", 15)
+      let expectedEpoch = parseUInt(parts[12])
+      let expectedNodes = parseUInt(parts[13])
+      let expectedVirtualArcs = parseInt(parts[14])
+      if expectedEpoch != uint64(sv.tbl.epoch) or
+          expectedNodes != uint64(sv.tbl.nNodes) or
+          expectedVirtualArcs != sv.virtualArcsPerNode:
+        sock.drainBytes(bodyBytes)
+        sock.sendFrame("ERR topology-mismatch")
+        return true
     if sv.draining:
       sock.drainBytes(bodyBytes)
       sv.rejectDrainedWrite(sock, "TRF")
@@ -1618,12 +1779,6 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     p.vec =
       if vecDim == 0: @[]
       else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
-    # A lookahead copy can arrive before this node owns the orbit. Mark that
-    # state so the receiver does not immediately send the copy back to the
-    # current owner. Once ownership arrives, handoffTick clears sentAhead well
-    # before the following boundary and normal forwarding resumes.
-    p.sentAhead =
-      sv.ownerOf(p.parent, p.seq, p.period, p.head, p.tWrite) != sv.myId
     if p.parent notin sv.st.ringMeta:
       sv.st.putRingMeta(p.parent, p.period, p.head)
     # 追い越し対策: 相手起点の seq 採番と衝突しないよう max を取る
@@ -1633,6 +1788,10 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                                preserveVersion = true)
     if applied and p.parent != HaloKey:
       sv.fs.observeRingPut(p.parent, p.vec)
+    if applied:
+      let owner = sv.ownerOf(p.parent, p.seq, p.period, p.head, p.tWrite)
+      if owner != sv.myId:
+        discard sv.queueHandoffWork(p.parent, p.seq, owner, false)
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "TRFD":
     if not sv.requireRole(sock, roleWriter):
@@ -1654,15 +1813,25 @@ proc handleFrame(sv: Server, sock: Socket): bool =
           tombstone.reclaimAfter.classify in {fcNan, fcInf, fcNegInf}:
         raise newException(ValueError,
           "tombstone reclaimAfter must be finite and non-negative")
+    if parts.len > 11:
+      requireParts(parts, "TRFD placement fence", 14)
+      let expectedEpoch = parseUInt(parts[11])
+      let expectedNodes = parseUInt(parts[12])
+      let expectedVirtualArcs = parseInt(parts[13])
+      if expectedEpoch != uint64(sv.tbl.epoch) or
+          expectedNodes != uint64(sv.tbl.nNodes) or
+          expectedVirtualArcs != sv.virtualArcsPerNode:
+        sock.sendFrame("ERR topology-mismatch")
+        return true
     if sv.draining:
       sv.rejectDrainedWrite(sock, "TRFD")
       return true
     if not sv.requireRingKey(sock, tombstone.parent):
       return true
     var effective = sv.prepareTombstoneForNode(tombstone, now)
-    effective.sentAhead =
-      int(sv.tbl.node(orbitOf(effective), now)) != sv.myId
     let applied = sv.st.applyTombstone(effective)
+    if applied or (effective.parent, effective.seq) in sv.st.tombstones:
+      sv.queueTombstonePropagation((effective.parent, effective.seq))
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "STATS":
     sock.sendFrame("OK " & $sv.myId & " " & $sv.st.count)
@@ -1695,6 +1864,15 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "forwarders " & $sv.st.forwarders.len & " " &
                    "handoffPending " & $sv.pendingHandoffs.len & " " &
                    "handoffQueueDepth " & $handoffTasks.peek & " " &
+                   "handoffWorkDepth " &
+                     $(sv.handoffWork.len - sv.handoffWorkHead) & " " &
+                   "migrationRemaining " & $sv.migrationRemaining & " " &
+                   "migrationLagSec " &
+                     $(if sv.migrationRemaining > 0:
+                         int(epochTime() - sv.migrationStartedAt)
+                       else: 0) & " " &
+                   "placementEpoch " & $sv.tbl.epoch & " " &
+                   "placementVirtualArcs " & $sv.virtualArcsPerNode & " " &
                    "handoffQueued " & $sv.handoffQueued & " " &
                    "handoffApplied " & $sv.handoffApplied & " " &
                    "handoffFailed " & $sv.handoffFailed & " " &
@@ -1772,6 +1950,8 @@ proc printUsage() =
   echo "  --config=FILE                 Load server defaults from JSON"
   echo "  --data=DIR                    Enable WAL-backed persistence"
   echo "  --slow-tick=SECONDS           Background maintenance interval"
+  echo "  --placement-epoch=N           Monotonic physical placement topology epoch"
+  echo "  --virtual-arcs-per-node=N     Virtual arcs per node (default 64)"
   echo "  --durability=buffered|strong  Buffered WAL or fsync-on-write durability"
   echo "  --user=NAME                   Username for cluster auth"
   echo "  --password=TEXT               Password for cluster auth"
@@ -1820,6 +2000,8 @@ proc main() =
   var galaxy = ""
   var allowedRingPrefixes: seq[string] = @[]
   var durability = durBuffered
+  var placementEpoch = DefaultPlacementEpoch
+  var virtualArcsPerNode = DefaultVirtualArcsPerNode
   for kind, key, val in getopt():
     if kind == cmdLongOption:
       case key
@@ -1831,7 +2013,8 @@ proc main() =
                      authUser, authPassword, authPasswordFile, authTokenFile,
                      authSecretKey, authSecretKeyFile, tlsCertFile, tlsKeyFile,
                      tlsCaFile, tlsServerName, tlsInsecureSkipVerify, users,
-                     galaxy, allowedRingPrefixes, durability)
+                     galaxy, allowedRingPrefixes, durability, placementEpoch,
+                     virtualArcsPerNode)
 
   for kind, key, val in getopt():
     if kind == cmdLongOption:
@@ -1865,6 +2048,13 @@ proc main() =
             allowedRingPrefixes.add prefix
       of "durability":
         durability = parseDurabilityValue(val)
+      of "placement-epoch":
+        let parsed = parseInt(val)
+        if parsed <= 0:
+          raise newException(ValueError, "--placement-epoch must be positive")
+        placementEpoch = uint32(parsed)
+      of "virtual-arcs-per-node":
+        virtualArcsPerNode = parseInt(val)
       of "auth-token":
         authUser = "token"
         authPassword = val
@@ -1900,9 +2090,13 @@ proc main() =
       raise newException(ValueError, "TLS support requires building koutend with -d:ssl")
   let peers = parsePeers(peersStr)
   doAssert id >= 0 and id < peers.len, "--id と --peers を指定（id は peers 内の自分の位置）"
+  if virtualArcsPerNode <= 0:
+    raise newException(ValueError, "--virtual-arcs-per-node must be positive")
 
   let sv = Server(myId: id, peers: peers,
-                  tbl: ArcTable(epoch: 1, nNodes: uint16(peers.len)),
+                  tbl: virtualArcTable(placementEpoch, uint16(peers.len),
+                                       virtualArcsPerNode),
+                  virtualArcsPerNode: virtualArcsPerNode,
                   st: openStore(dataDir, durability = durability,
                                 mutationOrigin = uint32(id + 1)),
                   dataDir: dataDir,
@@ -1930,6 +2124,11 @@ proc main() =
                   allowedRingPrefixes: allowedRingPrefixes,
                   pendingHandoffs:
                     initTable[(uint64, uint32), PendingHandoff](),
+                  scheduledHandoffs:
+                    initTable[(uint64, uint32, int, bool), bool](),
+                  tombstoneCompletionSent:
+                    initTable[(uint64, uint32, int), bool](),
+                  tombstoneReclaims: initHeapQueue[TombstoneReclaim](),
                   preparedSelections: initTable[string, Selection](),
                   preparedSelectionLru: @[],
                   preparedSelectionBytes: 0,
@@ -1941,7 +2140,10 @@ proc main() =
                                  certFile = sv.tlsCertFile,
                                  keyFile = sv.tlsKeyFile)
   sv.st.setGalaxy(galaxy)
+  sv.st.configurePlacement(placementEpoch, uint16(peers.len),
+                           virtualArcsPerNode)
   sv.rebuildFieldState()
+  sv.preparePlacementMigration()
 
   handoffTasks.open(HandoffQueueCapacity)
   handoffResults.open()
@@ -1955,7 +2157,10 @@ proc main() =
     tls: tlsCertFile.len > 0,
     tlsCaFile: tlsCaFile,
     tlsServerName: tlsServerName,
-    tlsInsecureSkipVerify: tlsInsecureSkipVerify))
+    tlsInsecureSkipVerify: tlsInsecureSkipVerify,
+    placementEpoch: placementEpoch,
+    placementNodes: uint16(peers.len),
+    virtualArcsPerNode: virtualArcsPerNode))
 
   let listener = newSocket()
   listener.setSockOpt(OptReuseAddr, true)
@@ -1963,7 +2168,10 @@ proc main() =
   listener.listen()
   echo "koutend node", id, " listening on ", peers[id].host, ":", peers[id].port,
        (if dataDir.len > 0: " data=" & dataDir else: " (memory)"),
-       " arcs=1/", peers.len, " restored=", sv.st.count,
+       " placementEpoch=", sv.tbl.epoch,
+       " placementNodes=", sv.tbl.nNodes,
+       " virtualArcsPerNode=", sv.virtualArcsPerNode,
+       " restored=", sv.st.count,
        " slowTick=", sv.slowTickSec, "s",
        " durability=", (if durability == durStrong: "strong" else: "buffered"),
        (if galaxy.len > 0: " galaxy=" & galaxy else: " galaxy=<none>"),
@@ -2034,8 +2242,8 @@ proc main() =
           sv.authChallenges.del fd
           sock.disableSecure()
           sock.close()
-    # ハンドオフは TickMs ごと（select はリクエスト毎に返るので時刻で間引く。
-    # ここを間引かないと全粒子スキャンが毎リクエストに乗り、レイテンシを壊す）
+    # Run bounded migration, retry, and tombstone work at the maintenance
+    # cadence. This path does not periodically scan every live record.
     let nowM = getMonoTime()
     if (nowM - lastTick).inMilliseconds >= TickMs:
       sv.handoffTick()

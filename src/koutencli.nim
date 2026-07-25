@@ -580,6 +580,12 @@ proc addConfigCheck(checks: var seq[KoutenOperationalCheck], name: string,
                     ok: bool, message: string) =
   checks.add KoutenOperationalCheck(name: name, ok: ok, message: message)
 
+proc jsonIntOpt(node: JsonNode, key: string, default: int): int =
+  if node.kind == JObject and node.hasKey(key):
+    node[key].getInt().int
+  else:
+    default
+
 proc verifyServerConfigFile(path: string): tuple[ok: bool,
     checks: seq[KoutenOperationalCheck]] =
   result.ok = true
@@ -670,6 +676,17 @@ proc verifyServerConfigFile(path: string): tuple[ok: bool,
     result.checks.addConfigCheck("ring-prefix-authz", true,
       if prefixes.len > 0: &"prefixes={prefixes.len}"
       else: "no ring-prefix boundary configured")
+
+    let placementEpoch = jsonIntOpt(cfg, "placementEpoch",
+      jsonIntOpt(cfg, "placement-epoch", 1))
+    let virtualArcs = jsonIntOpt(cfg, "virtualArcsPerNode",
+      jsonIntOpt(cfg, "virtual-arcs-per-node", 64))
+    let placementOk = placementEpoch > 0 and virtualArcs > 0
+    result.checks.addConfigCheck("physical-placement", placementOk,
+      if placementOk:
+        &"epoch={placementEpoch} nodes={peerCount} virtualArcsPerNode={virtualArcs}"
+      else:
+        "placementEpoch and virtualArcsPerNode must be positive")
 
     let tlsCert = jsonStringOpt(cfg, "tlsCertFile", jsonStringOpt(cfg, "tls-cert", ""))
     let tlsKey = jsonStringOpt(cfg, "tlsKeyFile", jsonStringOpt(cfg, "tls-key", ""))

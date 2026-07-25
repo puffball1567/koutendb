@@ -66,6 +66,8 @@ provides it.
   "peers": ["127.0.0.1:7301", "127.0.0.1:7302", "127.0.0.1:7303"],
   "dataDir": "/var/lib/koutendb/node0",
   "slowTick": 0.05,
+  "placementEpoch": 1,
+  "virtualArcsPerNode": 64,
   "durability": "strong",
   "galaxy": "app-main",
   "user": "app",
@@ -88,9 +90,13 @@ provides it.
 ```
 
 The config accepts camelCase names and flag-style aliases such as
-`password-file`, `secret-key-file`, `tls-cert`, and `allow-ring`. `peers` may be
-a comma-separated string or an array. `allowRing` / `allow-ring` may be a
-comma-separated string or an array. `roles` may contain either
+`placement-epoch`, `virtual-arcs-per-node`, `password-file`,
+`secret-key-file`, `tls-cert`, and `allow-ring`. Changing the peer count or
+virtual-arc density requires increasing `placementEpoch` on every node.
+Automatic scale-out migration is supported; node removal fails closed until a
+separate drain/export workflow is available. `peers` may be a comma-separated
+string or an array. `allowRing` / `allow-ring` may be a comma-separated string
+or an array. `roles` may contain either
 `"user:password:role[:prefix1,prefix2]"` strings or objects with `user`,
 `password`, `role`, and optional `prefixes`.
 
@@ -108,6 +114,8 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--peers=host:port,...` | Static cluster peer list. |
 | `--data=DIR` | Persistent data directory. |
 | `--slow-tick=SECONDS` | Background handoff / maintenance tick interval. |
+| `--placement-epoch=N` | Monotonic physical placement generation. Increase it when peer count or virtual-arc settings change. |
+| `--virtual-arcs-per-node=N` | Deterministic virtual arcs assigned to each node. Default `64`; changing it requires a placement epoch increase. |
 | `--durability=buffered|strong` | WAL durability policy. Applies to server writes and local management commands such as `compact`, `backup`, and `restore`. |
 | `--user=NAME` / `--password=TEXT` | Basic username/password gate. Prefer `--password-file` or `KOUTEN_PASSWORD` outside local smoke tests. |
 | `--password-file=FILE` | Read the server password from a file. Trailing whitespace is stripped. |
@@ -122,6 +130,11 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--galaxy=NAME` | Galaxy identity expected by clients. |
 | `--allow-ring=PREFIX[,PREFIX...]` | Ring-prefix authorization boundary. |
 | `--role=user:password:reader|writer|admin[:prefixes]` | Role and optional ring-prefix policy. |
+
+Physical ownership is stable inside one placement epoch and is independent of
+logical ring orbit periods. The placement tuple is persisted in the WAL.
+Startup rejects epoch rollback and same-epoch topology changes. See
+[Physical Placement and Topology Remapping](topology-remapping.md).
 
 ## Retrieval Tuning
 

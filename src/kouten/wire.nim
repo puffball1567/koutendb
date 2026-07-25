@@ -26,10 +26,13 @@
 ##   BGET <n> <bodyLen>\n repeated: <parent> <seq> <period> <head> <tWrite>\n
 ##       → BVAL <n> <payloadLen>\n repeated: <len>\n<payload>
 ##   TRF <parent> <seq> <period> <head> <tWrite> <len> <vecDim> <codec>
-##       [<physicalMicros> <logical> <origin>]\n<payload><vec> → OK APPLIED|SKIPPED\n
+##       [<physicalMicros> <logical> <origin>
+##        <placementEpoch> <placementNodes> <virtualArcs>]\n
+##       <payload><vec> → OK APPLIED|SKIPPED\n
 ##     （ノード間ハンドオフ）
 ##   TRFD <parent> <seq> <period> <head> <tWrite>
-##       <physicalMicros> <logical> <origin> [<ackedNodes> <reclaimAfter>]\n
+##       <physicalMicros> <logical> <origin> [<ackedNodes> <reclaimAfter>
+##       <placementEpoch> <placementNodes> <virtualArcs>]\n
 ##       → OK APPLIED|SKIPPED\n
 ##   TXBEGIN\n                                                  → OK <txid>\n
 ##   TXRESERVE <txid> <ringKey> <period> <head>\n              → OK <seq> <tWrite>\n
@@ -46,9 +49,11 @@
 ##     → RHIT <scanned> <ringsTouched> <n>\n repeated: <parent> <seq> <tWrite> <score> <len>\n<payload>
 ##   RINGS\n → RINGS <n>\n repeated: RING <ringKey> <count> <vecDim>\n<centroid>
 ##   STATS\n                                                   → OK <node> <count>\n
+##   TOPOLOGY\n
+##       → TOPOLOGY <placementEpoch> <nNodes> <virtualArcsPerNode>\n
 
 import std/[net, strutils, tables]
-import ./[auth, payload, mutation]
+import ./[auth, payload, mutation, core]
 
 export payload
 export mutation
@@ -600,16 +605,30 @@ proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                   vec: seq[float32] = @[],
                   codec = pcRaw,
                   version = MutationVersion(),
-                  timeoutMs = 10_000) =
+                  timeoutMs = 10_000,
+                  expectedPlacementEpoch = 0'u32,
+                  expectedPlacementNodes = 0'u16,
+                  expectedVirtualArcs = 0) =
   ## Inter-node handoff. koutend is single-threaded, so callers should pass a
   ## short timeoutMs to avoid long blocking during mutual transfer.
   let body =
     if vec.len == 0: payload
     else: payload & vec.vecBytes
+  let placementFence =
+    if expectedPlacementEpoch == 0 and expectedPlacementNodes == 0 and
+        expectedVirtualArcs == 0:
+      ""
+    elif expectedPlacementEpoch > 0 and expectedPlacementNodes > 0 and
+        expectedVirtualArcs > 0:
+      " " & $expectedPlacementEpoch & " " & $expectedPlacementNodes & " " &
+        $expectedVirtualArcs
+    else:
+      raise newException(ValueError,
+        "TRF placement fence must be entirely specified or omitted")
   let r = c.rpc(node, "TRF " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " & $payload.len & " " & $vec.len &
                 " " & codec.payloadCodecName & " " &
-                version.mutationVersionFields, body,
+                version.mutationVersionFields & placementFence, body,
                 timeoutMs = timeoutMs)
   expect(r, "OK", "TRF")
 
@@ -618,12 +637,26 @@ proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
                         version: MutationVersion,
                         acknowledgedNodes: seq[uint16] = @[],
                         reclaimAfter = 0.0,
-                        timeoutMs = 10_000) =
+                        timeoutMs = 10_000,
+                        expectedPlacementEpoch = 0'u32,
+                        expectedPlacementNodes = 0'u16,
+                        expectedVirtualArcs = 0) =
+  let placementFence =
+    if expectedPlacementEpoch == 0 and expectedPlacementNodes == 0 and
+        expectedVirtualArcs == 0:
+      ""
+    elif expectedPlacementEpoch > 0 and expectedPlacementNodes > 0 and
+        expectedVirtualArcs > 0:
+      " " & $expectedPlacementEpoch & " " & $expectedPlacementNodes & " " &
+        $expectedVirtualArcs
+    else:
+      raise newException(ValueError,
+        "TRFD placement fence must be entirely specified or omitted")
   let r = c.rpc(node, "TRFD " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " &
                 version.mutationVersionFields & " " &
                 acknowledgedNodes.acknowledgedNodesField & " " &
-                $reclaimAfter, timeoutMs = timeoutMs)
+                $reclaimAfter & placementFence, timeoutMs = timeoutMs)
   expect(r, "OK", "TRFD")
 
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
@@ -774,6 +807,19 @@ proc wireVersionReq*(c: ClusterClient, node: int): int =
   let r = c.rpc(node, "WIREVER")
   expect(r, "WIREVER", "WIREVER")
   parseInt(r[1])
+
+proc topologyReq*(c: ClusterClient, node: int): ArcTable =
+  let r = c.rpc(node, "TOPOLOGY")
+  expect(r, "TOPOLOGY", "TOPOLOGY")
+  if r.len != 4:
+    raise newException(IOError, "TOPOLOGY returned an invalid response")
+  let epoch = parseUInt(r[1])
+  let nNodes = parseUInt(r[2])
+  let virtualArcs = parseInt(r[3])
+  if epoch == 0 or epoch > uint32.high.uint64 or
+      nNodes == 0 or nNodes > uint16.high.uint64 or virtualArcs <= 0:
+    raise newException(IOError, "TOPOLOGY returned invalid values")
+  virtualArcTable(uint32(epoch), uint16(nNodes), virtualArcs)
 
 proc codecsReq*(c: ClusterClient, node: int): seq[PayloadCodec] =
   let r = c.rpc(node, "CODECS")

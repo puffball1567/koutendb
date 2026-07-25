@@ -1,7 +1,7 @@
 ## Mutation-ordering check against an already running authenticated/TLS cluster.
 
 import std/[os, times, unittest]
-import ../src/kouten/wire
+import ../src/kouten/[core, wire]
 
 suite "remote handoff mutation ordering":
   test "authenticated transport preserves version and tombstone ordering":
@@ -25,13 +25,25 @@ suite "remote handoff mutation ordering":
         MutationVersion(physicalMicros: 20, logical: 0, origin: 1)
       let deleteVersion =
         MutationVersion(physicalMicros: 21, logical: 0, origin: 1)
+      let topology = client.topologyReq(0)
+      let owner = int(topology.placementOwner(parent))
+      let virtualArcs = topology.arcs.len div int(topology.nNodes)
 
-      client.transferReq(0, parent, seq, period, head, tWrite, "tls-value",
-                         version = oldVersion)
-      client.transferDeleteReq(0, parent, seq, period, head, tWrite,
-                               deleteVersion)
-      client.transferReq(0, parent, seq, period, head, tWrite,
-                         "tls-stale-value", version = oldVersion)
-      check not client.getReq(0, parent, seq, period, head, tWrite).found
+      client.transferReq(owner, parent, seq, period, head, tWrite, "tls-value",
+                         version = oldVersion,
+                         expectedPlacementEpoch = topology.epoch,
+                         expectedPlacementNodes = topology.nNodes,
+                         expectedVirtualArcs = virtualArcs)
+      client.transferDeleteReq(owner, parent, seq, period, head, tWrite,
+                               deleteVersion,
+                               expectedPlacementEpoch = topology.epoch,
+                               expectedPlacementNodes = topology.nNodes,
+                               expectedVirtualArcs = virtualArcs)
+      client.transferReq(owner, parent, seq, period, head, tWrite,
+                         "tls-stale-value", version = oldVersion,
+                         expectedPlacementEpoch = topology.epoch,
+                         expectedPlacementNodes = topology.nNodes,
+                         expectedVirtualArcs = virtualArcs)
+      check not client.getReq(owner, parent, seq, period, head, tWrite).found
     finally:
       client.close()
