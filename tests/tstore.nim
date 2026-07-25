@@ -24,6 +24,37 @@ proc mutationVersion(n: int64, origin = 1'u32): MutationVersion =
   MutationVersion(physicalMicros: n, logical: 0, origin: origin)
 
 suite "store persistence":
+  test "placement topology is durable and epoch-fenced":
+    let dir = createTempDir("kouten-store", "placement")
+    var st = openStore(dir)
+    st.configurePlacement(3, 4, 96)
+    check st.placementEpoch == 3
+    check st.placementNodes == 4
+    check st.placementVirtualArcs == 96
+    st.configurePlacement(3, 4, 96)
+    expect ValueError:
+      st.configurePlacement(3, 5, 96)
+    expect ValueError:
+      st.configurePlacement(2, 4, 96)
+    expect ValueError:
+      st.configurePlacement(4, 3, 96)
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.placementEpoch == 3
+    check replayed.placementNodes == 4
+    check replayed.placementVirtualArcs == 96
+    replayed.configurePlacement(4, 5, 64)
+    discard replayed.compact()
+    replayed.close()
+
+    var compacted = openStore(dir)
+    check compacted.placementEpoch == 4
+    check compacted.placementNodes == 5
+    check compacted.placementVirtualArcs == 64
+    compacted.close()
+    removeDir(dir)
+
   test "persistent data dirs are locked across processes":
     let dir = createTempDir("kouten-store", "lock")
     let child = startProcess(getAppFilename(), args = ["--lock-child", dir])

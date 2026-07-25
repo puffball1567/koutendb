@@ -110,10 +110,7 @@ KOUTEN_TEST_SECRET_KEY=shared-secret \
 KOUTEN_TEST_SERVER_NAME=localhost \
   bin/handoff_ordering_remote
 
-echo "[cluster-tls] wait for one 3-node ownership transition"
-sleep 22
-
-echo "[cluster-tls] query the same ID after TLS handoff"
+echo "[cluster-tls] query the same ID after authenticated transfer checks"
 QUERY_OUTPUT="$(src/koutencli query --peers="$PEERS" --user=alice --password=secret \
   --secret-key=shared-secret --tls --tls-ca="$CA_CERT" \
   --tls-server-name=localhost \

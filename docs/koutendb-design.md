@@ -35,18 +35,27 @@ date, or state locality without forcing a relational schema.
 
 ## 2. Core Principle
 
-The central rule is deterministic placement:
+KoutenDB separates logical locality from physical ownership:
 
 ```text
-E(id, t) -> node
+L(id, t) -> logical orbital coordinate
+P(ringKey, topologyEpoch) -> physical owner node
 ```
 
-Every node can compute where a record should be now, and where it should be in
-the future, from the record ID and shared ring/orbit metadata. Directory
-services and leader lookups are not required for ordinary location discovery.
+`L` retains the time-dependent orbital model used by `locate`, future-arrival
+planning, conjunctions, and retrieval locality. `P` uses a stable ring
+coordinate and a shared virtual-arc topology. Records do not physically move
+on every logical orbit.
 
-This is the part of celestial mechanics that matters most: ephemeris-style
-predictability.
+Every node can calculate both values without a per-record directory or a leader
+lookup. The separation is important: ephemeris-style predictability remains
+available to planning, while normal physical ownership does not generate work
+proportional to `live records / orbit period`.
+
+Physical migration occurs only when the configured placement topology changes,
+or when a misplaced durable record is recovered. The migration path is bounded,
+version-checked, retried after destination failure, and fenced by a monotonic
+placement epoch.
 
 ## 3. Public API Boundary
 

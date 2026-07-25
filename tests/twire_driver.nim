@@ -43,14 +43,35 @@ suite "driver wire protocol":
       let first = c.putRingReq(0, "japan/tokyo",
                                """{"title":"Tokyo","country":"JP"}""",
                                @[1.0'f32, 0.0'f32], pcJson)
-      let tbl = ArcTable(epoch: first.epoch, nNodes: uint16(ps.len))
-      let owner = int(tbl.owner(first.head))
+      let tbl = c.topologyReq(0)
+      check tbl.epoch == first.epoch
+      let owner = int(tbl.placementOwner(first.parent))
       let nonOwner = (owner + 1) mod ps.len
+
+      var fencedParent = 1'u64
+      while tbl.placementOwner(fencedParent) != 0'u16:
+        inc fencedParent
+      let fencedVersion =
+        MutationVersion(physicalMicros: 1, logical: 0, origin: 1)
+      expect IOError:
+        c.transferReq(0, fencedParent, 0, 60.0, 0.0, epochTime(),
+                      "wrong-topology", version = fencedVersion,
+                      expectedPlacementEpoch = tbl.epoch + 1,
+                      expectedPlacementNodes = tbl.nNodes,
+                      expectedVirtualArcs = tbl.arcs.len div int(tbl.nNodes))
+      check not c.getReq(0, fencedParent, 0, 60.0, 0.0, 0.0).found
+      c.transferReq(0, fencedParent, 0, 60.0, 0.0, epochTime(),
+                    "correct-topology", version = fencedVersion,
+                    expectedPlacementEpoch = tbl.epoch,
+                    expectedPlacementNodes = tbl.nNodes,
+                    expectedVirtualArcs = tbl.arcs.len div int(tbl.nNodes))
+      check c.getReq(0, fencedParent, 0, 60.0, 0.0, 0.0).value ==
+        "correct-topology"
 
       let id = c.putRingReq(nonOwner, "japan/tokyo",
                             """{"title":"Shinjuku","country":"JP"}""",
                             @[0.95'f32, 0.05'f32], pcJson)
-      check int(tbl.owner(id.head)) == owner
+      check int(tbl.placementOwner(id.parent)) == owner
 
       let got = c.getIdReq(nonOwner, id)
       check got.found
@@ -59,10 +80,7 @@ suite "driver wire protocol":
 
       # A non-owner may hold a handoff copy, but reads must still follow current
       # ownership instead of returning a potentially stale local value.
-      let orbit = OrbitalId(parent: id.parent, epoch: id.epoch,
-                            tWrite: id.tWrite, seq: id.seq)
-        .ringOrbit(id.period, id.head)
-      let currentOwner = int(tbl.node(orbit, epochTime()))
+      let currentOwner = int(tbl.placementOwner(id.parent))
       let calculatedNonOwner = (currentOwner + 1) mod ps.len
       let routed = c.getIdReq(calculatedNonOwner, id)
       check routed.found

@@ -66,8 +66,8 @@ Translations:
 | Feature | Status | Notes |
 |---|---|---|
 | Static cluster | Done | `koutend --id --peers` |
-| Deterministic locate | Done | `E(id,t) -> node` |
-| Handoff / forwarder | PoC | Slow tick integration exists. Fully distributed forwarder placement is not done |
+| Deterministic locate | Done | Logical `L(id,t)` remains available for orbital planning; physical `P(ringKey, topologyEpoch)` provides stable server ownership |
+| Handoff / forwarder | Foundation | Physical migration is explicit, version-checked, destination-topology-fenced, bounded per tick, retried after failure, and independent of logical orbit frequency. Fully automated membership orchestration is not done |
 | Driver-friendly wire | Done | `PUTR/GETID/QRYID`; `WIREVER` exposes the current protocol version and `CODECS` exposes payload formats. Compatibility policy is documented in `docs/protocol-compatibility.md` |
 | Health / metrics / rings | Done | CLI and wire protocol; metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, and storage/ring counts |
 | Authn + secret key | Done | username/password/secret-key; unusable credential combinations fail at startup |
@@ -77,7 +77,7 @@ Translations:
 | Server resource guardrails | Partial | Accepted sockets have a body-read timeout and fixed active-connection cap; fuller request-deadline and per-query cost controls remain planned |
 | Embedded write guardrails | Foundation | Opt-in `KoutenGuardrails` can cap payload bytes, vector dimension, ring count, and records per ring for production trials; default zero values preserve existing behavior |
 | Bounded server retrieve | Done | `koutend` keeps only the current top candidates up to request budget while scanning local vectors instead of retaining every matching payload before truncation |
-| Dynamic membership / epoch migration | Foundation | Current peer list is still static at runtime, but v0.6 adds explicit arc tables, weighted arcs, deterministic virtual arcs, topology validation, and `remapFraction` so membership changes can be modeled with less unnecessary remapping than naive `mod nNodes`. Online rebalance workflow is still planned |
+| Dynamic membership / epoch migration | Foundation | Static scale-out can be activated with a monotonic persisted placement epoch. Startup builds a bounded ring migration cursor; handoff validates destination topology both before transfer and immediately before apply, and retains source data through failure. `scripts/placement_migration_smoke.sh` covers 2-to-3-node migration, wrong-epoch rejection, retry, convergence, and restart. Scale-in fails closed until a drain/export workflow exists; live discovery/removal orchestration remains planned |
 | Cluster transaction coordinator redundancy | Planned | Remove node0 as a single point of failure |
 | Read-your-writes for cluster tx | PoC | `get/query/batchGet` fallback to node0 landing intent before owner apply; cluster smoke covers update/delete |
 | Fault-tolerance improvements | Planned | Post-v0.1 work; universe sync outbox is now the first durable eventual-convergence primitive |

@@ -310,6 +310,19 @@ if bin/kouten verify --server-config="$WORK/bad-server-config.json" >/dev/null 2
   echo "verify accepted bad server config" >&2
   exit 1
 fi
+cat >"$WORK/bad-placement-config.json" <<CONFIG
+{
+  "id": 0,
+  "peers": ["127.0.0.1:${BASE_PORT}"],
+  "dataDir": "$KOUTEN_DATA",
+  "placementEpoch": 0,
+  "virtualArcsPerNode": 64
+}
+CONFIG
+if bin/kouten verify --server-config="$WORK/bad-placement-config.json" >/dev/null 2>&1; then
+  echo "verify accepted a non-positive placement epoch" >&2
+  exit 1
+fi
 
 echo "[cli-crud] shell"
 shell_out="$(bin/kouten shell --data="$WORK/shell" <<'SHELL'

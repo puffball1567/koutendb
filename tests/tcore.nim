@@ -59,6 +59,19 @@ suite "theta / owner (fast 層)":
     check equalMoved > 0.4
     check virtualMoved < 0.25
     check virtualMoved < equalMoved
+  test "physical placement is stable while logical orbit advances":
+    let tbl = virtualArcTable(7, 3, 64)
+    let parent = 0x1234_5678_9abc_def0'u64
+    let owner = tbl.placementOwner(parent)
+    check placementAngle(parent) >= 0.0
+    check placementAngle(parent) < TAU
+    for t in [0.0, 60.0, 86_400.0, 1_000_000_000.0]:
+      let orbit = OrbitalId(parent: parent, epoch: 7, tWrite: 1.0, seq: 9)
+        .ringOrbit(60.0, 0.2)
+      discard tbl.node(orbit, t)
+      check tbl.placementOwner(parent) == owner
+    check tbl.placementOwner(parent) ==
+      virtualArcTable(7, 3, 64).placementOwner(parent)
   test "ArcTable validators reject malformed topology":
     expect ValueError:
       discard equalArcTable(1, 0)

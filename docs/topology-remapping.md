@@ -1,97 +1,114 @@
-# Topology Remapping
+# Physical Placement and Topology Remapping
 
-KoutenDB's first owner mapping was intentionally simple: divide the angle space
-equally by `nNodes`, then choose the owner from the current angle.
+KoutenDB uses two related but independent coordinate systems:
 
-That is useful for a small static cluster, but it has an important weakness:
-changing `nNodes` can move far more data than necessary. v0.6 adds the core
-primitives needed to model safer topology changes without abandoning KoutenDB's
-coordinate-based placement model.
+| Layer | Function | Changes with wall time |
+| --- | --- | --- |
+| Logical orbit | retrieval locality, `locate`, arrival and conjunction planning | Yes |
+| Physical placement | authoritative server ownership and durable storage | No, within one topology epoch |
 
-## Arc Tables
-
-`ArcTable` now supports two modes:
-
-| Mode | Meaning |
-| --- | --- |
-| Equal arcs | The legacy-compatible mode. `arcs` is empty, and the angle space is divided evenly by `nNodes`. |
-| Explicit arcs | The angle space is represented by sorted `(start, node)` entries. Each entry owns `[start, nextStart)`. |
-
-Equal arcs keep simple deployments simple. Explicit arcs are the foundation for
-weighted placement, virtual arcs, and future topology epochs.
-
-## Weighted Arcs
-
-Weighted arcs allocate one contiguous arc per node according to a weight list.
-
-Example:
+The physical coordinate is a stable hash-derived angle for the ring key. All
+records in that ring therefore share one physical owner, preserving ring-local
+reads. The owner is selected from a deterministic virtual-arc table:
 
 ```nim
-let tbl = weightedArcTable(epoch = 1, weights = [1, 3])
+let table = virtualArcTable(
+  epoch = 3,
+  nNodes = 8,
+  virtualArcsPerNode = 64)
+let node = table.placementOwner(ringKey)
 ```
 
-This gives node `0` roughly 25% of the angle space and node `1` roughly 75%.
-It is useful when nodes have different capacity, but it is still a coarse
-layout because each node receives one large contiguous region.
+Long logical orbit periods do not concentrate new writes on one node, and short
+periods do not cause repeated physical transfers.
 
-## Virtual Arcs
+## Topology Epoch
 
-Virtual arcs create many small deterministic arcs per node.
+`koutend` accepts:
 
-Example:
-
-```nim
-let tbl = virtualArcTable(epoch = 1, nNodes = 8, virtualArcsPerNode = 64)
+```text
+--placement-epoch=N
+--virtual-arcs-per-node=N
 ```
 
-The important property is stability. Existing node/slot arc positions are
-derived from deterministic hashes. Adding a node introduces that node's virtual
-arcs without recomputing all existing node positions from `mod nNodes`.
+The same values are available as `placementEpoch` and
+`virtualArcsPerNode` in server JSON. The default is epoch `1` with `64`
+virtual arcs per node.
 
-This is closer to the operational goal:
+The server persists this tuple in its WAL. It rejects:
 
-- keep coordinate-based ownership;
-- reduce unnecessary remapping during membership changes;
-- allow future topology epochs to be planned and measured before activation.
+- an epoch rollback;
+- a node-count change without an epoch increase;
+- a virtual-arc change without an epoch increase;
+- a node-count decrease without a separate drain/export workflow;
+- a handoff destination reporting a different epoch or topology.
+
+Changing the peer list or virtual-arc density therefore requires an explicit
+epoch increase on every node. Stop-the-world topology activation is the
+supported workflow in this release; mixed-epoch rolling activation is rejected
+by the migration path.
+
+## Bounded Migration
+
+On startup, a node builds a ring-level migration cursor from its recovered
+store. The normal 100 ms maintenance tick does not scan every live record.
+Instead, it submits at most `256` explicit migration or retry tasks per tick.
+
+For each task:
+
+1. calculate the stable physical owner;
+2. verify the destination topology;
+3. include the expected topology in the transfer frame so the destination
+   validates it again immediately before apply;
+4. transfer the original mutation version;
+5. wait for destination apply/skip acknowledgement;
+6. re-check that the source version is unchanged;
+7. physically evict the source copy.
+
+A failed or unavailable destination leaves the source intact and schedules
+bounded exponential retry. Destination-side mutation versions and durable
+tombstones reject stale values and resurrection.
+
+Operational metrics include:
+
+- `placementEpoch`;
+- `placementVirtualArcs`;
+- `migrationRemaining`;
+- `migrationLagSec`;
+- `handoffWorkDepth`;
+- `handoffPending`;
+- `handoffQueued`, `handoffApplied`, `handoffFailed`;
+- `handoffQueueFull`, `handoffStaleAck`.
 
 ## Remap Measurement
 
-`remapFraction` estimates how much of the angle space changes owner between two
-topologies.
-
-Example:
+`remapFraction` estimates how much angle space changes owner:
 
 ```nim
-let before = virtualArcTable(epoch = 1, nNodes = 8, virtualArcsPerNode = 64)
-let after = virtualArcTable(epoch = 2, nNodes = 9, virtualArcsPerNode = 64)
+let before = virtualArcTable(3, 8, 64)
+let after = virtualArcTable(4, 9, 64)
 let moved = remapFraction(before, after, samples = 8192)
 ```
 
-This is a planning metric. It does not move records by itself. It gives tests,
-operators, and future automation a concrete way to compare topology choices.
+Virtual arcs preserve existing node/slot positions when a node is added, so
+movement is substantially lower than rebuilding a naive equal-division
+`mod nNodes` table.
 
-## Current Boundary
+## Tested Lifecycle
 
-This feature is a remapping foundation, not a complete online rebalance system.
+`scripts/placement_migration_smoke.sh` covers:
 
-Implemented:
+- stable physical ownership across multiple short logical orbits;
+- persistent two-node writes;
+- two-to-three-node epoch migration;
+- destination-down retry without source deletion;
+- rejection of a reachable destination on the wrong epoch;
+- convergence after the correct destination starts;
+- direct owner-routed reads after migration;
+- restart on the settled topology with an empty migration plan.
 
-- explicit arc-table ownership;
-- weighted arc-table construction;
-- deterministic virtual arc-table construction;
-- topology validation;
-- remap-fraction measurement;
-- unit tests proving virtual arcs reduce movement versus equal `nNodes`
-  remapping for the covered scenario.
-
-Still future work:
-
-- persisted topology-epoch files;
-- online membership change workflow;
-- staged migration / compaction integration;
-- operational CLI for previewing and applying topology changes.
-
-The design goal is to avoid turning KoutenDB into a generic distributed hash
-table. The topology layer should support KoutenDB's locality model: records
-remain placed by meaningful coordinates, while cluster membership changes avoid
-unnecessary movement.
+The peer list remains static for one server process. Automated membership
+discovery, live peer removal, and managed-service orchestration remain separate
+operational work; they are not hidden inside the logical orbit model. This
+release supports explicit scale-out migration. It fails closed on scale-in
+rather than implying that removing a unique owner is data-safe.

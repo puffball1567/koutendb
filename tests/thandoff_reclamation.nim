@@ -39,6 +39,32 @@ proc metric(metrics, name: string): int =
   raise newException(ValueError, "missing metric: " & name)
 
 suite "bounded tombstone reclamation":
+  test "single-node tombstone enters the same bounded reclaim queue":
+    let exe = getEnv("KOUTEN_TEST_SERVER")
+    check exe.len > 0
+    let peers = "127.0.0.1:17843"
+    let root = createTempDir("koutendb", "single-reclamation")
+    let node = startNode(exe, 0, peers, root / "node0")
+    var client = newClusterClient(parsePeers(peers))
+    try:
+      check client.waitNode(0)
+      client.transferDeleteReq(
+        0, 9300'u64, 1'u32, 2.0, 0.1, epochTime(),
+        MutationVersion(physicalMicros: 29, logical: 0, origin: 1))
+      var reclaimed = false
+      for _ in 0 ..< 100:
+        let metrics = client.metricsReq(0)
+        if metrics.metric("tombstones") == 0 and
+            metrics.metric("tombstonesReclaimed") >= 1:
+          reclaimed = true
+          break
+        sleep(50)
+      check reclaimed
+    finally:
+      client.close()
+      stopNode(node)
+      removeDir(root)
+
   test "all-node acknowledgement circulates before guard copies are reclaimed":
     let exe = getEnv("KOUTEN_TEST_SERVER")
     check exe.len > 0
@@ -61,10 +87,7 @@ suite "bounded tombstone reclamation":
       let period = 2.0
       let head = 0.2
       let tWrite = epochTime()
-      let orbit =
-        OrbitalId(parent: parent, epoch: 1, tWrite: tWrite, seq: seq)
-          .ringOrbit(period, head)
-      let owner = int(equalArcTable(1, uint16(parsed.len)).node(orbit, epochTime()))
+      let owner = int(client.topologyReq(0).placementOwner(parent))
       client.transferDeleteReq(
         owner, parent, seq, period, head, tWrite,
         MutationVersion(physicalMicros: 30, logical: 0, origin: 1))

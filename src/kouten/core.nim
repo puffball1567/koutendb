@@ -151,6 +151,16 @@ proc mix64(x: uint64): uint64 =
   z = (z xor (z shr 27)) * 0x94d049bb133111eb'u64
   z xor (z shr 31)
 
+proc placementAngle*(parent: uint64): float {.inline.} =
+  ## Stable physical coordinate for one ring. Logical orbital position remains
+  ## time-dependent; physical ownership deliberately does not.
+  let h = mix64(parent)
+  let unit = float(h shr 11) / float(1'u64 shl 53)
+  unit * TAU
+
+proc placementOwner*(tbl: ArcTable, parent: uint64): NodeId {.inline.} =
+  tbl.owner(parent.placementAngle)
+
 proc virtualArcTable*(epoch: uint32, nNodes: uint16,
                       virtualArcsPerNode = 64): ArcTable =
   ## Build a deterministic virtual-arc table. Existing node/slot arc positions
