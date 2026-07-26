@@ -97,7 +97,7 @@ kouten get --config=/etc/koutendb/client.json --ring=docs/japan
 | `atlas` | Emit the galaxy/ring map. Works with `--data` or `--peers`. |
 | `drain` | Put cluster nodes into read-only maintenance mode. Requires admin auth. |
 | `snapshot` | Flush cluster nodes and report a snapshot barrier. Requires admin auth. |
-| `resume` | Leave drain mode and accept writes again. Requires admin auth. |
+| `resume` | Leave drain mode only after every peer has the same topology and zero migration backlog. Requires admin auth. |
 | `shutdown` | Stop a server. |
 | `demo` | Run a small cluster demo. |
 
@@ -114,7 +114,9 @@ Drain mode rejects new write commands, including body-carrying frames, after
 consuming their remaining payload bytes. That keeps the TCP protocol boundary
 intact so the same connection can continue to serve reads and admin commands.
 `snapshot` is a flush/report barrier; use it after `drain` when a quiet point is
-required.
+required. `resume` first checks every configured peer. Unreachable peers, mixed
+placement epochs, and pending migration all fail closed without clearing the
+local drain marker.
 
 ## Scale-In Commands
 

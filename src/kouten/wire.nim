@@ -57,6 +57,10 @@
 ##       → OK APPLIED\n
 ##   MIGMETAVERIFY <placementEpoch> <placementNodes> <virtualArcs> <len>\n<json>
 ##       → MIGRATION MATCH\n
+##   ACTIVATION
+##       → ACTIVATION READY|ACTIVE|BLOCKED <epoch> <nodes> <virtualArcs> <pending>\n
+##   Topology-fenced TRF/TRFD may append MIGRATION for admin-only transfer
+##   while the destination is persistently drained.
 
 import std/[net, strutils, tables]
 import ./[auth, payload, mutation, core]
@@ -614,7 +618,8 @@ proc transferStatusReq*(c: ClusterClient, node: int, parent: uint64,
                         timeoutMs = 10_000,
                         expectedPlacementEpoch = 0'u32,
                         expectedPlacementNodes = 0'u16,
-                        expectedVirtualArcs = 0): string =
+                        expectedVirtualArcs = 0,
+                        maintenanceMigration = false): string =
   ## Inter-node handoff. koutend is single-threaded, so callers should pass a
   ## short timeoutMs to avoid long blocking during mutual transfer.
   let body =
@@ -631,10 +636,15 @@ proc transferStatusReq*(c: ClusterClient, node: int, parent: uint64,
     else:
       raise newException(ValueError,
         "TRF placement fence must be entirely specified or omitted")
+  if maintenanceMigration and placementFence.len == 0:
+    raise newException(ValueError,
+      "maintenance migration requires a placement fence")
+  let migrationMarker = if maintenanceMigration: " MIGRATION" else: ""
   let r = c.rpc(node, "TRF " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " & $payload.len & " " & $vec.len &
                 " " & codec.payloadCodecName & " " &
-                version.mutationVersionFields & placementFence, body,
+                version.mutationVersionFields & placementFence &
+                migrationMarker, body,
                 timeoutMs = timeoutMs)
   expect(r, "OK", "TRF")
   if r.len != 2 or r[1] notin ["APPLIED", "SKIPPED"]:
@@ -650,11 +660,12 @@ proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                   timeoutMs = 10_000,
                   expectedPlacementEpoch = 0'u32,
                   expectedPlacementNodes = 0'u16,
-                  expectedVirtualArcs = 0) =
+                  expectedVirtualArcs = 0,
+                  maintenanceMigration = false) =
   discard c.transferStatusReq(
     node, parent, seq, period, head, tWrite, payload, vec, codec, version,
     timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
-    expectedVirtualArcs)
+    expectedVirtualArcs, maintenanceMigration)
 
 proc transferDeleteStatusReq*(c: ClusterClient, node: int, parent: uint64,
                               seq: uint32, period, head, tWrite: float,
@@ -664,7 +675,8 @@ proc transferDeleteStatusReq*(c: ClusterClient, node: int, parent: uint64,
                               timeoutMs = 10_000,
                               expectedPlacementEpoch = 0'u32,
                               expectedPlacementNodes = 0'u16,
-                              expectedVirtualArcs = 0): string =
+                              expectedVirtualArcs = 0,
+                              maintenanceMigration = false): string =
   let placementFence =
     if expectedPlacementEpoch == 0 and expectedPlacementNodes == 0 and
         expectedVirtualArcs == 0:
@@ -676,11 +688,16 @@ proc transferDeleteStatusReq*(c: ClusterClient, node: int, parent: uint64,
     else:
       raise newException(ValueError,
         "TRFD placement fence must be entirely specified or omitted")
+  if maintenanceMigration and placementFence.len == 0:
+    raise newException(ValueError,
+      "maintenance migration requires a placement fence")
+  let migrationMarker = if maintenanceMigration: " MIGRATION" else: ""
   let r = c.rpc(node, "TRFD " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " &
                 version.mutationVersionFields & " " &
                 acknowledgedNodes.acknowledgedNodesField & " " &
-                $reclaimAfter & placementFence, timeoutMs = timeoutMs)
+                $reclaimAfter & placementFence & migrationMarker,
+                timeoutMs = timeoutMs)
   expect(r, "OK", "TRFD")
   if r.len != 2 or r[1] notin ["APPLIED", "SKIPPED"]:
     raise newException(IOError,
@@ -695,11 +712,12 @@ proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
                         timeoutMs = 10_000,
                         expectedPlacementEpoch = 0'u32,
                         expectedPlacementNodes = 0'u16,
-                        expectedVirtualArcs = 0) =
+                        expectedVirtualArcs = 0,
+                        maintenanceMigration = false) =
   discard c.transferDeleteStatusReq(
     node, parent, seq, period, head, tWrite, version, acknowledgedNodes,
     reclaimAfter, timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
-    expectedVirtualArcs)
+    expectedVirtualArcs, maintenanceMigration)
 
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
   let r = c.rpc(node, "TXBEGIN")
@@ -862,6 +880,23 @@ proc topologyReq*(c: ClusterClient, node: int): ArcTable =
       nNodes == 0 or nNodes > uint16.high.uint64 or virtualArcs <= 0:
     raise newException(IOError, "TOPOLOGY returned invalid values")
   virtualArcTable(uint32(epoch), uint16(nNodes), virtualArcs)
+
+proc activationReq*(c: ClusterClient, node: int): tuple[
+    state: string, epoch: uint32, nodes: uint16, virtualArcs: int,
+    migrationPending: int] =
+  let r = c.rpc(node, "ACTIVATION")
+  expect(r, "ACTIVATION", "ACTIVATION")
+  if r.len != 6 or r[1] notin ["READY", "ACTIVE", "BLOCKED"]:
+    raise newException(IOError, "ACTIVATION returned an invalid response")
+  let epoch = parseUInt(r[2])
+  let nodes = parseUInt(r[3])
+  let virtualArcs = parseInt(r[4])
+  let migrationPending = parseInt(r[5])
+  if epoch == 0 or epoch > uint32.high.uint64 or
+      nodes == 0 or nodes > uint16.high.uint64 or virtualArcs <= 0 or
+      migrationPending < 0:
+    raise newException(IOError, "ACTIVATION returned invalid values")
+  (r[1], uint32(epoch), uint16(nodes), virtualArcs, migrationPending)
 
 proc migrationVerifyReq*(c: ClusterClient, node: int, parent: uint64,
                          seq: uint32, version: MutationVersion,

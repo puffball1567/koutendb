@@ -7,8 +7,8 @@ proc version(n: int64, origin: uint32): MutationVersion =
   MutationVersion(physicalMicros: n, logical: 0, origin: origin)
 
 proc startNode(exe: string, id: int, peers, dataDir: string,
-               placementEpoch: int): Process =
-  startProcess(exe, args = [
+               placementEpoch: int, startDrained = false): Process =
+  var args = @[
     "--id=" & $id,
     "--peers=" & peers,
     "--data=" & dataDir,
@@ -17,7 +17,10 @@ proc startNode(exe: string, id: int, peers, dataDir: string,
     "--virtual-arcs-per-node=64",
     "--galaxy=scale-in-test",
     "--slow-tick=1000"
-  ], options = {poParentStreams})
+  ]
+  if startDrained:
+    args.add "--start-drained"
+  startProcess(exe, args = args, options = {poParentStreams})
 
 proc stopNode(process: var Process) =
   if process == nil:
@@ -144,7 +147,8 @@ suite "explicit physical placement scale-in":
       check rejected
       client.close()
 
-      targetNodes[1] = startNode(exe, 1, targetPeers, root / "target-1", 1)
+      targetNodes[1] = startNode(exe, 1, targetPeers, root / "target-1", 1,
+                                 startDrained = true)
       client = newClusterClient(parsePeers(targetPeers),
                                 galaxy = "scale-in-test")
       check client.waitNode(1)
@@ -262,7 +266,8 @@ suite "explicit physical placement scale-in":
         newerOwner, newer.parent, newer.seq, newer.period, newer.head,
         newer.tWrite, newer.payload, newer.vec, newer.codec, newer.version,
         expectedPlacementEpoch = 2, expectedPlacementNodes = 2,
-        expectedVirtualArcs = 64) == "APPLIED"
+        expectedVirtualArcs = 64,
+        maintenanceMigration = true) == "APPLIED"
 
       var verifiedTotal = 0
       var sawAhead = false

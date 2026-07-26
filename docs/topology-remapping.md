@@ -33,20 +33,63 @@ periods do not cause repeated physical transfers.
 
 The same values are available as `placementEpoch` and
 `virtualArcsPerNode` in server JSON. The default is epoch `1` with `64`
-virtual arcs per node.
+virtual arcs per node. `--start-drained` / `startDrained` persists a read-only
+maintenance marker before topology activation.
 
 The server persists this tuple in its WAL. It rejects:
 
 - an epoch rollback;
 - a node-count change without an epoch increase;
 - a virtual-arc change without an epoch increase;
+- an existing data directory changing topology without persistent drain;
 - an in-place node-count decrease without the explicit scale-in workflow;
 - a handoff destination reporting a different epoch or topology.
 
 Changing the peer list or virtual-arc density therefore requires an explicit
-epoch increase on every node. Stop-the-world topology activation is the
-supported workflow in this release; mixed-epoch rolling activation is rejected
-by the migration path.
+epoch increase on every node. Nodes may restart one by one, but application
+writes remain quiesced until every configured peer reports the same topology
+and no migration work remains. This is write-quiesced rolling activation, not
+zero-downtime live membership change.
+
+## Write-Quiesced Rolling Activation
+
+The safe scale-out or virtual-arc-change workflow is:
+
+1. run `kouten drain` and `kouten snapshot` against the old cluster;
+   resolve pending cluster transactions, warp jobs, and Universe sync events
+   before changing the topology;
+2. restart each existing node, one at a time, with the complete new peer list
+   and a higher placement epoch;
+3. start added empty nodes with `--start-drained` as an explicit operator
+   signal; empty multi-node stores starting above epoch `1` also drain
+   automatically;
+4. keep application traffic away while mixed epochs are present;
+5. wait for `activationMigrationPending` to reach `0` on every node;
+6. run `kouten resume` against the complete new peer list.
+
+During the mixed-epoch interval, ordinary writes remain rejected. A migration
+transfer can cross the drain boundary only when it carries the exact topology
+fence, has the explicit `MIGRATION` marker, and authenticates as admin. A normal
+writer cannot forge this path. Wrong-epoch destinations reject the transfer,
+and the source copy remains durable for retry.
+
+Ring coordinates, names, descriptions, payload profiles, and time-orbit
+profiles travel with the first successful ring migration to a new owner.
+Activation therefore does not rely on payload counts alone: the metadata needed
+for named reads, authorization, codec interpretation, and time-local lookup is
+present before the source copy is evicted.
+
+`kouten resume` performs a cluster-wide preflight before changing any node:
+
+- every configured peer must be reachable;
+- epoch, node count, and virtual-arc density must match;
+- each node must be either drained-and-ready or already active;
+- migration work must be zero on every node.
+
+Each server repeats the peer preflight before clearing its own persistent drain
+marker. If the command is interrupted after some nodes resume, rerunning it is
+idempotent. The brief partial-resume window may reject a write routed to a node
+that is still drained, but it cannot acknowledge the write on an old topology.
 
 ## Bounded Migration
 
@@ -93,9 +136,11 @@ The safety boundary is:
 2. run `kouten drain` against every old node;
 3. run `kouten snapshot` and stop the old server processes;
 4. start a fresh smaller target cluster with a higher placement epoch, but do
-   not expose it to application traffic;
+   not expose it to application traffic; fresh targets above epoch `1` start
+   drained automatically;
 5. plan, migrate, and verify every old node data directory;
-6. activate the target only after every source reports successful verification;
+6. activate the target with `kouten resume` only after every source reports
+   successful verification;
 7. retain the old directories and checkpoint files until the target has passed
    the operator's acceptance and backup window.
 
@@ -172,7 +217,8 @@ scale-in; their ordering and acknowledgement state have separate semantics.
 - `--reset-checkpoint` discards progress tracking, not source data. Re-sending
   records is version-idempotent, but resetting should remain an operator
   decision.
-- Mixed-epoch rolling activation and membership discovery are separate work.
+- Live writes during topology change and membership discovery remain separate
+  work.
 
 ## Remap Measurement
 
@@ -197,7 +243,11 @@ movement is substantially lower than rebuilding a naive equal-division
 - two-to-three-node epoch migration;
 - destination-down retry without source deletion;
 - rejection of a reachable destination on the wrong epoch;
+- persistent write drain across one-by-one mixed-epoch restarts;
+- resume rejection while a peer has the wrong epoch or migration is pending;
+- admin-only, topology-fenced migration transfer through drain;
 - convergence after the correct destination starts;
+- cluster-wide activation preflight and post-resume write acceptance;
 - direct owner-routed reads after migration;
 - restart on the settled topology with an empty migration plan.
 
@@ -215,7 +265,8 @@ movement is substantially lower than rebuilding a naive equal-division
 - idempotent re-execution and source/checkpoint fingerprint checks.
 
 The peer list remains static for one server process. Automated membership
-discovery, live peer removal, and managed-service orchestration remain separate
-operational work; they are not hidden inside the logical orbit model. This
-release supports explicit scale-out and stop-the-world scale-in migration.
-Live scale-in remains unsupported and fails closed.
+discovery, live-write topology changes, live peer removal, and managed-service
+orchestration remain separate operational work; they are not hidden inside the
+logical orbit model. This release supports write-quiesced rolling scale-out and
+stop-the-world scale-in migration. Live scale-in remains unsupported and fails
+closed.

@@ -65,6 +65,13 @@ suite "cluster rbac":
     writer = newClusterClient(ps, username = "writer", password = "write")
     expect IOError:
       discard writer.putRingReq(0, "allowed/docs", "during-drain", @[])
+    expect IOError:
+      discard writer.transferStatusReq(
+        0, id.parent, id.seq, id.period, id.head, id.tWrite,
+        "forged-maintenance-transfer", version = MutationVersion(
+          physicalMicros: 9_000_000, logical: 0, origin: 9),
+        expectedPlacementEpoch = 1, expectedPlacementNodes = 1,
+        expectedVirtualArcs = 64, maintenanceMigration = true)
     let stillReadable = writer.getIdReq(0, id)
     check stillReadable.found
     check stillReadable.value == "writer-value"

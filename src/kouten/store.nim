@@ -1486,6 +1486,8 @@ proc setGalaxy*(s: Store, galaxy: string) =
     s.logFile.writeWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
     s.flushMaybe(force = true)
 
+proc clusterTxPending*(s: Store): int
+
 proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
                          virtualArcs: int) =
   ## Persist and fence the physical placement topology. Changing membership or
@@ -1511,6 +1513,18 @@ proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
       raise newException(ValueError,
         "placement topology changed without increasing placement epoch")
     return
+  if s.placementEpoch != 0 and not s.maintenanceDrained:
+    raise newException(ValueError,
+      "placement topology changes require persistent maintenance drain")
+  if s.placementEpoch != 0 and s.clusterTxPending > 0:
+    raise newException(ValueError,
+      "placement topology changes require zero pending cluster transactions")
+  if s.placementEpoch != 0 and s.warpJobs.len > 0:
+    raise newException(ValueError,
+      "placement topology changes require zero pending warp jobs")
+  if s.placementEpoch != 0 and s.universeSyncEvents.len > 0:
+    raise newException(ValueError,
+      "placement topology changes require zero pending Universe sync events")
   s.placementEpoch = epoch
   s.placementNodes = nodes
   s.placementVirtualArcs = virtualArcs

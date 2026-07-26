@@ -38,12 +38,15 @@ suite "store persistence":
       st.configurePlacement(2, 4, 96)
     expect ValueError:
       st.configurePlacement(4, 3, 96)
+    expect ValueError:
+      st.configurePlacement(4, 5, 64)
     st.close()
 
     var replayed = openStore(dir)
     check replayed.placementEpoch == 3
     check replayed.placementNodes == 4
     check replayed.placementVirtualArcs == 96
+    replayed.setMaintenanceDrained(true)
     replayed.configurePlacement(4, 5, 64)
     discard replayed.compact()
     replayed.close()
@@ -76,6 +79,24 @@ suite "store persistence":
     var resumed = openStore(dir)
     check not resumed.maintenanceDrained
     resumed.close()
+    removeDir(dir)
+
+  test "topology activation rejects pending cluster transaction intent":
+    let dir = createTempDir("kouten-store", "placement-pending-tx")
+    var st = openStore(dir)
+    st.configurePlacement(1, 1, 64)
+    st.setMaintenanceDrained(true)
+    st.putClusterTxIntent ClusterTxIntent(
+      id: 11,
+      committed: true,
+      ops: @[ClusterTxOp(
+        parent: 7, seq: 0, period: 60.0, head: 0.0, tWrite: 1.0,
+        payload: "pending")])
+    expect ValueError:
+      st.configurePlacement(2, 2, 64)
+    st.markClusterTxApplied(11)
+    st.configurePlacement(2, 2, 64)
+    st.close()
     removeDir(dir)
 
   test "invalid maintenance drain WAL values fail closed":
