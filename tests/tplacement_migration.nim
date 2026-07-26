@@ -1,11 +1,11 @@
 ## Physical-placement lifecycle integration test.
 
-import std/[hashes, os, osproc, strutils, tempfiles, unittest]
+import std/[hashes, json, os, osproc, strutils, tempfiles, unittest]
 import ../src/kouten/[core, wire]
 
 proc startNode(exe: string, id: int, peers, dataDir: string,
-               placementEpoch: int): Process =
-  startProcess(exe, args = [
+               placementEpoch: int, startDrained = false): Process =
+  var args = @[
     "--id=" & $id,
     "--peers=" & peers,
     "--data=" & dataDir,
@@ -13,7 +13,10 @@ proc startNode(exe: string, id: int, peers, dataDir: string,
     "--placement-epoch=" & $placementEpoch,
     "--virtual-arcs-per-node=64",
     "--slow-tick=1000"
-  ], options = {poParentStreams})
+  ]
+  if startDrained:
+    args.add "--start-drained"
+  startProcess(exe, args = args, options = {poParentStreams})
 
 proc stopNode(p: var Process) =
   if p == nil:
@@ -79,6 +82,25 @@ suite "physical placement lifecycle":
     check ring.len > 0
     let oldOwner = int(oldTable.placementOwner(parent))
     check oldOwner in 0 .. 1
+    let ringMetadata = $(%*{
+      "kind": "ring",
+      "key": $parent,
+      "period": 60.0,
+      "head": 0.25,
+      "name": ring,
+      "description": "rolling activation metadata",
+      "payloadProfile": {
+        "defaultCodec": "json",
+        "charset": "UTF-8",
+        "formatVersion": "1"
+      },
+      "timeOrbitProfile": {
+        "bits": 60,
+        "bucketMs": 60000,
+        "phase": "7",
+        "salt": "rolling"
+      }
+    })
 
     var nodes: array[3, Process]
     var ids: seq[WireId] = @[]
@@ -89,6 +111,8 @@ suite "physical placement lifecycle":
       try:
         check oldClient.waitNode(0)
         check oldClient.waitNode(1)
+        oldClient.migrationMetadataReq(
+          oldOwner, ringMetadata, 1, 2, 64)
         for i in 0 ..< 600:
           ids.add oldClient.putRingReq(
             i mod 2, ring, """{"seq":""" & $i & "}", codec = pcJson)
@@ -102,6 +126,8 @@ suite "physical placement lifecycle":
         sleep(1_000)
         check oldClient.metricsReq(0).metric("handoffQueued") == 0
         check oldClient.metricsReq(1).metric("handoffQueued") == 0
+        check oldClient.drainReq(0).contains("draining")
+        check oldClient.drainReq(1).contains("draining")
       finally:
         oldClient.close()
       stopNode(nodes[0])
@@ -130,13 +156,19 @@ suite "physical placement lifecycle":
 
       # A reachable destination with the wrong epoch is rejected before any
       # transfer is applied.
-      nodes[2] = startNode(exe, 2, peers3, root / "node2", 1)
+      nodes[2] = startNode(exe, 2, peers3, root / "node2", 1,
+                           startDrained = true)
       var mismatched = newClusterClient(parsePeers(peers3))
       try:
         check mismatched.waitNode(2)
         sleep(750)
         check mismatched.statsReq(2).count == 0
         check mismatched.metricsReq(oldOwner).metric("migrationRemaining") > 0
+        expect IOError:
+          discard mismatched.resumeReq(0)
+        expect IOError:
+          discard mismatched.putRingReq(0, ring, """{"mixed":true}""",
+                                        codec = pcJson)
       finally:
         mismatched.close()
       stopNode(nodes[2])
@@ -147,9 +179,15 @@ suite "physical placement lifecycle":
         check migrated.waitNode(0)
         check migrated.waitNode(1)
         check migrated.waitNode(2)
+        for node in 0 ..< 3:
+          check migrated.metricsReq(node).metric("draining") == 1
         check migrated.waitMigration(3)
+        expect IOError:
+          discard migrated.putRingReq(0, ring, """{"blocked":true}""",
+                                      codec = pcJson)
         check migrated.topologyReq(0).epoch == 2
         check migrated.statsReq(2).count >= ids.len
+        migrated.migrationMetadataVerifyReq(2, ringMetadata, 2, 3, 64)
         for index in [0, 299, 599]:
           let got = migrated.getIdReq(index mod 2, ids[index])
           check got.found
@@ -162,6 +200,11 @@ suite "physical placement lifecycle":
         sleep(1_000)
         for node in 0 ..< 3:
           check migrated.metricsReq(node).metric("handoffQueued") == queued[node]
+        for node in 0 ..< 3:
+          check migrated.resumeReq(node) in ["resumed", "active"]
+        let afterResume = migrated.putRingReq(
+          0, ring, """{"resumed":true}""", codec = pcJson)
+        check migrated.getIdReq(0, afterResume).value == """{"resumed":true}"""
       finally:
         migrated.close()
 

@@ -502,7 +502,8 @@ proc transferParticle(client: ClusterClient, target: ArcTable, p: Particle,
         owner, p.parent, p.seq, p.period, p.head, p.tWrite, p.payload, p.vec,
         p.codec, p.version, expectedPlacementEpoch = target.epoch,
         expectedPlacementNodes = target.nNodes,
-        expectedVirtualArcs = target.targetVirtualArcs)
+        expectedVirtualArcs = target.targetVirtualArcs,
+        maintenanceMigration = true)
     except CatchableError:
       if attempt >= retryLimit:
         raise
@@ -523,7 +524,8 @@ proc transferTombstone(client: ClusterClient, target: ArcTable,
         acknowledgedNodes = @[], reclaimAfter = 0.0,
         expectedPlacementEpoch = target.epoch,
         expectedPlacementNodes = target.nNodes,
-        expectedVirtualArcs = target.targetVirtualArcs)
+        expectedVirtualArcs = target.targetVirtualArcs,
+        maintenanceMigration = true)
     except CatchableError:
       if attempt >= retryLimit:
         raise

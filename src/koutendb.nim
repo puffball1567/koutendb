@@ -4417,7 +4417,27 @@ proc drainCluster*(db: KoutenDb): seq[string] =
 
 proc resumeCluster*(db: KoutenDb): seq[string] =
   ## drainCluster 後に全ノードの書き込み受け入れを再開する。
+  ## 先に全ノードが同じ topology で移送完了していることを検証する。
   doAssert db.mode == mCluster, "resumeCluster はクラスタモード専用"
+  var expectedEpoch = 0'u32
+  var expectedNodes = 0'u16
+  var expectedVirtualArcs = 0
+  for i in 0 ..< db.client.peers.len:
+    let activation = db.client.activationReq(i)
+    if i == 0:
+      expectedEpoch = activation.epoch
+      expectedNodes = activation.nodes
+      expectedVirtualArcs = activation.virtualArcs
+    elif activation.epoch != expectedEpoch or
+        activation.nodes != expectedNodes or
+        activation.virtualArcs != expectedVirtualArcs:
+      raise newException(IOError,
+        "resumeCluster refused mixed placement topology at node " & $i)
+    if activation.state notin ["READY", "ACTIVE"] or
+        activation.migrationPending != 0:
+      raise newException(IOError,
+        "resumeCluster refused node " & $i & " state=" & activation.state &
+        " migrationPending=" & $activation.migrationPending)
   for i in 0 ..< db.client.peers.len:
     result.add db.client.resumeReq(i)
 

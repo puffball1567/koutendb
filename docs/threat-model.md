@@ -77,9 +77,10 @@ drivers.
   minimal for read/write/admin separation.
 - Cluster transaction coordinator redundancy is not implemented; node0 landing
   remains a single point of failure.
-- Online dynamic membership and epoch migration workflows are not implemented.
-  The core can model explicit / weighted / virtual arc tables, but operators
-  cannot yet apply a live rebalance protocol through the server.
+- Write-quiesced rolling scale-out is implemented with persistent drain,
+  topology fencing, bounded migration, and activation preflight. Online
+  membership discovery, live writes during topology change, and live scale-in
+  are not implemented.
 - General database-wide audit logs are not implemented. Warp jobs persist
   attempts, retry timing, acknowledgement, and dead-letter state, but that is
   job state rather than a complete access/change audit trail.

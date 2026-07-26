@@ -68,6 +68,7 @@ provides it.
   "slowTick": 0.05,
   "placementEpoch": 1,
   "virtualArcsPerNode": 64,
+  "startDrained": false,
   "durability": "strong",
   "galaxy": "app-main",
   "user": "app",
@@ -93,7 +94,10 @@ The config accepts camelCase names and flag-style aliases such as
 `placement-epoch`, `virtual-arcs-per-node`, `password-file`,
 `secret-key-file`, `tls-cert`, and `allow-ring`. Changing the peer count or
 virtual-arc density requires increasing `placementEpoch` on every node.
-Automatic scale-out migration is supported. In-place node removal fails
+Existing data directories must be persistently drained before that change.
+Pending cluster transactions, warp jobs, and Universe sync events must also be
+resolved before startup accepts the new topology.
+Write-quiesced rolling scale-out migration is supported. In-place node removal fails
 closed; use the explicit stop-the-world workflow documented in
 [Physical Placement and Topology Remapping](topology-remapping.md). `peers`
 may be a comma-separated string or an array. `allowRing` / `allow-ring` may be
@@ -117,6 +121,7 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--slow-tick=SECONDS` | Background handoff / maintenance tick interval. |
 | `--placement-epoch=N` | Monotonic physical placement generation. Increase it when peer count or virtual-arc settings change. |
 | `--virtual-arcs-per-node=N` | Deterministic virtual arcs assigned to each node. Default `64`; changing it requires a placement epoch increase. |
+| `--start-drained` | Persist read-only maintenance drain before serving. Use it for a newly added node during rolling topology activation. |
 | `--durability=buffered|strong` | WAL durability policy. Applies to server writes and local management commands such as `compact`, `backup`, and `restore`. |
 | `--user=NAME` / `--password=TEXT` | Basic username/password gate. Prefer `--password-file` or `KOUTEN_PASSWORD` outside local smoke tests. |
 | `--password-file=FILE` | Read the server password from a file. Trailing whitespace is stripped. |
@@ -134,7 +139,9 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 
 Physical ownership is stable inside one placement epoch and is independent of
 logical ring orbit periods. The placement tuple is persisted in the WAL.
-Startup rejects epoch rollback and same-epoch topology changes. See
+Startup rejects epoch rollback, same-epoch topology changes, and undrained
+changes to an existing topology. Empty multi-node stores above epoch `1` start
+drained automatically. See
 [Physical Placement and Topology Remapping](topology-remapping.md).
 
 ## Retrieval Tuning

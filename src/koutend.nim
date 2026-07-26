@@ -66,6 +66,8 @@ type
     deleted: bool
     acknowledgedNodes: seq[uint16]
     reclaimAfter: float
+    migration: bool
+    migrationMetadata: string
 
   HandoffResult = object
     attempt: uint64
@@ -215,6 +217,7 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
                                 tlsServerName = config.tlsServerName,
                                 tlsInsecureSkipVerify =
                                   config.tlsInsecureSkipVerify)
+  var migratedRingMetadata = initTable[(int, uint64), bool]()
   try:
     while true:
       let task = handoffTasks.recv()
@@ -229,6 +232,13 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
               int(config.placementNodes) * config.virtualArcsPerNode:
           raise newException(IOError,
             "handoff destination has incompatible placement topology")
+        let metadataKey = (task.target, task.parent)
+        if task.migration and task.migrationMetadata.len > 0 and
+            not migratedRingMetadata.getOrDefault(metadataKey, false):
+          client.migrationMetadataReq(
+            task.target, task.migrationMetadata, config.placementEpoch,
+            config.placementNodes, config.virtualArcsPerNode)
+          migratedRingMetadata[metadataKey] = true
         if task.deleted:
           client.transferDeleteReq(task.target, task.parent, task.seq,
                                    task.period, task.head, task.tWrite,
@@ -241,6 +251,7 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
                                      config.placementNodes,
                                    expectedVirtualArcs =
                                      config.virtualArcsPerNode,
+                                   maintenanceMigration = task.migration,
                                    timeoutMs = HandoffTimeoutMs)
         else:
           client.transferReq(task.target, task.parent, task.seq, task.period,
@@ -250,6 +261,7 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
                              expectedPlacementNodes = config.placementNodes,
                              expectedVirtualArcs =
                                config.virtualArcsPerNode,
+                             maintenanceMigration = task.migration,
                              timeoutMs = HandoffTimeoutMs)
         applied = true
       except CatchableError:
@@ -555,7 +567,8 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
                       allowedRingPrefixes: var seq[string],
                       durability: var StoreDurability,
                       placementEpoch: var uint32,
-                      virtualArcsPerNode: var int) =
+                      virtualArcsPerNode: var int,
+                      startDrained: var bool) =
   let cfg = parseFile(path)
   if cfg.kind != JObject:
     raise newException(ValueError, "server config file must contain a JSON object")
@@ -602,6 +615,8 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
   virtualArcsPerNode =
     jsonIntOpt(cfg, "virtualArcsPerNode",
       jsonIntOpt(cfg, "virtual-arcs-per-node", virtualArcsPerNode))
+  startDrained = jsonBoolOpt(cfg, "startDrained",
+                             jsonBoolOpt(cfg, "start-drained", startDrained))
   if cfg.hasKey("authToken"):
     authUser = "token"
     authPassword = cfg["authToken"].getStr()
@@ -676,6 +691,11 @@ proc requireRole(sv: Server, sock: Socket, need: UserRole): bool =
            message = "role " & $rule.role & " cannot perform required operation")
   sock.sendFrame("ERR authz-denied role=" & $rule.role)
   false
+
+proc rolePermitted(sv: Server, sock: Socket, need: UserRole): bool =
+  if sv.users.len == 0:
+    return true
+  roleAllowed(sv.userRule(sv.currentUser(sock)).role, need)
 
 proc requireRingKey(sv: Server, sock: Socket, ringKey: uint64): bool =
   if sv.ringKeyAllowed(ringKey, sv.currentUser(sock)):
@@ -856,7 +876,8 @@ proc queueHandoffWork(sv: Server, parent: uint64, seq: uint32, target: int,
     queuedAt: now, notBefore: now, migration: migration)
   true
 
-proc queueTombstonePropagation(sv: Server, k: (uint64, uint32)) =
+proc queueTombstonePropagation(sv: Server, k: (uint64, uint32),
+                               migration = false) =
   if k notin sv.st.tombstones:
     return
   let tombstone = sv.st.tombstones[k]
@@ -870,14 +891,16 @@ proc queueTombstonePropagation(sv: Server, k: (uint64, uint32)) =
     for target in 0 ..< sv.peers.len:
       if target != sv.myId and
           uint16(target) notin tombstone.acknowledgedNodes:
-        discard sv.queueHandoffWork(k[0], k[1], target, true)
+        discard sv.queueHandoffWork(k[0], k[1], target, true,
+                                    migration = migration)
         return
   else:
     for target in 0 ..< sv.peers.len:
       if target != sv.myId and
           not sv.tombstoneCompletionSent.getOrDefault(
             (k[0], k[1], target), false):
-        discard sv.queueHandoffWork(k[0], k[1], target, true)
+        discard sv.queueHandoffWork(k[0], k[1], target, true,
+                                    migration = migration)
     if tombstone.reclaimAfter > 0:
       sv.tombstoneReclaims.push TombstoneReclaim(
         due: tombstone.reclaimAfter, parent: k[0], seq: k[1],
@@ -900,6 +923,35 @@ proc preparePlacementMigration(sv: Server) =
     if result == 0:
       result = cmp(a[1], b[1]))
   sv.migrationStartedAt = epochTime()
+
+proc ringMigrationMetadata(sv: Server, ring: uint64): string =
+  if ring notin sv.st.ringMeta:
+    return ""
+  let meta = sv.st.ringMeta[ring]
+  var node = %*{
+    "kind": "ring",
+    "key": $ring,
+    "period": meta.period,
+    "head": meta.head,
+    "name": sv.st.ringNames.getOrDefault(ring, ""),
+    "description": sv.st.ringDescriptions.getOrDefault(ring, "")
+  }
+  if ring in sv.st.ringPayloadProfiles:
+    let profile = sv.st.ringPayloadProfiles[ring]
+    node["payloadProfile"] = %*{
+      "defaultCodec": profile.defaultCodec.payloadCodecName,
+      "charset": profile.charset,
+      "formatVersion": profile.formatVersion
+    }
+  if ring in sv.st.ringTimeOrbitProfiles:
+    let profile = sv.st.ringTimeOrbitProfiles[ring]
+    node["timeOrbitProfile"] = %*{
+      "bits": profile.bits,
+      "bucketMs": profile.bucketMs,
+      "phase": $profile.phase,
+      "salt": profile.salt
+    }
+  $node
 
 proc fillPlacementWork(sv: Server, limit: int) =
   var added = 0
@@ -925,7 +977,7 @@ proc fillPlacementWork(sv: Server, limit: int) =
       sv.tombstoneStartupIndex < sv.tombstoneStartupKeys.len:
     let k = sv.tombstoneStartupKeys[sv.tombstoneStartupIndex]
     inc sv.tombstoneStartupIndex
-    sv.queueTombstonePropagation(k)
+    sv.queueTombstonePropagation(k, migration = true)
     inc added
 
 proc submitHandoff(sv: Server, work: HandoffWork): bool =
@@ -940,7 +992,10 @@ proc submitHandoff(sv: Server, work: HandoffWork): bool =
     migration: work.migration)
   var task = HandoffTask(kind: htkTransfer, attempt: attempt,
                          target: work.target, parent: work.parent,
-                         seq: work.seq, deleted: work.deleted)
+                         seq: work.seq, deleted: work.deleted,
+                         migration: work.migration)
+  if work.migration:
+    task.migrationMetadata = sv.ringMigrationMetadata(work.parent)
   if work.deleted:
     if k notin sv.st.tombstones:
       sv.scheduledHandoffs.del((work.parent, work.seq, work.target, true))
@@ -1034,7 +1089,7 @@ proc handoffTick(sv: Server) =
       if sentComplete:
         sv.tombstoneCompletionSent[(k[0], k[1], r.target)] = true
       sv.scheduledHandoffs.del workKey
-      sv.queueTombstonePropagation(k)
+      sv.queueTombstonePropagation(k, migration = pending.migration)
       inc sv.handoffApplied
       continue
 
@@ -1181,6 +1236,50 @@ proc applyClusterTxTick(sv: Server) =
       done.add txid
   for txid in done:
     sv.st.markClusterTxApplied(txid)
+
+proc migrationPendingCount(sv: Server): int =
+  result = max(0, sv.migrationRemaining)
+  result += max(0, sv.tombstoneStartupKeys.len - sv.tombstoneStartupIndex)
+  for _, pending in sv.pendingHandoffs:
+    if pending.migration:
+      inc result
+  for i in sv.handoffWorkHead ..< sv.handoffWork.len:
+    if sv.handoffWork[i].migration:
+      inc result
+
+proc activationState(sv: Server): tuple[state: string, pending: int] =
+  result.pending = sv.migrationPendingCount()
+  if not sv.draining:
+    result.state = "ACTIVE"
+  elif result.pending == 0:
+    result.state = "READY"
+  else:
+    result.state = "BLOCKED"
+
+proc clusterActivationReady(sv: Server): tuple[ok: bool, reason: string] =
+  let local = sv.activationState()
+  if local.state notin ["READY", "ACTIVE"] or local.pending != 0:
+    return (false, "local-migration-pending=" & $local.pending)
+  for node in 0 ..< sv.peers.len:
+    if node == sv.myId:
+      continue
+    try:
+      let topology = sv.peerLink.topologyReq(node)
+      if topology.epoch != sv.tbl.epoch or topology.nNodes != sv.tbl.nNodes or
+          topology.arcs.len != sv.tbl.arcs.len:
+        return (false, "node-" & $node & "-topology-mismatch")
+      let activation = sv.peerLink.activationReq(node)
+      if activation.epoch != sv.tbl.epoch or
+          activation.nodes != sv.tbl.nNodes or
+          activation.virtualArcs != sv.virtualArcsPerNode:
+        return (false, "node-" & $node & "-activation-topology-mismatch")
+      if activation.state notin ["READY", "ACTIVE"] or
+          activation.migrationPending != 0:
+        return (false, "node-" & $node & "-migration-pending=" &
+          $activation.migrationPending)
+    except CatchableError:
+      return (false, "node-" & $node & "-unreachable")
+  (true, "")
 
 proc handleFrame(sv: Server, sock: Socket): bool =
   ## 1フレーム処理。false = 接続を閉じる。
@@ -1380,6 +1479,13 @@ proc handleFrame(sv: Server, sock: Socket): bool =
   of "TOPOLOGY":
     sock.sendFrame("TOPOLOGY " & $sv.tbl.epoch & " " & $sv.tbl.nNodes & " " &
                    $sv.virtualArcsPerNode)
+  of "ACTIVATION":
+    if not sv.requireRole(sock, roleAdmin):
+      return true
+    let activation = sv.activationState()
+    sock.sendFrame("ACTIVATION " & activation.state & " " & $sv.tbl.epoch &
+                   " " & $sv.tbl.nNodes & " " & $sv.virtualArcsPerNode &
+                   " " & $activation.pending)
   of "MIGMETA":
     if not sv.requireRole(sock, roleAdmin):
       return false
@@ -1397,10 +1503,6 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         expectedVirtualArcs != sv.virtualArcsPerNode:
       sock.drainBytes(bodyBytes)
       sock.sendFrame("ERR topology-mismatch")
-      return true
-    if sv.draining:
-      sock.drainBytes(bodyBytes)
-      sv.rejectDrainedWrite(sock, "MIGMETA")
       return true
     let body = sock.readExact(payloadLen)
     validateJsonDepth(body, MaxWireJsonDepth)
@@ -1960,8 +2062,15 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     p.codec = if parts.len >= 9: parsePayloadCodec(parts[8]) else: pcRaw
     p.version = parseMutationVersion(parts, 9, p.tWrite)
     let bodyBytes = checkedFrameBytes(payloadLen, vecDim)
-    if parts.len > 12:
-      requireParts(parts, "TRF placement fence", 15)
+    let hasPlacementFence = parts.len in [15, 16]
+    let maintenanceMigration =
+      parts.len == 16 and parts[15] == "MIGRATION"
+    if parts.len notin [9, 12, 15, 16] or
+        (parts.len == 16 and not maintenanceMigration):
+      sock.drainBytes(bodyBytes)
+      sock.sendFrame("ERR invalid-TRF-frame")
+      return true
+    if hasPlacementFence:
       let expectedEpoch = parseUInt(parts[12])
       let expectedNodes = parseUInt(parts[13])
       let expectedVirtualArcs = parseInt(parts[14])
@@ -1972,9 +2081,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         sock.sendFrame("ERR topology-mismatch")
         return true
     if sv.draining:
-      sock.drainBytes(bodyBytes)
-      sv.rejectDrainedWrite(sock, "TRF")
-      return true
+      if not maintenanceMigration or not hasPlacementFence or
+          not sv.rolePermitted(sock, roleAdmin):
+        sock.drainBytes(bodyBytes)
+        sv.rejectDrainedWrite(sock, "TRF")
+        return true
     if not sv.ringKeyAllowed(sock, p.parent):
       sock.drainBytes(bodyBytes)
       sv.denyRingKey(sock, p.parent)
@@ -2017,8 +2128,14 @@ proc handleFrame(sv: Server, sock: Socket): bool =
           tombstone.reclaimAfter.classify in {fcNan, fcInf, fcNegInf}:
         raise newException(ValueError,
           "tombstone reclaimAfter must be finite and non-negative")
-    if parts.len > 11:
-      requireParts(parts, "TRFD placement fence", 14)
+    let hasPlacementFence = parts.len in [14, 15]
+    let maintenanceMigration =
+      parts.len == 15 and parts[14] == "MIGRATION"
+    if parts.len notin [9, 10, 11, 14, 15] or
+        (parts.len == 15 and not maintenanceMigration):
+      sock.sendFrame("ERR invalid-TRFD-frame")
+      return true
+    if hasPlacementFence:
       let expectedEpoch = parseUInt(parts[11])
       let expectedNodes = parseUInt(parts[12])
       let expectedVirtualArcs = parseInt(parts[13])
@@ -2028,14 +2145,17 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         sock.sendFrame("ERR topology-mismatch")
         return true
     if sv.draining:
-      sv.rejectDrainedWrite(sock, "TRFD")
-      return true
+      if not maintenanceMigration or not hasPlacementFence or
+          not sv.rolePermitted(sock, roleAdmin):
+        sv.rejectDrainedWrite(sock, "TRFD")
+        return true
     if not sv.requireRingKey(sock, tombstone.parent):
       return true
     var effective = sv.prepareTombstoneForNode(tombstone, now)
     let applied = sv.st.applyTombstone(effective)
     if applied or (effective.parent, effective.seq) in sv.st.tombstones:
-      sv.queueTombstonePropagation((effective.parent, effective.seq))
+      sv.queueTombstonePropagation((effective.parent, effective.seq),
+                                   migration = maintenanceMigration)
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "STATS":
     sock.sendFrame("OK " & $sv.myId & " " & $sv.st.count)
@@ -2075,6 +2195,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                      $(if sv.migrationRemaining > 0:
                          int(epochTime() - sv.migrationStartedAt)
                        else: 0) & " " &
+                   "activationMigrationPending " &
+                     $sv.migrationPendingCount() & " " &
                    "placementEpoch " & $sv.tbl.epoch & " " &
                    "placementVirtualArcs " & $sv.virtualArcsPerNode & " " &
                    "handoffQueued " & $sv.handoffQueued & " " &
@@ -2113,6 +2235,17 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     sock.sendFrame("OK draining")
   of "RESUME":
     if not sv.requireRole(sock, roleAdmin):
+      return true
+    if not sv.draining:
+      sock.sendFrame("OK active")
+      return true
+    let activation = sv.clusterActivationReady()
+    if not activation.ok:
+      inc sv.errorResponses
+      sv.audit("resume-denied", ok = false, user = sv.currentUser(sock),
+               message = "topology activation is not ready: " &
+                 activation.reason)
+      sock.sendFrame("ERR activation-not-ready " & activation.reason)
       return true
     sv.st.setMaintenanceDrained(false)
     sv.draining = false
@@ -2157,6 +2290,7 @@ proc printUsage() =
   echo "  --slow-tick=SECONDS           Background maintenance interval"
   echo "  --placement-epoch=N           Monotonic physical placement topology epoch"
   echo "  --virtual-arcs-per-node=N     Virtual arcs per node (default 64)"
+  echo "  --start-drained               Persist read-only drain before activation"
   echo "  --durability=buffered|strong  Buffered WAL or fsync-on-write durability"
   echo "  --user=NAME                   Username for cluster auth"
   echo "  --password=TEXT               Password for cluster auth"
@@ -2207,6 +2341,7 @@ proc main() =
   var durability = durBuffered
   var placementEpoch = DefaultPlacementEpoch
   var virtualArcsPerNode = DefaultVirtualArcsPerNode
+  var startDrained = false
   for kind, key, val in getopt():
     if kind == cmdLongOption:
       case key
@@ -2219,7 +2354,7 @@ proc main() =
                      authSecretKey, authSecretKeyFile, tlsCertFile, tlsKeyFile,
                      tlsCaFile, tlsServerName, tlsInsecureSkipVerify, users,
                      galaxy, allowedRingPrefixes, durability, placementEpoch,
-                     virtualArcsPerNode)
+                     virtualArcsPerNode, startDrained)
 
   for kind, key, val in getopt():
     if kind == cmdLongOption:
@@ -2260,6 +2395,8 @@ proc main() =
         placementEpoch = uint32(parsed)
       of "virtual-arcs-per-node":
         virtualArcsPerNode = parseInt(val)
+      of "start-drained":
+        startDrained = true
       of "auth-token":
         authUser = "token"
         authPassword = val
@@ -2345,6 +2482,9 @@ proc main() =
                                  certFile = sv.tlsCertFile,
                                  keyFile = sv.tlsKeyFile)
   sv.st.setGalaxy(galaxy)
+  if startDrained or
+      (sv.st.placementEpoch == 0 and placementEpoch > 1 and peers.len > 1):
+    sv.st.setMaintenanceDrained(true)
   sv.st.configurePlacement(placementEpoch, uint16(peers.len),
                            virtualArcsPerNode)
   sv.draining = sv.st.maintenanceDrained

@@ -51,6 +51,21 @@ density), which the destination validates immediately before applying the
 mutation. Clients follow at most two explicit owner redirects and never perform
 all-node fan-out.
 
+`ACTIVATION` is an admin-only local readiness report:
+
+```text
+ACTIVATION READY|ACTIVE|BLOCKED <epoch> <nodes> <virtualArcs> <migrationPending>
+```
+
+`resume` clients compare this response across every configured peer before
+requesting activation. Each server repeats peer topology/readiness checks before
+clearing its persistent drain marker.
+
+Topology-fenced `TRF` / `TRFD` frames may append `MIGRATION`. A drained server
+accepts that path only for an admin-authenticated request with an exact topology
+fence. Ordinary transfer frames and writer-role attempts remain rejected while
+drained.
+
 Scale-in uses admin-only operator commands rather than exposing migration
 primitives as normal driver CRUD:
 
