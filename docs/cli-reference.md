@@ -116,6 +116,35 @@ intact so the same connection can continue to serve reads and admin commands.
 `snapshot` is a flush/report barrier; use it after `drain` when a quiet point is
 required.
 
+## Scale-In Commands
+
+Scale-in copies persistently drained old node directories into a fresh smaller
+cluster with a higher placement epoch. Run each source directory separately
+and keep the target outside application routing until all sources verify.
+
+| Command | Purpose |
+|---|---|
+| `scale-in-plan` | Validate the source/target boundary and report record, tombstone, metadata, and per-target counts without writing. |
+| `scale-in-migrate` | Transfer versioned records, tombstones, and database metadata with a durable resumable checkpoint. |
+| `scale-in-verify` | Independently compare target mutation state and metadata before activation. |
+| `scale-in-status` | Read a checkpoint without connecting to either cluster. |
+
+```sh
+kouten scale-in-plan --data=/var/lib/koutendb/old/node0 \
+  --peers=127.0.0.1:7401,127.0.0.1:7402 --json
+kouten scale-in-migrate --data=/var/lib/koutendb/old/node0 \
+  --peers=127.0.0.1:7401,127.0.0.1:7402 \
+  --checkpoint-every=1000
+kouten scale-in-verify --data=/var/lib/koutendb/old/node0 \
+  --peers=127.0.0.1:7401,127.0.0.1:7402 --json
+kouten scale-in-status \
+  --checkpoint=/var/lib/koutendb/old/node0/kouten.scale-in.2.json
+```
+
+Authentication and TLS flags are the same as other cluster commands. See
+[Physical Placement and Topology Remapping](topology-remapping.md) for the
+complete maintenance order, safety boundaries, and recovery behavior.
+
 ## Driver Commands
 
 KoutenDB keeps language drivers small and publishable as language-native

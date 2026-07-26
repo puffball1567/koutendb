@@ -93,10 +93,11 @@ The config accepts camelCase names and flag-style aliases such as
 `placement-epoch`, `virtual-arcs-per-node`, `password-file`,
 `secret-key-file`, `tls-cert`, and `allow-ring`. Changing the peer count or
 virtual-arc density requires increasing `placementEpoch` on every node.
-Automatic scale-out migration is supported; node removal fails closed until a
-separate drain/export workflow is available. `peers` may be a comma-separated
-string or an array. `allowRing` / `allow-ring` may be a comma-separated string
-or an array. `roles` may contain either
+Automatic scale-out migration is supported. In-place node removal fails
+closed; use the explicit stop-the-world workflow documented in
+[Physical Placement and Topology Remapping](topology-remapping.md). `peers`
+may be a comma-separated string or an array. `allowRing` / `allow-ring` may be
+a comma-separated string or an array. `roles` may contain either
 `"user:password:role[:prefix1,prefix2]"` strings or objects with `user`,
 `password`, `role`, and optional `prefixes`.
 

@@ -40,7 +40,7 @@ The server persists this tuple in its WAL. It rejects:
 - an epoch rollback;
 - a node-count change without an epoch increase;
 - a virtual-arc change without an epoch increase;
-- a node-count decrease without a separate drain/export workflow;
+- an in-place node-count decrease without the explicit scale-in workflow;
 - a handoff destination reporting a different epoch or topology.
 
 Changing the peer list or virtual-arc density therefore requires an explicit
@@ -80,6 +80,100 @@ Operational metrics include:
 - `handoffQueued`, `handoffApplied`, `handoffFailed`;
 - `handoffQueueFull`, `handoffStaleAck`.
 
+## Explicit Scale-In
+
+Node removal is intentionally not an in-place startup operation. KoutenDB uses
+a stop-the-world workflow that copies persistently drained old node directories
+into a fresh, smaller target topology. This avoids making an old survivor serve
+two placement epochs or silently dropping records owned by a removed node.
+
+The safety boundary is:
+
+1. stop application writes to the old cluster;
+2. run `kouten drain` against every old node;
+3. run `kouten snapshot` and stop the old server processes;
+4. start a fresh smaller target cluster with a higher placement epoch, but do
+   not expose it to application traffic;
+5. plan, migrate, and verify every old node data directory;
+6. activate the target only after every source reports successful verification;
+7. retain the old directories and checkpoint files until the target has passed
+   the operator's acceptance and backup window.
+
+Example: migrate three old nodes into a fresh two-node epoch:
+
+```sh
+OLD_PEERS=127.0.0.1:7301,127.0.0.1:7302,127.0.0.1:7303
+NEW_PEERS=127.0.0.1:7401,127.0.0.1:7402
+
+kouten drain --peers="$OLD_PEERS" --user=admin \
+  --password-file=/run/secrets/kouten_admin
+kouten snapshot --peers="$OLD_PEERS" --user=admin \
+  --password-file=/run/secrets/kouten_admin
+
+# After stopping the old processes, repeat these commands for node0, node1,
+# and node2. The new servers use placementEpoch=2 and fresh data directories.
+kouten scale-in-plan --data=/var/lib/koutendb/old/node0 \
+  --peers="$NEW_PEERS" --user=admin \
+  --password-file=/run/secrets/kouten_admin
+kouten scale-in-migrate --data=/var/lib/koutendb/old/node0 \
+  --peers="$NEW_PEERS" --user=admin \
+  --password-file=/run/secrets/kouten_admin
+kouten scale-in-verify --data=/var/lib/koutendb/old/node0 \
+  --peers="$NEW_PEERS" --user=admin \
+  --password-file=/run/secrets/kouten_admin
+```
+
+`scale-in-migrate` writes a durable checkpoint named
+`kouten.scale-in.<targetEpoch>.json` in the old node directory by default.
+`--checkpoint=FILE` places it elsewhere. The source WAL is never deleted or
+rewritten. A stopped target or interrupted command can therefore resume from
+the last acknowledged record:
+
+```sh
+kouten scale-in-status \
+  --checkpoint=/var/lib/koutendb/old/node0/kouten.scale-in.2.json
+kouten scale-in-migrate --data=/var/lib/koutendb/old/node0 \
+  --peers="$NEW_PEERS" --checkpoint-every=1000 --max-transfers=100000
+```
+
+The checkpoint is bound to the source WAL fingerprint, source topology, target
+peer list, and target topology. A changed source or target is rejected instead
+of resuming against a different migration.
+
+### What Is Preserved
+
+Scale-in transfers more than live payload bytes:
+
+- live records, vectors, codecs, and mutation versions;
+- durable tombstones, so delayed stale writes cannot resurrect deleted data;
+- ring coordinates, names, and descriptions;
+- ring payload/charset/format profiles;
+- ring time-orbit profiles;
+- stellar maps;
+- forwarders;
+- galaxy identity and non-empty galaxy descriptions.
+
+Without this metadata, raw record counts could match while named ring reads,
+codec interpretation, time-orbit lookup, stellar visibility, or moved-ID
+routing silently changed. `scale-in-verify` independently checks records,
+tombstones, and these metadata objects on their calculated target owners before
+marking the checkpoint as verified.
+
+Committed-but-unapplied cluster transactions, warp jobs, and pending Universe
+sync events are not guessed or silently copied. Resolve those queues before
+scale-in; their ordering and acknowledgement state have separate semantics.
+
+### Deliberate Limits
+
+- This workflow has a maintenance window. It does not claim live scale-in.
+- Target data directories must be fresh for this workflow.
+- The target must remain outside application routing until all old node
+  directories are migrated and verified.
+- `--reset-checkpoint` discards progress tracking, not source data. Re-sending
+  records is version-idempotent, but resetting should remain an operator
+  decision.
+- Mixed-epoch rolling activation and membership discovery are separate work.
+
 ## Remap Measurement
 
 `remapFraction` estimates how much angle space changes owner:
@@ -107,8 +201,21 @@ movement is substantially lower than rebuilding a naive equal-division
 - direct owner-routed reads after migration;
 - restart on the settled topology with an empty migration plan.
 
+`scripts/scale_in_migration_smoke.sh` covers:
+
+- persistent drain enforcement;
+- three-to-two-node migration into fresh target directories;
+- bounded checkpoint progress and resume;
+- target outage without source WAL modification or false progress;
+- wrong/mixed target epoch rejection;
+- topology-fenced record, tombstone, and metadata transfer;
+- independent record/tombstone/metadata verification;
+- stale, missing, wrong-kind, and metadata-mismatch rejection;
+- pending transaction/warp/Universe queue rejection;
+- idempotent re-execution and source/checkpoint fingerprint checks.
+
 The peer list remains static for one server process. Automated membership
 discovery, live peer removal, and managed-service orchestration remain separate
 operational work; they are not hidden inside the logical orbit model. This
-release supports explicit scale-out migration. It fails closed on scale-in
-rather than implying that removing a unique owner is data-safe.
+release supports explicit scale-out and stop-the-world scale-in migration.
+Live scale-in remains unsupported and fails closed.

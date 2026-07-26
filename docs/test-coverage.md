@@ -18,7 +18,8 @@ matrix used before releases.
 | Wire protocol | `tests/twire_driver.nim`, `scripts/cluster_wire_driver_smoke.sh`, `scripts/cluster_wire_fuzz_smoke.sh` | Smoke-covered: driver-facing PUTR/GETID/QRYID, codec metadata negotiation, malformed frame behavior, oversized/deep JSON rejection, `RETRIEVE` query-cost rejection, and broad-scan-denied server audit emission |
 | TLS transport | `scripts/cluster_tls_smoke.sh` | Smoke-covered: TLS-enabled `koutend`/CLI build, three-node CA-verified authenticated TLS health, secret-key auth transport, JSON put/get, apply-time placement fencing, destination-side mutation/tombstone ordering on the stable physical owner, ID query, and plain-client rejection |
 | Handoff mutation ordering | `tests/tstore.nim`, `tests/twire_driver.nim`, `tests/thandoff_ordering.nim`, `tests/thandoff_ordering_remote.nim`, `tests/thandoff_reclamation.nim` | Matrix-covered: stale and duplicate values, delete-before-delayed-transfer protection, newer recreation, WAL replay, compact, backup/restore, transaction delete, destination restart, TLS/authenticated transfer, canonical acknowledgement merging, single-node reclamation, all-node guard propagation, and bounded final reclamation |
-| Placement epoch migration | `tests/tplacement_migration.nim`, `tests/twire_driver.nim`, `scripts/placement_migration_smoke.sh` | Integration-covered: short logical periods do not generate physical handoff, 2-to-3-node persistent migration, destination-down source retention/retry, preflight and apply-time topology fencing, unsupported scale-in rejection, bounded convergence, owner-routed reads, and settled-topology restart |
+| Placement epoch migration | `tests/tplacement_migration.nim`, `tests/twire_driver.nim`, `scripts/placement_migration_smoke.sh` | Integration-covered: short logical periods do not generate physical handoff, 2-to-3-node persistent migration, destination-down source retention/retry, preflight and apply-time topology fencing, unsupported in-place scale-in rejection, bounded convergence, owner-routed reads, and settled-topology restart |
+| Explicit scale-in migration | `tests/tscale_in_migration.nim`, `scripts/scale_in_migration_smoke.sh` | Integration-covered: persistent drain marker, 3-to-2-node migration, checkpoint/resume, target outage, mixed/wrong epoch, source fingerprint mismatch, versioned records and tombstones, metadata transfer and independent verification, pending operational queue rejection, malformed frame recovery, and idempotent rerun |
 | Cluster transactions | `tests/tcluster_tx.nim`, `scripts/cluster_tx_smoke.sh` | Smoke-covered: landing intent, apply retry, basic owner failure path |
 | Cluster auth / RBAC | `tests/tcluster_authz.nim`, `tests/tcluster_rbac.nim`, related scripts | Smoke-covered: username/password/secret key, unusable auth config fail-fast, server JSON config loading, role/ring-prefix authorization, admin-only metrics/drain/snapshot, minimal non-admin health, drain-mode write rejection with readable connection preservation, and auth/authz server audit emission |
 | Cluster failure | `tests/tcluster_failure.nim`, `scripts/cluster_failure_smoke.sh` | Smoke-covered: owner restart and retry boundaries |
@@ -44,6 +45,7 @@ scripts/cluster_wire_driver_smoke.sh
 scripts/cluster_wire_fuzz_smoke.sh
 scripts/handoff_reclamation_smoke.sh
 scripts/placement_migration_smoke.sh
+scripts/scale_in_migration_smoke.sh
 scripts/cluster_tls_smoke.sh
 scripts/recovery_smoke.sh
 scripts/universe_sync_failure_smoke.sh
