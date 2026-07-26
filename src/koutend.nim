@@ -1380,6 +1380,210 @@ proc handleFrame(sv: Server, sock: Socket): bool =
   of "TOPOLOGY":
     sock.sendFrame("TOPOLOGY " & $sv.tbl.epoch & " " & $sv.tbl.nNodes & " " &
                    $sv.virtualArcsPerNode)
+  of "MIGMETA":
+    if not sv.requireRole(sock, roleAdmin):
+      return false
+    requireParts(parts, "MIGMETA", 5)
+    if parts.len != 5:
+      raise newException(ValueError,
+        "MIGMETA requires topology fence and payload length")
+    let expectedEpoch = parseUInt(parts[1])
+    let expectedNodes = parseUInt(parts[2])
+    let expectedVirtualArcs = parseInt(parts[3])
+    let payloadLen = parseInt(parts[4])
+    let bodyBytes = checkedFrameBytes(payloadLen, 0)
+    if expectedEpoch != uint64(sv.tbl.epoch) or
+        expectedNodes != uint64(sv.tbl.nNodes) or
+        expectedVirtualArcs != sv.virtualArcsPerNode:
+      sock.drainBytes(bodyBytes)
+      sock.sendFrame("ERR topology-mismatch")
+      return true
+    if sv.draining:
+      sock.drainBytes(bodyBytes)
+      sv.rejectDrainedWrite(sock, "MIGMETA")
+      return true
+    let body = sock.readExact(payloadLen)
+    validateJsonDepth(body, MaxWireJsonDepth)
+    let metadata = parseJson(body)
+    if metadata.kind != JObject:
+      raise newException(ValueError,
+        "migration metadata must be a JSON object")
+    case metadata{"kind"}.getStr()
+    of "global":
+      let sourceGalaxy = metadata{"galaxy"}.getStr()
+      if sourceGalaxy.len > 0:
+        sv.st.setGalaxy(sourceGalaxy)
+      let description = metadata{"description"}.getStr()
+      if description.len > 0:
+        sv.st.putGalaxyDescription(description)
+    of "ring":
+      let ringKey = parseBiggestUInt(metadata["key"].getStr()).uint64
+      if not sv.ringKeyAllowed(sock, ringKey):
+        sv.denyRingKey(sock, ringKey)
+        return true
+      sv.st.putRingMeta(ringKey, metadata{"period"}.getFloat(),
+                        metadata{"head"}.getFloat())
+      sv.st.putRingName(ringKey, metadata{"name"}.getStr())
+      sv.st.putRingDescription(ringKey, metadata{"description"}.getStr())
+      if metadata.hasKey("payloadProfile"):
+        let profile = metadata["payloadProfile"]
+        sv.st.putRingPayloadProfile(ringKey, RingPayloadProfile(
+          defaultCodec:
+            parsePayloadCodec(profile{"defaultCodec"}.getStr("raw")),
+          charset: profile{"charset"}.getStr(),
+          formatVersion: profile{"formatVersion"}.getStr()))
+      if metadata.hasKey("timeOrbitProfile"):
+        let profile = metadata["timeOrbitProfile"]
+        sv.st.putTimeOrbitProfile(ringKey, TimeOrbitProfile(
+          bits: profile{"bits"}.getInt(60),
+          bucketMs: profile{"bucketMs"}.getBiggestInt(60_000).int64,
+          phase:
+            parseBiggestUInt(profile{"phase"}.getStr("0")).uint64,
+          salt: profile{"salt"}.getStr()))
+    of "stellar":
+      sv.st.putStellarMap(metadata["stellar"].getStr(),
+                          metadata["blob"].getStr())
+    of "forwarder":
+      let oldParent =
+        parseBiggestUInt(metadata["oldParent"].getStr()).uint64
+      if not sv.ringKeyAllowed(sock, oldParent):
+        sv.denyRingKey(sock, oldParent)
+        return true
+      sv.st.putForwarder(
+        oldParent, metadata{"oldSeq"}.getBiggestInt().uint32,
+        Forwarder(
+          newParent:
+            parseBiggestUInt(metadata["newParent"].getStr()).uint64,
+          newSeq: metadata{"newSeq"}.getBiggestInt().uint32,
+          newTWrite: metadata{"newTWrite"}.getFloat(),
+          expiresAt: metadata{"expiresAt"}.getFloat()))
+    else:
+      raise newException(ValueError, "unknown migration metadata kind")
+    sock.sendFrame("OK APPLIED")
+  of "MIGMETAVERIFY":
+    if not sv.requireRole(sock, roleAdmin):
+      return false
+    requireParts(parts, "MIGMETAVERIFY", 5)
+    if parts.len != 5:
+      raise newException(ValueError,
+        "MIGMETAVERIFY requires topology fence and payload length")
+    let expectedEpoch = parseUInt(parts[1])
+    let expectedNodes = parseUInt(parts[2])
+    let expectedVirtualArcs = parseInt(parts[3])
+    let payloadLen = parseInt(parts[4])
+    let bodyBytes = checkedFrameBytes(payloadLen, 0)
+    if expectedEpoch != uint64(sv.tbl.epoch) or
+        expectedNodes != uint64(sv.tbl.nNodes) or
+        expectedVirtualArcs != sv.virtualArcsPerNode:
+      sock.drainBytes(bodyBytes)
+      sock.sendFrame("ERR topology-mismatch")
+      return true
+    let body = sock.readExact(payloadLen)
+    validateJsonDepth(body, MaxWireJsonDepth)
+    let metadata = parseJson(body)
+    if metadata.kind != JObject:
+      raise newException(ValueError,
+        "migration metadata must be a JSON object")
+    var matches = false
+    case metadata{"kind"}.getStr()
+    of "global":
+      let sourceGalaxy = metadata{"galaxy"}.getStr()
+      let description = metadata{"description"}.getStr()
+      matches =
+        (sourceGalaxy.len == 0 or sv.st.galaxy == sourceGalaxy) and
+        (description.len == 0 or sv.st.galaxyDescription == description)
+    of "ring":
+      let ringKey = parseBiggestUInt(metadata["key"].getStr()).uint64
+      if not sv.ringKeyAllowed(sock, ringKey):
+        sv.denyRingKey(sock, ringKey)
+        return true
+      let expectedMeta = (
+        period: metadata{"period"}.getFloat(),
+        head: metadata{"head"}.getFloat())
+      matches =
+        ringKey in sv.st.ringMeta and
+        sv.st.ringMeta[ringKey] == expectedMeta and
+        sv.st.ringNames.getOrDefault(ringKey, "") ==
+          metadata{"name"}.getStr() and
+        sv.st.ringDescriptions.getOrDefault(ringKey, "") ==
+          metadata{"description"}.getStr()
+      if matches and metadata.hasKey("payloadProfile"):
+        let profile = metadata["payloadProfile"]
+        let expectedProfile = RingPayloadProfile(
+          defaultCodec:
+            parsePayloadCodec(profile{"defaultCodec"}.getStr("raw")),
+          charset: profile{"charset"}.getStr(),
+          formatVersion: profile{"formatVersion"}.getStr())
+        matches =
+          ringKey in sv.st.ringPayloadProfiles and
+          sv.st.ringPayloadProfiles[ringKey] == expectedProfile
+      elif matches:
+        matches = ringKey notin sv.st.ringPayloadProfiles
+      if matches and metadata.hasKey("timeOrbitProfile"):
+        let profile = metadata["timeOrbitProfile"]
+        let expectedProfile = TimeOrbitProfile(
+          bits: profile{"bits"}.getInt(60),
+          bucketMs: profile{"bucketMs"}.getBiggestInt(60_000).int64,
+          phase:
+            parseBiggestUInt(profile{"phase"}.getStr("0")).uint64,
+          salt: profile{"salt"}.getStr())
+        matches =
+          ringKey in sv.st.ringTimeOrbitProfiles and
+          sv.st.ringTimeOrbitProfiles[ringKey] == expectedProfile
+      elif matches:
+        matches = ringKey notin sv.st.ringTimeOrbitProfiles
+    of "stellar":
+      let stellar = metadata["stellar"].getStr()
+      matches =
+        sv.st.stellarMaps.getOrDefault(stellar, "") ==
+          metadata["blob"].getStr()
+    of "forwarder":
+      let oldParent =
+        parseBiggestUInt(metadata["oldParent"].getStr()).uint64
+      if not sv.ringKeyAllowed(sock, oldParent):
+        sv.denyRingKey(sock, oldParent)
+        return true
+      let oldSeq = metadata{"oldSeq"}.getBiggestInt().uint32
+      let expectedForwarder = Forwarder(
+        newParent:
+          parseBiggestUInt(metadata["newParent"].getStr()).uint64,
+        newSeq: metadata{"newSeq"}.getBiggestInt().uint32,
+        newTWrite: metadata{"newTWrite"}.getFloat(),
+        expiresAt: metadata{"expiresAt"}.getFloat())
+      matches =
+        (oldParent, oldSeq) in sv.st.forwarders and
+        sv.st.forwarders[(oldParent, oldSeq)] == expectedForwarder
+    else:
+      raise newException(ValueError, "unknown migration metadata kind")
+    if matches:
+      sock.sendFrame("MIGRATION MATCH")
+    else:
+      sock.sendFrame("ERR migration-metadata-mismatch")
+  of "MIGVERIFY":
+    if not sv.requireRole(sock, roleAdmin):
+      return true
+    requireParts(parts, "MIGVERIFY", 7)
+    if parts.len != 7 or parts[6] notin ["0", "1"]:
+      raise newException(ValueError,
+        "MIGVERIFY requires parent seq version and deleted flag")
+    let parent = parseBiggestUInt(parts[1]).uint64
+    let seq = parseUInt(parts[2]).uint32
+    let expected = parseMutationVersion(parts, 3, 0.0)
+    if expected.isZero:
+      raise newException(ValueError,
+        "MIGVERIFY requires a non-zero mutation version")
+    let expectedDeleted = parts[6] == "1"
+    let state = sv.st.mutationState(parent, seq)
+    if not state.found:
+      sock.sendFrame("ERR migration-missing")
+    elif state.version < expected:
+      sock.sendFrame("ERR migration-behind")
+    elif state.version == expected and state.deleted != expectedDeleted:
+      sock.sendFrame("ERR migration-kind-mismatch")
+    else:
+      sock.sendFrame("MIGRATION " &
+        (if state.version == expected: "MATCH " else: "AHEAD ") &
+        (if state.deleted: "DELETED" else: "LIVE"))
   of "CODECS":
     sock.sendFrame("CODECS raw json nif bif")
   of "CODECMETA":
@@ -1901,15 +2105,16 @@ proc handleFrame(sv: Server, sock: Socket): bool =
   of "DRAIN":
     if not sv.requireRole(sock, roleAdmin):
       return true
+    sv.st.setMaintenanceDrained(true)
     sv.draining = true
     sv.drainStartedAt = epochTime()
-    sv.st.sync()
     sv.audit("drain", user = sv.currentUser(sock),
              message = "server entered drain mode")
     sock.sendFrame("OK draining")
   of "RESUME":
     if not sv.requireRole(sock, roleAdmin):
       return true
+    sv.st.setMaintenanceDrained(false)
     sv.draining = false
     sv.drainStartedAt = 0.0
     sv.audit("resume", user = sv.currentUser(sock),
@@ -2142,6 +2347,9 @@ proc main() =
   sv.st.setGalaxy(galaxy)
   sv.st.configurePlacement(placementEpoch, uint16(peers.len),
                            virtualArcsPerNode)
+  sv.draining = sv.st.maintenanceDrained
+  if sv.draining:
+    sv.drainStartedAt = epochTime()
   sv.rebuildFieldState()
   sv.preparePlacementMigration()
 

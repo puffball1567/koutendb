@@ -198,6 +198,11 @@ type
     source*: string
     destination*: string
 
+  MutationState* = object
+    found*: bool
+    deleted*: bool
+    version*: MutationVersion
+
   Store* = ref object
     items*: Table[(uint64, uint32), Particle]
     itemVersions*: Table[(uint64, uint32), MutationVersion]
@@ -221,6 +226,7 @@ type
     placementEpoch*: uint32
     placementNodes*: uint16
     placementVirtualArcs*: int
+    maintenanceDrained*: bool
     clusterTx*: Table[uint64, ClusterTxIntent]
     appliedClusterTx*: Table[uint64, bool]
     warpJobs*: Table[uint64, string]
@@ -1205,6 +1211,11 @@ proc replay(s: Store, path: string, repair = true) =
         s.placementEpoch = uint32(epoch)
         s.placementNodes = uint16(nodes)
         s.placementVirtualArcs = virtualArcs
+      of "MD":
+        if parts.len != 2 or parts[1] notin ["0", "1"]:
+          raise newException(WalCorruptionError,
+            "invalid maintenance drain record")
+        s.maintenanceDrained = parts[1] == "1"
       of "P":
         let p = recordStream.readParticleRecord(parts, 1)
         s.applyOp(TxOp(kind: txUpsert, p: p, walOffset: recordStart,
@@ -1507,6 +1518,28 @@ proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
     s.logFile.writeWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
     s.flushMaybe(force = true)
 
+proc setMaintenanceDrained*(s: Store, drained: bool) =
+  ## Persist the operator-controlled quiet point used by backup and explicit
+  ## topology migration. A restart must not silently resume writes.
+  if s.maintenanceDrained == drained:
+    if s.persistent:
+      s.flushMaybe(force = true)
+    return
+  s.ensureWritable()
+  if s.persistent:
+    s.logFile.writeWalLine("MD " & $(if drained: 1 else: 0))
+    s.flushMaybe(force = true)
+  s.maintenanceDrained = drained
+
+proc mutationState*(s: Store, parent: uint64, seq: uint32): MutationState =
+  let k = key(parent, seq)
+  if k in s.tombstones:
+    return MutationState(found: true, deleted: true,
+                         version: s.tombstones[k].version)
+  if k in s.itemVersions:
+    return MutationState(found: true, deleted: false,
+                         version: s.itemVersions[k])
+
 proc flushMaybe(s: Store, force: bool) =
   if not s.persistent: return
   s.ensureWritable()
@@ -1567,6 +1600,8 @@ proc writeSnapshotFile(s: Store, path: string) =
     if s.placementEpoch > 0:
       file.writeWalLine("PM " & $s.placementEpoch & " " &
                         $s.placementNodes & " " & $s.placementVirtualArcs)
+    if s.maintenanceDrained:
+      file.writeWalLine("MD 1")
     file.writeWalLine("Q " & $s.nextTxId)
     file.writeWalLine("UQ " & $s.nextUniverseSyncId)
     file.writeWalLine("M " & $s.maxTWrite)
@@ -2003,6 +2038,9 @@ proc restoreEncryptedBackup*(backupDir, targetDir, passphrase: string,
       removeFile(tmp)
 
 proc putRingMeta*(s: Store, ringKey: uint64, period, head: float) =
+  if ringKey in s.ringMeta and
+      s.ringMeta[ringKey] == (period: period, head: head):
+    return
   s.ensureWritable()
   s.applyOp(TxOp(kind: txRingMeta, ringKey: ringKey,
                  ringPeriod: period, ringHead: head))
@@ -2022,6 +2060,8 @@ proc putRingName*(s: Store, ringKey: uint64, name: string) =
     s.flushMaybe()
 
 proc putGalaxyDescription*(s: Store, description: string) =
+  if s.galaxyDescription == description:
+    return
   s.ensureWritable()
   s.galaxyDescription = description
   if s.persistent:
@@ -2029,6 +2069,8 @@ proc putGalaxyDescription*(s: Store, description: string) =
     s.flushMaybe(force = true)
 
 proc putRingDescription*(s: Store, ringKey: uint64, description: string) =
+  if s.ringDescriptions.getOrDefault(ringKey, "") == description:
+    return
   s.ensureWritable()
   if description.len == 0:
     s.ringDescriptions.del ringKey
@@ -2041,6 +2083,9 @@ proc putRingDescription*(s: Store, ringKey: uint64, description: string) =
 
 proc putRingPayloadProfile*(s: Store, ringKey: uint64,
                             profile: RingPayloadProfile) =
+  if ringKey in s.ringPayloadProfiles and
+      s.ringPayloadProfiles[ringKey] == profile:
+    return
   s.ensureWritable()
   s.ringPayloadProfiles[ringKey] = profile
   if s.persistent:
@@ -2054,6 +2099,9 @@ proc putRingPayloadProfile*(s: Store, ringKey: uint64,
 
 proc putTimeOrbitProfile*(s: Store, ringKey: uint64,
                           profile: TimeOrbitProfile) =
+  if ringKey in s.ringTimeOrbitProfiles and
+      s.ringTimeOrbitProfiles[ringKey] == profile:
+    return
   s.ensureWritable()
   validateTimeOrbitProfile(profile)
   s.ringTimeOrbitProfiles[ringKey] = profile
@@ -2066,6 +2114,8 @@ proc putStellarMap*(s: Store, stellar, blob: string) =
   if stellar.len == 0:
     raise newException(ValueError, "stellar coordinate is empty")
   s.ensureWritable()
+  if blob.len > 0 and s.stellarMaps.getOrDefault(stellar, "") == blob:
+    return
   if blob.len == 0:
     s.stellarMaps.del stellar
     if s.persistent:
@@ -2194,7 +2244,10 @@ proc upsert*(s: Store, p: Particle, origin = 0'u32,
 
 proc putForwarder*(s: Store, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
   s.ensureWritable()
-  s.forwarders[key(oldParent, oldSeq)] = f
+  let forwarderKey = key(oldParent, oldSeq)
+  if forwarderKey in s.forwarders and s.forwarders[forwarderKey] == f:
+    return
+  s.forwarders[forwarderKey] = f
   if s.persistent:
     s.logFile.writeWalLine("F " & $oldParent & " " & $oldSeq & " " & $f.newParent & " " &
                            $f.newSeq & " " & $f.newTWrite & " " & $f.expiresAt)

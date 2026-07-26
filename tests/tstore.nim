@@ -55,6 +55,98 @@ suite "store persistence":
     compacted.close()
     removeDir(dir)
 
+  test "maintenance drain state survives replay and compaction":
+    let dir = createTempDir("kouten-store", "maintenance-drain")
+    var st = openStore(dir)
+    check not st.maintenanceDrained
+    st.setMaintenanceDrained(true)
+    check st.maintenanceDrained
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.maintenanceDrained
+    discard replayed.compact()
+    replayed.close()
+
+    var compacted = openStore(dir)
+    check compacted.maintenanceDrained
+    compacted.setMaintenanceDrained(false)
+    compacted.close()
+
+    var resumed = openStore(dir)
+    check not resumed.maintenanceDrained
+    resumed.close()
+    removeDir(dir)
+
+  test "invalid maintenance drain WAL values fail closed":
+    let dir = createTempDir("kouten-store", "maintenance-drain-invalid")
+    writeFile(dir / "kouten.log", "MD 2\n")
+    expect IOError:
+      discard openStore(dir)
+    removeDir(dir)
+
+  test "mutation state distinguishes live data and tombstones":
+    var st = openStore("")
+    let live = Particle(parent: 8'u64, seq: 1'u32, period: 60.0,
+                        head: 0.0, tWrite: 1.0, payload: "live",
+                        version: mutationVersion(10))
+    check st.upsert(live, preserveVersion = true)
+    let liveState = st.mutationState(8, 1)
+    check liveState.found
+    check not liveState.deleted
+    check liveState.version == mutationVersion(10)
+
+    check st.applyTombstone(Tombstone(
+      parent: 8, seq: 1, period: 60.0, head: 0.0, tWrite: 1.0,
+      version: mutationVersion(11)))
+    let deletedState = st.mutationState(8, 1)
+    check deletedState.found
+    check deletedState.deleted
+    check deletedState.version == mutationVersion(11)
+    check not st.mutationState(8, 2).found
+
+  test "migration metadata setters are durable and idempotent":
+    let dir = createTempDir("kouten-store", "metadata-idempotent")
+    var st = openStore(dir, durability = durStrong)
+    let payloadProfile = RingPayloadProfile(
+      defaultCodec: pcJson, charset: "UTF-8", formatVersion: "1")
+    let timeProfile = TimeOrbitProfile(
+      bits: 60, bucketMs: 60_000, phase: 7, salt: "migration")
+    let zeroForwarder = Forwarder()
+    st.putRingMeta(9, 60.0, 0.25)
+    st.putRingName(9, "docs/test")
+    st.putGalaxyDescription("migration")
+    st.putRingDescription(9, "description")
+    st.putRingPayloadProfile(9, payloadProfile)
+    st.putTimeOrbitProfile(9, timeProfile)
+    st.putStellarMap(
+      "docs/stellar",
+      """{"stellar":"docs/stellar","members":["docs/test"]}""")
+    st.putForwarder(9, 1, zeroForwarder)
+    let firstSize = st.logSize
+    check (9'u64, 1'u32) in st.forwarders
+
+    st.putRingMeta(9, 60.0, 0.25)
+    st.putRingName(9, "docs/test")
+    st.putGalaxyDescription("migration")
+    st.putRingDescription(9, "description")
+    st.putRingPayloadProfile(9, payloadProfile)
+    st.putTimeOrbitProfile(9, timeProfile)
+    st.putStellarMap(
+      "docs/stellar",
+      """{"stellar":"docs/stellar","members":["docs/test"]}""")
+    st.putForwarder(9, 1, zeroForwarder)
+    check st.logSize == firstSize
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.ringNames[9] == "docs/test"
+    check replayed.ringPayloadProfiles[9] == payloadProfile
+    check replayed.ringTimeOrbitProfiles[9] == timeProfile
+    check (9'u64, 1'u32) in replayed.forwarders
+    replayed.close()
+    removeDir(dir)
+
   test "persistent data dirs are locked across processes":
     let dir = createTempDir("kouten-store", "lock")
     let child = startProcess(getAppFilename(), args = ["--lock-child", dir])

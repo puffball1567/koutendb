@@ -51,6 +51,12 @@
 ##   STATS\n                                                   → OK <node> <count>\n
 ##   TOPOLOGY\n
 ##       → TOPOLOGY <placementEpoch> <nNodes> <virtualArcsPerNode>\n
+##   MIGVERIFY <parent> <seq> <physicalMicros> <logical> <origin> <deleted>\n
+##       → MIGRATION MATCH|AHEAD LIVE|DELETED\n
+##   MIGMETA <placementEpoch> <placementNodes> <virtualArcs> <len>\n<json>
+##       → OK APPLIED\n
+##   MIGMETAVERIFY <placementEpoch> <placementNodes> <virtualArcs> <len>\n<json>
+##       → MIGRATION MATCH\n
 
 import std/[net, strutils, tables]
 import ./[auth, payload, mutation, core]
@@ -600,15 +606,15 @@ proc queryReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
   (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])), pcJson,
    false, 0'u64, 0'u32, 0.0, -1)
 
-proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
-                  period, head, tWrite: float, payload: string,
-                  vec: seq[float32] = @[],
-                  codec = pcRaw,
-                  version = MutationVersion(),
-                  timeoutMs = 10_000,
-                  expectedPlacementEpoch = 0'u32,
-                  expectedPlacementNodes = 0'u16,
-                  expectedVirtualArcs = 0) =
+proc transferStatusReq*(c: ClusterClient, node: int, parent: uint64,
+                        seq: uint32, period, head, tWrite: float,
+                        payload: string, vec: seq[float32] = @[],
+                        codec = pcRaw,
+                        version = MutationVersion(),
+                        timeoutMs = 10_000,
+                        expectedPlacementEpoch = 0'u32,
+                        expectedPlacementNodes = 0'u16,
+                        expectedVirtualArcs = 0): string =
   ## Inter-node handoff. koutend is single-threaded, so callers should pass a
   ## short timeoutMs to avoid long blocking during mutual transfer.
   let body =
@@ -631,16 +637,34 @@ proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                 version.mutationVersionFields & placementFence, body,
                 timeoutMs = timeoutMs)
   expect(r, "OK", "TRF")
+  if r.len != 2 or r[1] notin ["APPLIED", "SKIPPED"]:
+    raise newException(IOError,
+      "TRF returned an invalid acknowledgement")
+  r[1]
 
-proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
-                        seq: uint32, period, head, tWrite: float,
-                        version: MutationVersion,
-                        acknowledgedNodes: seq[uint16] = @[],
-                        reclaimAfter = 0.0,
-                        timeoutMs = 10_000,
-                        expectedPlacementEpoch = 0'u32,
-                        expectedPlacementNodes = 0'u16,
-                        expectedVirtualArcs = 0) =
+proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
+                  period, head, tWrite: float, payload: string,
+                  vec: seq[float32] = @[],
+                  codec = pcRaw,
+                  version = MutationVersion(),
+                  timeoutMs = 10_000,
+                  expectedPlacementEpoch = 0'u32,
+                  expectedPlacementNodes = 0'u16,
+                  expectedVirtualArcs = 0) =
+  discard c.transferStatusReq(
+    node, parent, seq, period, head, tWrite, payload, vec, codec, version,
+    timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
+    expectedVirtualArcs)
+
+proc transferDeleteStatusReq*(c: ClusterClient, node: int, parent: uint64,
+                              seq: uint32, period, head, tWrite: float,
+                              version: MutationVersion,
+                              acknowledgedNodes: seq[uint16] = @[],
+                              reclaimAfter = 0.0,
+                              timeoutMs = 10_000,
+                              expectedPlacementEpoch = 0'u32,
+                              expectedPlacementNodes = 0'u16,
+                              expectedVirtualArcs = 0): string =
   let placementFence =
     if expectedPlacementEpoch == 0 and expectedPlacementNodes == 0 and
         expectedVirtualArcs == 0:
@@ -658,6 +682,24 @@ proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
                 acknowledgedNodes.acknowledgedNodesField & " " &
                 $reclaimAfter & placementFence, timeoutMs = timeoutMs)
   expect(r, "OK", "TRFD")
+  if r.len != 2 or r[1] notin ["APPLIED", "SKIPPED"]:
+    raise newException(IOError,
+      "TRFD returned an invalid acknowledgement")
+  r[1]
+
+proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
+                        seq: uint32, period, head, tWrite: float,
+                        version: MutationVersion,
+                        acknowledgedNodes: seq[uint16] = @[],
+                        reclaimAfter = 0.0,
+                        timeoutMs = 10_000,
+                        expectedPlacementEpoch = 0'u32,
+                        expectedPlacementNodes = 0'u16,
+                        expectedVirtualArcs = 0) =
+  discard c.transferDeleteStatusReq(
+    node, parent, seq, period, head, tWrite, version, acknowledgedNodes,
+    reclaimAfter, timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
+    expectedVirtualArcs)
 
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
   let r = c.rpc(node, "TXBEGIN")
@@ -820,6 +862,59 @@ proc topologyReq*(c: ClusterClient, node: int): ArcTable =
       nNodes == 0 or nNodes > uint16.high.uint64 or virtualArcs <= 0:
     raise newException(IOError, "TOPOLOGY returned invalid values")
   virtualArcTable(uint32(epoch), uint16(nNodes), virtualArcs)
+
+proc migrationVerifyReq*(c: ClusterClient, node: int, parent: uint64,
+                         seq: uint32, version: MutationVersion,
+                         deleted: bool): tuple[ahead: bool, deleted: bool] =
+  version.validateMutationVersion()
+  if version.isZero:
+    raise newException(ValueError,
+      "migration verification requires a non-zero mutation version")
+  let r = c.rpc(node, "MIGVERIFY " & $parent & " " & $seq & " " &
+                version.mutationVersionFields & " " &
+                $(if deleted: 1 else: 0))
+  expect(r, "MIGRATION", "MIGVERIFY")
+  if r.len != 3 or r[1] notin ["MATCH", "AHEAD"] or
+      r[2] notin ["LIVE", "DELETED"]:
+    raise newException(IOError,
+      "MIGVERIFY returned an invalid response: " & r.join(" "))
+  (ahead: r[1] == "AHEAD", deleted: r[2] == "DELETED")
+
+proc migrationMetadataReq*(c: ClusterClient, node: int, metadataJson: string,
+                           expectedPlacementEpoch: uint32,
+                           expectedPlacementNodes: uint16,
+                           expectedVirtualArcs: int) =
+  if metadataJson.len == 0:
+    raise newException(ValueError, "migration metadata is empty")
+  if expectedPlacementEpoch == 0 or expectedPlacementNodes == 0 or
+      expectedVirtualArcs <= 0:
+    raise newException(ValueError,
+      "migration metadata requires a complete topology fence")
+  let r = c.rpc(node, "MIGMETA " & $expectedPlacementEpoch & " " &
+                $expectedPlacementNodes & " " & $expectedVirtualArcs & " " &
+                $metadataJson.len, metadataJson)
+  expect(r, "OK", "MIGMETA")
+  if r.len != 2 or r[1] != "APPLIED":
+    raise newException(IOError,
+      "MIGMETA returned an invalid acknowledgement")
+
+proc migrationMetadataVerifyReq*(
+    c: ClusterClient, node: int, metadataJson: string,
+    expectedPlacementEpoch: uint32, expectedPlacementNodes: uint16,
+    expectedVirtualArcs: int) =
+  if metadataJson.len == 0:
+    raise newException(ValueError, "migration metadata is empty")
+  if expectedPlacementEpoch == 0 or expectedPlacementNodes == 0 or
+      expectedVirtualArcs <= 0:
+    raise newException(ValueError,
+      "migration metadata verification requires a complete topology fence")
+  let r = c.rpc(node, "MIGMETAVERIFY " & $expectedPlacementEpoch & " " &
+                $expectedPlacementNodes & " " & $expectedVirtualArcs & " " &
+                $metadataJson.len, metadataJson)
+  expect(r, "MIGRATION", "MIGMETAVERIFY")
+  if r.len != 2 or r[1] != "MATCH":
+    raise newException(IOError,
+      "MIGMETAVERIFY returned an invalid response")
 
 proc codecsReq*(c: ClusterClient, node: int): seq[PayloadCodec] =
   let r = c.rpc(node, "CODECS")

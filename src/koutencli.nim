@@ -15,7 +15,7 @@ import std/[algorithm, base64, os, osproc, strutils, strformat, json, times, mon
             parseopt, net, dynlib, tempfiles, tables]
 import nimsodium/hash
 import koutendb
-import kouten/wire
+import kouten/[scale_in, wire]
 
 const
   RagTopics = 8
@@ -2617,6 +2617,144 @@ proc runImportJsonl(dataDir, inPath, defaultRing, ringField, ringPrefix,
   db.close()
   echo &"import-jsonl OK read={stats.read} imported={stats.imported} skipped={stats.skipped} errors={stats.errors} rings={stats.rings} batches={stats.batches} batchSize={stats.batchSize} source={stats.source}"
 
+proc scaleInClient(peers, username, password, authToken, secretKey, galaxy:
+                   string; tls: bool; tlsCaFile, tlsServerName: string;
+                   tlsInsecureSkipVerify: bool): ClusterClient =
+  if peers.len == 0:
+    raise newException(ValueError,
+      "scale-in commands require --peers=TARGET_HOSTS")
+  newClusterClient(parsePeers(peers), username = username, password = password,
+                   authToken = authToken, secretKey = secretKey,
+                   galaxy = galaxy, tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+
+proc scaleInPlanNode(plan: ScaleInPlan): JsonNode =
+  %*{
+    "source": {
+      "epoch": plan.sourceEpoch,
+      "nodes": plan.sourceNodes,
+      "virtualArcsPerNode": plan.sourceVirtualArcs
+    },
+    "target": {
+      "epoch": plan.targetEpoch,
+      "nodes": plan.targetNodes,
+      "virtualArcsPerNode": plan.targetVirtualArcs
+    },
+    "records": plan.records,
+    "tombstones": plan.tombstones,
+    "metadataObjects": plan.metadataObjects,
+    "recordsByTarget": plan.recordsByTarget,
+    "tombstonesByTarget": plan.tombstonesByTarget
+  }
+
+proc runScaleInPlan(dataDir, peers, username, password, authToken, secretKey,
+                    galaxy: string; tls: bool; tlsCaFile, tlsServerName: string;
+                    tlsInsecureSkipVerify, jsonFormat: bool) =
+  var client = scaleInClient(peers, username, password, authToken, secretKey,
+                             galaxy, tls, tlsCaFile, tlsServerName,
+                             tlsInsecureSkipVerify)
+  try:
+    let plan = planScaleIn(dataDir, client)
+    if jsonFormat:
+      echo $plan.scaleInPlanNode
+    else:
+      echo &"scale-in-plan OK sourceEpoch={plan.sourceEpoch} sourceNodes={plan.sourceNodes} targetEpoch={plan.targetEpoch} targetNodes={plan.targetNodes} records={plan.records} tombstones={plan.tombstones} metadataObjects={plan.metadataObjects}"
+      echo "recordsByTarget=" & $plan.recordsByTarget
+      echo "tombstonesByTarget=" & $plan.tombstonesByTarget
+  finally:
+    client.close()
+
+proc runScaleInMigrate(dataDir, peers, username, password, authToken,
+                       secretKey, galaxy, checkpointPath: string;
+                       checkpointEvery, retryLimit, retryDelayMs,
+                       maxTransfers: int;
+                       resetCheckpoint, tls: bool;
+                       tlsCaFile, tlsServerName: string;
+                       tlsInsecureSkipVerify, jsonFormat: bool) =
+  var client = scaleInClient(peers, username, password, authToken, secretKey,
+                             galaxy, tls, tlsCaFile, tlsServerName,
+                             tlsInsecureSkipVerify)
+  try:
+    let stats = migrateScaleIn(
+      dataDir, client, checkpointPath = checkpointPath,
+      checkpointEvery = checkpointEvery, retryLimit = retryLimit,
+      retryDelayMs = retryDelayMs, resetCheckpoint = resetCheckpoint,
+      maxTransfers = maxTransfers)
+    if jsonFormat:
+      echo $(%*{
+        "recordsAcked": stats.recordsAcked,
+        "tombstonesAcked": stats.tombstonesAcked,
+        "applied": stats.applied,
+        "skipped": stats.skipped,
+        "retries": stats.retries,
+        "metadataObjects": stats.metadataObjects,
+        "resumed": stats.resumed,
+        "complete": stats.complete,
+        "checkpoint": stats.checkpoint
+      })
+    else:
+      echo &"scale-in-migrate OK recordsAcked={stats.recordsAcked} tombstonesAcked={stats.tombstonesAcked} metadataObjects={stats.metadataObjects} applied={stats.applied} skipped={stats.skipped} retries={stats.retries} resumed={stats.resumed} complete={stats.complete} checkpoint={stats.checkpoint}"
+  finally:
+    client.close()
+
+proc runScaleInVerify(dataDir, peers, username, password, authToken,
+                      secretKey, galaxy, checkpointPath: string;
+                      retryLimit, retryDelayMs: int; tls: bool;
+                      tlsCaFile, tlsServerName: string;
+                      tlsInsecureSkipVerify, jsonFormat: bool) =
+  var client = scaleInClient(peers, username, password, authToken, secretKey,
+                             galaxy, tls, tlsCaFile, tlsServerName,
+                             tlsInsecureSkipVerify)
+  try:
+    let stats = verifyScaleIn(
+      dataDir, client, checkpointPath = checkpointPath,
+      retryLimit = retryLimit, retryDelayMs = retryDelayMs)
+    if jsonFormat:
+      echo $(%*{
+        "records": stats.records,
+        "tombstones": stats.tombstones,
+        "metadataObjects": stats.metadataObjects,
+        "matching": stats.matching,
+        "ahead": stats.ahead,
+        "retries": stats.retries,
+        "verified": true,
+        "checkpoint": stats.checkpoint
+      })
+    else:
+      echo &"scale-in-verify OK records={stats.records} tombstones={stats.tombstones} metadataObjects={stats.metadataObjects} matching={stats.matching} ahead={stats.ahead} retries={stats.retries} checkpoint={stats.checkpoint}"
+  finally:
+    client.close()
+
+proc scaleInCheckpointNode(checkpoint: ScaleInCheckpoint): JsonNode =
+  %*{
+    "format": checkpoint.format,
+    "phase": checkpoint.phase,
+    "complete": checkpoint.complete,
+    "verified": checkpoint.verified,
+    "sourceEpoch": checkpoint.sourceEpoch,
+    "sourceNodes": checkpoint.sourceNodes,
+    "targetEpoch": checkpoint.targetEpoch,
+    "targetNodes": checkpoint.targetNodes,
+    "recordsAcked": checkpoint.recordsAcked,
+    "tombstonesAcked": checkpoint.tombstonesAcked,
+    "metadataTransferred": checkpoint.metadataTransferred,
+    "ringIndex": checkpoint.ringIndex,
+    "itemIndex": checkpoint.itemIndex,
+    "tombstoneIndex": checkpoint.tombstoneIndex,
+    "targetPeers": checkpoint.targetPeers
+  }
+
+proc runScaleInStatus(checkpointPath: string; jsonFormat: bool) =
+  if checkpointPath.len == 0:
+    raise newException(ValueError,
+      "scale-in-status requires --checkpoint=FILE")
+  let checkpoint = loadScaleInCheckpoint(checkpointPath)
+  if jsonFormat:
+    echo $checkpoint.scaleInCheckpointNode
+  else:
+    echo &"scale-in-status phase={checkpoint.phase} complete={checkpoint.complete} verified={checkpoint.verified} metadataTransferred={checkpoint.metadataTransferred} sourceEpoch={checkpoint.sourceEpoch} sourceNodes={checkpoint.sourceNodes} targetEpoch={checkpoint.targetEpoch} targetNodes={checkpoint.targetNodes} recordsAcked={checkpoint.recordsAcked} tombstonesAcked={checkpoint.tombstonesAcked} checkpoint={checkpointPath}"
+
 proc universeSyncEventNode(event: UniverseSyncEvent): JsonNode =
   %*{
     "id": event.id,
@@ -2902,6 +3040,10 @@ proc printHelp() =
   echo "  kouten verify [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
   echo "  kouten dump --data=DIR [--out=FILE] [--no-vectors]"
   echo "  kouten import-jsonl --data=DIR --in=FILE [--ring-field=FIELD] [--default-ring=RING] [--batch-size=N]"
+  echo "  kouten scale-in-plan --data=OLD_DIR --peers=TARGET_PEERS [--json]"
+  echo "  kouten scale-in-migrate --data=OLD_DIR --peers=TARGET_PEERS [--checkpoint=FILE] [--checkpoint-every=N] [--max-transfers=N] [--retry-limit=N] [--retry-delay-ms=N] [--reset-checkpoint] [--json]"
+  echo "  kouten scale-in-verify --data=OLD_DIR --peers=TARGET_PEERS [--checkpoint=FILE] [--retry-limit=N] [--retry-delay-ms=N] [--json]"
+  echo "  kouten scale-in-status --checkpoint=FILE [--json]"
   echo "  kouten universe-sync --data=SOURCE_DIR [--target-data=TARGET_DIR | --peers=host:port,...] [--prune-acked]"
   echo "  kouten universe-status [--data=DIR | --peers=host:port,...] [--metrics]"
   echo "  kouten recovery-status [--mirror=DIR...] [--universe-config=FILE] [--required-healthy=N] [--metrics]"
@@ -2928,6 +3070,7 @@ proc main() =
   var mirrors: seq[string] = @[]
   var outPath = ""
   var inPath = ""
+  var checkpointPath = ""
   var payload = ""
   var codecName = "auto"
   var charset = ""
@@ -2995,6 +3138,11 @@ proc main() =
   var ringCount = 100
   var payloadBytes = 100
   var importBatchSize = 1000
+  var checkpointEvery = DefaultScaleInCheckpointEvery
+  var retryLimit = DefaultScaleInRetryLimit
+  var retryDelayMs = DefaultScaleInRetryDelayMs
+  var maxTransfers = 0
+  var resetCheckpoint = false
   var priority = 0
   var snapshotSeq: BiggestInt = 0
   var requiredHealthy = 1
@@ -3078,6 +3226,7 @@ proc main() =
       of "mirror": mirrors.add val
       of "out": outPath = val
       of "in": inPath = val
+      of "checkpoint": checkpointPath = val
       of "payload": payload = val
       of "codec": codecName = val
       of "charset": charset = val
@@ -3143,6 +3292,7 @@ proc main() =
       of "vec-field": vecField = val
       of "overwrite": overwrite = true
       of "prune-acked": pruneAcked = true
+      of "reset-checkpoint": resetCheckpoint = true
       of "readonly": readonly = true
       of "segments": verifySegments = true
       of "max-wal-bytes": maxWalBytes = parseBiggestInt(val).int64
@@ -3183,6 +3333,10 @@ proc main() =
       of "rings": ringCount = parseInt(val)
       of "payload-bytes": payloadBytes = parseInt(val)
       of "batch-size": importBatchSize = parseInt(val)
+      of "checkpoint-every": checkpointEvery = parseInt(val)
+      of "retry-limit": retryLimit = parseInt(val)
+      of "retry-delay-ms": retryDelayMs = parseInt(val)
+      of "max-transfers": maxTransfers = parseInt(val)
       of "priority": priority = parseInt(val)
       of "snapshot-seq": snapshotSeq = parseBiggestInt(val)
       of "required-healthy":
@@ -3362,6 +3516,22 @@ proc main() =
   of "import-jsonl": runImportJsonl(dataDir, inPath, defaultRing, ringField,
                                     ringPrefix, payloadField, vecField, n,
                                     importBatchSize)
+  of "scale-in-plan":
+    runScaleInPlan(dataDir, peers, username, password, authToken, secretKey,
+                   galaxy, tls, tlsCaFile, tlsServerName,
+                   tlsInsecureSkipVerify, jsonFormat)
+  of "scale-in-migrate":
+    runScaleInMigrate(dataDir, peers, username, password, authToken, secretKey,
+                      galaxy, checkpointPath, checkpointEvery, retryLimit,
+                      retryDelayMs, maxTransfers, resetCheckpoint, tls, tlsCaFile,
+                      tlsServerName, tlsInsecureSkipVerify, jsonFormat)
+  of "scale-in-verify":
+    runScaleInVerify(dataDir, peers, username, password, authToken, secretKey,
+                     galaxy, checkpointPath, retryLimit, retryDelayMs, tls,
+                     tlsCaFile, tlsServerName, tlsInsecureSkipVerify,
+                     jsonFormat)
+  of "scale-in-status":
+    runScaleInStatus(checkpointPath, jsonFormat)
   of "universe-export": runUniverseExport(dataDir, outPath)
   of "universe-apply": runUniverseApply(dataDir, inPath)
   of "universe-sync":

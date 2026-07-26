@@ -51,6 +51,20 @@ density), which the destination validates immediately before applying the
 mutation. Clients follow at most two explicit owner redirects and never perform
 all-node fan-out.
 
+Scale-in uses admin-only operator commands rather than exposing migration
+primitives as normal driver CRUD:
+
+- `MIGMETA` applies topology-fenced ring/galaxy/stellar/forwarder metadata;
+- `MIGVERIFY` compares a record or tombstone mutation version without changing
+  target state;
+- `MIGMETAVERIFY` compares topology-fenced metadata without changing target
+  state.
+
+Body-carrying migration commands drain their declared body before returning a
+topology error, preserving the next frame boundary on a persistent connection.
+These commands are used by `kouten scale-in-*`; application drivers should not
+use them directly.
+
 ## Mutation Ordering
 
 Particle and logical-delete transfer frames carry an optional hybrid logical
