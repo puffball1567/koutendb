@@ -194,13 +194,10 @@ Compatibility rules:
 
 ## 8. Vector Backend
 
-KoutenDB has an exact backend for correctness, tests, and small deployments. The
-intended production vector path uses a FAISS bridge.
-
-The core goal is still to reduce the candidate set before the vector backend
-does heavy work. KoutenDB should not require GPU FAISS as the default path. The
-database should make the working set small enough that CPU-side search remains
-useful for many workloads.
+KoutenDB uses dependency-free exact vector ranking after ring selection. The
+database reduces the candidate set before vector work instead of maintaining a
+duplicate broad-search index. Broad retrieval remains observable through
+candidate and scan statistics so operators can refine placement and scope.
 
 ## 9. Insert Path
 
@@ -504,7 +501,6 @@ Core gaps before stronger production positioning:
 - TLS and stronger wire security;
 - richer RBAC / audit policy for enterprise environments;
 - coordinator redundancy for cluster transactions;
-- mature FAISS bridge packaging;
 - observability and admin tooling;
 - larger corpus benchmarks;
 - multi-driver compatibility tests in CI;

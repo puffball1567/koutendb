@@ -1,71 +1,36 @@
-# Vector Backend Selection
+# Exact Vector Retrieval
 
-KoutenDB has two vector search backends in v0.1.0:
+KoutenDB uses one dependency-free exact vector path. Ring routing is the
+primary optimization: the database identifies the relevant coordinate first,
+then ranks only vectors in the selected ring set.
 
-- `vbExact`: the built-in dependency-free backend.
-- `vbFaiss`: the optional FAISS bridge backend using `libkouten_faiss.so`.
+The execution model is:
 
-The backend choice is a performance and deployment decision. It does not change
-KoutenDB's data model: rings still reduce the working set before vector search.
+```text
+ring / retrieval plan
+  -> bounded candidate set
+  -> exact cosine ranking
+  -> top-k payloads
+```
 
-## Why Use FAISS?
+KoutenDB does not maintain a second global vector index. This avoids duplicate
+vector memory, native vector-engine dependencies, index build time, and a
+separate recovery lifecycle.
 
-FAISS gives KoutenDB a production-grade vector execution path maintained by a
-widely used upstream project. In v0.1.0 the bridge uses FAISS `IndexFlatIP`,
-which is an exact flat inner-product index, not an approximate ANN index.
+## Ring-Scoped And Broad Reads
 
-The practical benefits are:
+A ring-scoped read walks only the selected ring's vector entries. A broad read
+without a ring walks every vector and should be treated as an explicit fallback,
+not the normal retrieval path.
 
-- faster execution over large candidate sets;
-- a standard path for future FAISS index types;
-- less KoutenDB-specific vector code to maintain;
-- a familiar dependency for AI and retrieval teams that already use FAISS.
+Use Atlas, ring descriptions, retrieval profiles, or an application/import rule
+to select the smallest valid scope before ranking. Retrieval statistics expose
+`totalVectors`, `scanned`, `skippedVectors`, and `candidateReduction` so broad
+queries remain visible.
 
-KoutenDB stores normalized vectors before indexing. With normalized vectors,
-FAISS inner product and cosine-based exact search produce comparable ordering
-for the current bridge.
+## Local Benchmark
 
-## Which Backend Is Faster?
-
-There is no single answer. Candidate count matters.
-
-| Workload shape | Usually faster | Reason |
-| --- | --- | --- |
-| Small scoped ring reads | `vbExact` | No dynamic bridge or FAISS call overhead. |
-| Large global or broad reads | `vbFaiss` | FAISS' C++ flat search is much faster over large vector sets. |
-| RAG/LLM retrieval after strong ring routing | `vbFaiss` for production, `vbExact` for fallback | KoutenDB may reduce candidates enough that exact scoped reads are cheap, but the absolute FAISS overhead is small. |
-| Production vector-heavy workloads | `vbFaiss` | It is the intended scalable backend path. |
-
-The recommended production policy is simple: use FAISS when the bridge is
-available, and keep exact search as a dependency-free fallback for tests, small
-embedded deployments, and environments where FAISS cannot be installed.
-
-The key KoutenDB point is that ring routing and FAISS are complementary. Rings
-reduce how much must be searched. FAISS makes the remaining vector search path
-fast enough that using it as the normal production backend is reasonable even
-when scoped rings are already small.
-
-## Local Smoke Result
-
-On the local development machine, with `docs=20000`, `rings=100`, `dim=64`,
-`queries=200`, and `budget=8`:
-
-| Backend | Global read | Scoped ring read |
-| --- | ---: | ---: |
-| `vbExact` | 3042.43 us/query, scanned/query 20000 | 43.57 us/query, scanned/query 200 |
-| `vbFaiss` | 293.80 us/query, scanned/query 20000 | 67.02 us/query, scanned/query 200 |
-
-This smoke test shows the current behavior clearly:
-
-- FAISS was about `10.36x` faster for the broad/global vector read.
-- Exact was about `1.54x` faster for the small scoped-ring read, but the
-  absolute difference was only about `23.45 us/query`.
-
-Do not read this as a universal benchmark. It is a release sanity check that
-explains backend selection. Real deployments should benchmark with their own
-vector dimensions, ring sizes, budgets, payloads, and hardware.
-
-Run it locally with:
+Run the deterministic comparison between broad and ring-scoped exact retrieval:
 
 ```sh
 examples/vector_backend_bench.sh
@@ -74,9 +39,16 @@ examples/vector_backend_bench.sh
 Optional parameters:
 
 ```sh
-DOCS=100000 RINGS=100 DIM=128 QUERIES=500 BUDGET=8 examples/vector_backend_bench.sh
+DOCS=100000 RINGS=100 DIM=128 QUERIES=500 BUDGET=8 \
+  examples/vector_backend_bench.sh
 ```
 
-If FAISS is not installed, the benchmark still reports the exact backend and
-skips FAISS with a setup message. See [faiss-versioning.md](./faiss-versioning.md)
-for FAISS setup and version control.
+The benchmark is a local engineering measurement, not a universal performance
+claim. Record the CPU, compiler, dimensions, ring sizes, query count, and build
+flags when publishing results.
+
+## Operational Rule
+
+If one ring leaves an excessive vector candidate set, first refine placement or
+retrieval scope. KoutenDB's design goal is to avoid broad vector work rather
+than compensate for it with a duplicate global index.

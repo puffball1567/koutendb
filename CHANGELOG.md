@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Removed the optional FAISS bridge, fetch/build scripts, vendored-source
+  metadata, and runtime backend selection API.
+- Standardized vector retrieval on the dependency-free exact path: KoutenDB
+  narrows candidates by ring before cosine ranking instead of maintaining a
+  second global vector index.
+- Reworked the vector benchmark to compare broad and ring-scoped exact
+  retrieval directly.
+
 ## v0.9.0 - 2026-07-21
 
 ### Added

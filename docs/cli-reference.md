@@ -407,7 +407,7 @@ Recovery commands accept `--mirror`, `--universe-config`, `--universe`,
 | `rag-bench` | Synthetic RAG-style working-set/token benchmark. |
 | `working-set-bench` | Working-set reduction benchmark. |
 | `memory-pressure-bench` | Candidate memory pressure benchmark. |
-| `doctor` | Without `--data` / `--backup` / `--server-config`, check optional native dependencies such as the FAISS bridge. With `--data=DIR`, `--backup=DIR`, or `--server-config=FILE`, run operational verification. |
+| `doctor` | Without `--data` / `--backup` / `--server-config`, report the dependency-free embedded setup. With `--data=DIR`, `--backup=DIR`, or `--server-config=FILE`, run operational verification. |
 
 ## Operational Verification
 

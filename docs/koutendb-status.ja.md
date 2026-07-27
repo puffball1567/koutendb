@@ -14,12 +14,11 @@
 | ORM foundation API | 完了 | `update`, JSON `patch`, `deleteById`, `listByRing`, `countByRing` の土台。driver 公開は未完 |
 | Warp belt | PoC | WAL-backed delayed patch queue。retry / ack / dead-letter の最小状態を保持 |
 | JSON document query | 完了 | GraphQL 風 selection |
-| Vector retrieve | 完了 | FAISS bridge が本番想定。Exact backend は小規模、テスト、fallback 用 |
+| Vector retrieve | 完了 | ringで候補を削減した後に依存ライブラリ不要のExact評価を実行 |
 | Ring / hierarchy | 完了 | `ring = "a/b/c"` と child-ring expansion |
 | Galaxy isolation | 完了 | data dir / peer list / credential の境界 |
 | Atlas / ring map | 完了 | `atlas()` と `kouten atlas` |
 | Retrieval tuning profile | 完了 | amount / scope / depth |
-| FAISS vector backend | PoC | `libkouten_faiss.so` dynamic bridge。default fetch tag は FAISS `v1.14.3`; exact commit pinning は `KOUTEN_FAISS_COMMIT` で optional |
 | WASM browser embedded | v0.1 後の候補 | Browser state boundary / IndexedDB / OPFS |
 
 ## 永続化 / 運用

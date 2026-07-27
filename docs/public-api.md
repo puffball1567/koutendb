@@ -247,7 +247,6 @@ or stellar lens.
 
 | API | Purpose |
 |---|---|
-| `configureVectorBackend(kind)` | Select exact or FAISS vector backend. |
 | `configurePlannerBackend(kind)` | Select deterministic planner backend. |
 | `configureRetrievalTuning(profile, ...)` | Define numeric retrieval knobs. |
 | `configureSearchProfile(name, amount, scope, depth)` | Define human-facing retrieval profile. |
