@@ -26,15 +26,13 @@ Translations:
 | JSON document query | Done | GraphQL-style selection |
 | Payload codecs | PoC | Per-record `raw` / `json` / `nif` / `bif` metadata survives WAL, cluster transport, handoff, transactions, Universe sync, and retrieval. NIF/BIF encoding/decoding remains outside the core; optional adapter: [`koutendb-nif`](https://github.com/puffball1567/koutendb-nif) backed by [`nifkit`](https://github.com/puffball1567/nifkit) |
 | Prepared selection | Done | Reusable validated projection tree in embedded mode plus a bounded server-side parse cache for cluster queries |
-| Vector retrieve | Done | FAISS bridge is the intended production vector path. Exact backend remains for small datasets, tests, and fallback |
+| Vector retrieve | Done | Dependency-free exact ranking runs after ring-scoped candidate reduction |
 | Ring / hierarchy | Done | `ring = "a/b/c"` and child-ring expansion |
 | Galaxy isolation | Done | Separate data dir / peer list / credential boundary |
 | Atlas / ring map | Done | `atlas()` and `kouten atlas` |
 | Galaxy/ring description | Done | Atlas map annotations, not payload text |
 | Time orbit | PoC | Embedded ring-local 60-bit millisecond orbit for log/event/time-series placement. Includes persisted profiles, `putTime` / `readTime`, and `kouten time-orbit/time-put/time-get`; cluster profile administration is still pending. Design note: [time-orbit.md](./time-orbit.md) |
 | Retrieval tuning profile | Done | amount / scope / depth |
-| FAISS vector backend | PoC | Dynamic bridge via `libkouten_faiss.so`; default fetch tag is FAISS `v1.14.3`, exact commit pinning is optional via `KOUTEN_FAISS_COMMIT`; `kouten doctor`, bridge build, `tests/tapi.nim`, and `examples/vector_backend_bench.sh` are verified locally |
-| FAISS GPU backend | Not planned for core | KoutenDB is designed to reduce the search set before ANN/LLM work. Needing GPU FAISS is treated as a placement or retrieval-profile issue first |
 | Retrieval planner | PoC | Deterministic heuristic planner. Stronger planner claims require larger real-corpus benchmarks and further tuning |
 | WASM browser embedded | Post-v0.1 candidate | Browser state boundary / IndexedDB / OPFS |
 

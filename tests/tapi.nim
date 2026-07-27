@@ -994,23 +994,34 @@ suite "retrieve":
     check clampTopRings(1) == 2
     check clampTopRings(501) == 500
 
-  test "VectorBackend は exact を明示選択でき、Faiss は optional backend として接続する":
+  test "dependency-free exact backend keeps retrieval ring-scoped":
     var db = open()
-    db.configureVectorBackend(vbExact)
-    discard db.put("vec-a", ring = "v", vec = @[1.0'f32, 0.0'f32])
+    let id = db.put("vec-a", ring = "v", vec = @[1.0'f32, 0.0'f32])
     discard db.put("vec-b", ring = "v", vec = @[0.0'f32, 1.0'f32])
+    discard db.put("other", ring = "other", vec = @[1.0'f32, 0.0'f32])
     let hits = db.retrieve(@[1.0'f32, 0.0'f32], ring = "v", budget = 1)
     check hits.len == 1
     check hits[0].payload == "vec-a"
-    try:
-      db.configureVectorBackend(vbFaiss)
-      let faissHits = db.retrieve(@[1.0'f32, 0.0'f32], ring = "v", budget = 1)
-      check faissHits.len == 1
-      check faissHits[0].payload == "vec-a"
-    except ValueError:
-      check true
-    except LibraryError:
-      check true
+    let stats = db.retrieveStats(@[1.0'f32, 0.0'f32], ring = "v", budget = 1)
+    check stats.totalVectors == 3
+    check stats.scanned == 2
+    check stats.skippedVectors == 1
+    check stats.ringsTouched == 1
+
+    db.update(id, "vec-a-updated", vec = @[0.0'f32, 1.0'f32])
+    let updated = db.retrieve(@[0.0'f32, 1.0'f32], ring = "v", budget = 2)
+    check updated.len == 2
+    check updated.anyIt(it.payload == "vec-a-updated")
+    check updated.allIt(it.payload != "vec-a")
+
+    db.remove(id)
+    let remaining = db.retrieve(@[0.0'f32, 1.0'f32],
+                                ring = "v", budget = 2)
+    let afterRemove = db.retrieveStats(@[0.0'f32, 1.0'f32],
+                                       ring = "v", budget = 2)
+    check afterRemove.totalVectors == 2
+    check afterRemove.scanned == 1
+    check remaining.allIt(it.payload != "vec-a-updated")
     db.close()
 
   test "PlannerBackend は deterministic heuristic を明示選択できる":

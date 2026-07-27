@@ -68,8 +68,7 @@ corpus size toward semantic working-set size.
 - GitHub release draft: [docs/github-release-v0.9.0.md](docs/github-release-v0.9.0.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
 - Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
-- FAISS versioning policy: [docs/faiss-versioning.md](docs/faiss-versioning.md)
-- Vector backend selection: [docs/vector-backends.md](docs/vector-backends.md)
+- Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)
 - Protocol compatibility: [docs/protocol-compatibility.md](docs/protocol-compatibility.md)
 - TLS transport: [docs/tls-transport.md](docs/tls-transport.md)
 - Query safety: [docs/query-safety.md](docs/query-safety.md)
@@ -165,20 +164,8 @@ When `--data=DIR` is omitted, the CLI uses `KOUTEN_DATA` if set, otherwise
 `./data`. Use `--peers=host:port,...` instead when talking to a running
 `koutend` cluster.
 
-Optional FAISS vector backend:
-
-```sh
-scripts/fetch_faiss.sh
-scripts/setup_faiss_toolchain.sh   # only needed when system CMake is too old
-scripts/build_faiss_bridge.sh
-kouten doctor
-```
-
-The built-in exact vector backend works without FAISS. FAISS is recommended for
-production-style broad vector reads when the bridge is available. See
-[docs/driver-installation.md](docs/driver-installation.md) for language drivers
-and [docs/faiss-versioning.md](docs/faiss-versioning.md) for FAISS version
-control.
+Vector retrieval is dependency-free. KoutenDB first narrows the working set by
+ring and then performs exact cosine ranking over that bounded candidate set.
 
 ## Quickstart: Embedded Mode
 
@@ -610,27 +597,17 @@ bin/demo
 `scripts/build_capi.sh` is the canonical C ABI build and includes `-d:ssl`.
 Drivers that call `kouten_connect_auth_tls` should use this library.
 
-### FAISS Vector Backend
+### Exact Vector Retrieval
 
 ```sh
-scripts/fetch_faiss.sh
-scripts/setup_faiss_toolchain.sh
-scripts/build_faiss_bridge.sh
-kouten doctor
 examples/vector_backend_bench.sh
 ```
 
-By default this fetches the configured FAISS tag, currently `v1.14.3`, and
-records the actual commit in `third_party/faiss.version`. It does not enforce an
-exact commit unless `KOUTEN_FAISS_COMMIT` is set. See
-[docs/faiss-versioning.md](docs/faiss-versioning.md) for tag overrides, exact
-commit pinning, upgrades, downgrades, and security update handling.
-
-FAISS is the recommended production vector backend when the bridge is available.
-KoutenDB's built-in exact backend remains useful as a dependency-free fallback
-for tests, small embedded deployments, and environments where FAISS cannot be
-installed. See [docs/vector-backends.md](docs/vector-backends.md) for the backend
-selection rule and local smoke benchmark.
+The benchmark reports broad and ring-scoped exact retrieval separately.
+KoutenDB does not maintain a second global vector index: ring routing is the
+primary mechanism for reducing vector work. See
+[docs/vector-backends.md](docs/vector-backends.md) for the execution model and
+local benchmark procedure.
 
 KoutenDB forces Nim ARC through `config.nims`. Avoiding reference cycles is a
 structural constraint of the codebase, not just a style preference.

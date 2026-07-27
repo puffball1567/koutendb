@@ -111,8 +111,9 @@ The slow tick should process bounded work:
 4. Update centroid, mass, coherence, and timestamps.
 5. Drop or merge weak clumps when policy limits are exceeded.
 
-The exact vector backend can be FAISS-backed in production, but the policy must
-also work with the exact backend for tests and small deployments.
+The dependency-free exact vector path is shared by production, tests, and
+embedded deployments. Halo maintenance must keep its candidate set bounded
+instead of relying on a broad external vector index.
 
 ## 7. Capture Decision
 

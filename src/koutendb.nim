@@ -22,11 +22,10 @@
 ## `koutendb.open(dataDir = "/var/lib/kouten")` / `koutend --data=DIR`
 
 import std/[algorithm, tables, hashes, json, times, strutils, os, net]
-import kouten/[core, store, select, wire, field, vector_backend, faiss_backend,
+import kouten/[core, store, select, wire, field, vector_backend,
               planner_backend, payload]
 
 export vector_backend
-export faiss_backend
 export planner_backend
 export payload
 export select
@@ -1450,22 +1449,6 @@ proc importJsonl*(db: KoutenDb, path: string, defaultRing = "imported",
   result.batches = batchCount
 
 proc clampTopRings*(topRings: int): int
-
-proc configureVectorBackend*(db: KoutenDb, kind: VectorBackendKind) =
-  ## 組み込みモードの vector backend を選ぶ。
-  ## vbExact は依存なしの全走査。vbFaiss は production 想定の dynamic backend。
-  doAssert db.mode == mEmbedded, "configureVectorBackend は組み込みモード専用"
-  case kind
-  of vbExact:
-    db.vectorBackend = newExactVectorBackend()
-    if not db.st.diskBacked:
-      for _, p in db.st.items:
-        db.vectorBackend.upsert p
-  of vbFaiss:
-    db.vectorBackend = newFaissVectorBackend()
-    if not db.st.diskBacked:
-      for _, p in db.st.items:
-        db.vectorBackend.upsert p
 
 proc packDiskBackedSegments*(db: KoutenDb): SegmentPackStats {.discardable.} =
   ## Build ring-local physical segment files for disk-backed embedded reads.
@@ -4131,7 +4114,7 @@ proc defaultRetrievalEnvelopeOptions*(db: KoutenDb, ring = ""): RetrievalEnvelop
   result.ring = ring
   result.backend =
     case db.mode
-    of mEmbedded: $db.vectorBackend.kind
+    of mEmbedded: "exact"
     of mCluster: "cluster"
   result.mode = "vector"
   result.sourceType = "document"

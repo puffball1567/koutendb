@@ -12,7 +12,7 @@
 ##   kouten doctor
 
 import std/[algorithm, base64, os, osproc, strutils, strformat, json, times, monotimes,
-            parseopt, net, dynlib, tempfiles, tables]
+            parseopt, net, tempfiles, tables]
 import nimsodium/hash
 import koutendb
 import kouten/[scale_in, wire]
@@ -409,49 +409,10 @@ proc paginationName(mode: KoutenPaginationMode): string =
   of rpOff: "off"
   of rpOn: "on"
 
-proc checkFile(path, label: string): bool =
-  result = fileExists(path)
-  if result:
-    echo "ok   ", label, ": ", path
-  else:
-    echo "miss ", label, ": ", path
-
-proc checkDir(path, label: string): bool =
-  result = dirExists(path)
-  if result:
-    echo "ok   ", label, ": ", path
-  else:
-    echo "miss ", label, ": ", path
-
 proc runDoctorSetup() =
   echo "KoutenDB setup doctor"
-  var ok = true
-  ok = checkDir("third_party/faiss", "FAISS source") and ok
-  ok = checkFile("third_party/faiss.version", "FAISS pinned version") and ok
-  ok = checkFile("lib/libkouten_faiss.so", "FAISS bridge") and ok
-
-  if fileExists("lib/libkouten_faiss.so"):
-    let lib = loadLib("lib/libkouten_faiss.so")
-    if lib == nil:
-      echo "fail FAISS bridge load: lib/libkouten_faiss.so"
-      echo "     Check that FAISS shared libraries are discoverable."
-      ok = false
-    else:
-      unloadLib(lib)
-      echo "ok   FAISS bridge load: lib/libkouten_faiss.so"
-
-  if ok:
-    echo "status: ready"
-  else:
-    echo "status: setup incomplete"
-    echo ""
-    echo "Run:"
-    echo "  scripts/fetch_faiss.sh"
-    echo "  scripts/setup_faiss_toolchain.sh   # if system CMake is too old"
-    echo "  scripts/build_faiss_bridge.sh"
-    echo "  nim c -d:ssl -o:bin/kouten src/kouten.nim"
-    echo "  bin/kouten doctor"
-    quit(1)
+  echo "ok   vector retrieval: dependency-free ring-scoped exact search"
+  echo "status: ready"
 
 proc printOperationalReport(report: KoutenOperationalVerifyReport;
                             metricsFormat, jsonFormat: bool) =

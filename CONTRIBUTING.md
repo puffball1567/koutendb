@@ -16,7 +16,7 @@ Please focus on:
 - cloud deployment reports on AWS, GCP, Azure, or bare-metal environments;
 - failure and recovery test reports;
 - driver compatibility reports;
-- FAISS setup reports across Linux distributions and CPU architectures;
+- exact retrieval reports across ring sizes, vector dimensions, and CPU architectures;
 - WAL / backup / restore / compact verification reports;
 - reproducible bug reports with logs, commands, versions, and data shape;
 - documentation corrections for tested behavior.

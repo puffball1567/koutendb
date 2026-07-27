@@ -53,8 +53,7 @@ downstream AI/RAG or application logic.
 - [TLS Transport](tls-transport.md)
 - [Query Safety](query-safety.md)
 - [Payload Codecs](payload-codecs.md)
-- [Vector Backend Selection](vector-backends.md)
-- [FAISS Versioning Policy](faiss-versioning.md)
+- [Exact Vector Retrieval](vector-backends.md)
 
 ## Release
 
