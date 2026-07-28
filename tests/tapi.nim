@@ -1621,6 +1621,12 @@ suite "永続化":
       check report.items == 18
       check report.rings >= 2
       check report.locality.persistent
+      check report.locality.totalParticleRecords == 18
+      check report.locality.liveParticleRecords == 18
+      check report.locality.deadParticleRecords == 0
+      check report.locality.ringCount == 3
+      check report.locality.ringRuns == 3
+      check report.locality.localityScore == 1.0
       check report.segmentDirExists
       check report.checks.len >= 4
       check report.checks.anyIt(it.name == "open-replay-lock" and it.ok)
@@ -1642,6 +1648,21 @@ suite "永続化":
                                              maxSegmentFiles = 0)
       check not cappedSegments.ok
       check cappedSegments.checks.anyIt(it.name == "segment-files-limit" and not it.ok)
+    finally:
+      removeDir(root)
+
+  test "operationalVerify rejects a corrupted versioned WAL":
+    let root = createTempDir("koutendb", "operational-verify-corrupt")
+    let dir = root / "db"
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      discard db.put("checksum", ring = "ops/corrupt")
+      db.close()
+
+      let walPath = dir / "kouten.log"
+      writeFile(walPath, readFile(walPath).replace("checksum", "checksux"))
+      expect IOError:
+        discard operationalVerify(dir, diskBacked = true)
     finally:
       removeDir(root)
 
