@@ -52,7 +52,7 @@ exception types.
 
 | Type | Important fields | Meaning |
 |---|---|---|
-| `RetrieveStats` | `totalVectors`, `scanned`, `skippedVectors`, `returned`, `ringsTouched`, `payloadBytes`, `estimatedTokens`, `candidateReduction` | Explains how much work retrieval avoided or performed. |
+| `RetrieveStats` | `totalVectors`, `scanned`, `skippedVectors`, `returned`, `ringsTouched`, `fanoutNodes`, `payloadBytes`, `estimatedTokens`, `candidateReduction` | Explains how much work retrieval avoided or performed. In cluster mode, a ring-scoped request contacts only each selected ring's physical owner; `totalVectors` is the vector population of the contacted owner nodes, counted once per node. |
 | `RetrievalPlan` | `strategy`, `baseRing`, `amount`, `scope`, `depth`, `budget`, `focus`, `effectiveTopRings`, `selectedRings`, `prunedRings`, `reason` | Human-readable execution plan for retrieval tuning. |
 | `RingMetric` | `ringKey`, `count`, `coherence` | Low-level ring population and coherence metric. |
 | `KoutenRingSummary` | `ringKey`, `count`, `centroid`, `score`, `coherence`, `massG` | Ring summary used by atlas/planner-style workflows. |

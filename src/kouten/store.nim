@@ -502,6 +502,8 @@ proc applyOp(s: Store, op: TxOp) =
     if s.diskBacked:
       if op.walOffset >= 0:
         s.itemOffsets[k] = op.walOffset
+        if op.segmentOffset < 0:
+          s.itemSegmentOffsets.del k
       if op.segmentOffset >= 0:
         s.itemSegmentOffsets[k] = op.segmentOffset
       s.items.del k
@@ -810,7 +812,6 @@ proc readParticleRecordAtCurrent(fs: Stream, line: string): Particle =
 
 iterator particlesByRing*(s: Store, ring: uint64): Particle =
   if s.diskBacked:
-    var yieldedFromSegment = false
     var walStream: FileStream = nil
     if s.segmentDir.len > 0 and fileExists(s.segmentPath(ring)):
       let segmentStream = s.openSegmentReadStream(ring)
@@ -821,20 +822,18 @@ iterator particlesByRing*(s: Store, ring: uint64): Particle =
           let p = segmentStream.readParticleRecordAtCurrent(line)
           let k = key(p.parent, p.seq)
           if k in s.itemSegmentOffsets and s.itemSegmentOffsets[k] == recordStart:
-            yieldedFromSegment = true
             yield p
       finally:
         segmentStream.close()
-    if not yieldedFromSegment:
-      try:
-        for k in s.itemsByRing.getOrDefault(ring, @[]):
-          if k in s.itemOffsets:
-            if walStream == nil:
-              walStream = s.openWalReadStream()
-            yield walStream.readParticleAtStream(s.itemOffsets[k])
-      finally:
-        if walStream != nil:
-          walStream.close()
+    try:
+      for k in s.itemsByRing.getOrDefault(ring, @[]):
+        if k notin s.itemSegmentOffsets and k in s.itemOffsets:
+          if walStream == nil:
+            walStream = s.openWalReadStream()
+          yield walStream.readParticleAtStream(s.itemOffsets[k])
+    finally:
+      if walStream != nil:
+        walStream.close()
   else:
     for k in s.itemsByRing.getOrDefault(ring, @[]):
       if k in s.items:

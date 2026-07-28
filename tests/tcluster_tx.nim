@@ -14,7 +14,7 @@ suite "cluster transaction":
     check db.get(id) == "cluster tx value"
     db.close()
 
-  test "cluster retrieve は全ノード候補をマージする":
+  test "ring-scoped cluster retrieve は owner の候補だけを評価する":
     let peers = getEnv("KOUTEN_TEST_PEERS", "127.0.0.1:7411,127.0.0.1:7412,127.0.0.1:7413")
     var db = connect(peers)
     discard db.put("ret-ai-1", ring = "ret-ai", vec = @[0.0'f32, 1.0'f32])
@@ -32,6 +32,7 @@ suite "cluster transaction":
     let st = db.retrieveStats(@[0.0'f32, 1.0'f32], ring = "ret-ai", budget = 2)
     check st.scanned >= 2
     check st.returned == 2
+    check st.fanoutNodes == 1
 
     let rings = db.ringSummaries(@[0.0'f32, 1.0'f32])
     check rings.len >= 2

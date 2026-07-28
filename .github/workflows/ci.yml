@@ -140,6 +140,9 @@ jobs:
       - name: Run cluster wire driver smoke
         run: scripts/cluster_wire_driver_smoke.sh
 
+      - name: Run cluster retrieval routing smoke
+        run: scripts/cluster_retrieve_routing_smoke.sh
+
       - name: Run cluster wire fuzz smoke
         run: scripts/cluster_wire_fuzz_smoke.sh
 

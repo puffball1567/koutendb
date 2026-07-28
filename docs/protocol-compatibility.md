@@ -51,6 +51,16 @@ density), which the destination validates immediately before applying the
 mutation. Clients follow at most two explicit owner redirects and never perform
 all-node fan-out.
 
+Ring-scoped `RETRIEVE` follows the same stable placement table and is sent only
+to the selected ring's physical owner. On the server, it walks the durable
+ring index rather than filtering a whole-node record scan after the fact.
+Global retrieval intentionally remains an all-node operation. The additive
+`METRICS` counters `retrievePhysicalVisited` and `retrieveCandidatesScored`
+make the difference observable without changing the successful `RHIT` frame.
+Draining nodes reject retrieval after consuming the declared vector body, so
+topology migration cannot turn an incomplete owner copy into a silent empty
+result or corrupt the next frame on a persistent connection.
+
 `ACTIVATION` is an admin-only local readiness report:
 
 ```text

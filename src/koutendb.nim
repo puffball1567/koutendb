@@ -4014,50 +4014,37 @@ proc retrieveWithStats*(db: KoutenDb, queryVec: seq[float32], ring: string = "",
     result.stats.fillReturnedPayloadStats(result.hits)
   of mCluster:
     var countedNodes = initTable[int, bool]()
+    var contactedNodes = initTable[int, bool]()
+    template mergeRetrieve(node: int, rr: RetrieveWireResult) =
+      contactedNodes[node] = true
+      if node notin countedNodes:
+        result.stats.totalVectors += rr.totalVectors
+        countedNodes[node] = true
+      result.stats.scanned += rr.scanned
+      result.stats.ringsTouched += rr.ringsTouched
+      for h in rr.hits:
+        result.hits.add KoutenHit(
+          id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
+                       seq: h.seq, tWrite: h.tWrite),
+          score: h.score, payload: h.payload, codec: h.codec)
     if ringKeys.len > 0:
       for ringKey in ringKeys:
-        for node in 0 ..< db.client.peers.len:
-          let rr = db.client.retrieveReq(node, true, ringKey, q, budget)
-          inc result.stats.fanoutNodes
-          if node notin countedNodes:
-            result.stats.totalVectors += rr.totalVectors
-            countedNodes[node] = true
-          result.stats.scanned += rr.scanned
-          result.stats.ringsTouched += rr.ringsTouched
-          for h in rr.hits:
-            result.hits.add KoutenHit(id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
-                                                 seq: h.seq, tWrite: h.tWrite),
-                                     score: h.score, payload: h.payload, codec: h.codec)
+        let node = int(db.tbl.placementOwner(ringKey))
+        let rr = db.client.retrieveReq(node, true, ringKey, q, budget)
+        mergeRetrieve(node, rr)
     elif result.plan.effectiveTopRings <= 0:
       for node in 0 ..< db.client.peers.len:
         let rr = db.client.retrieveReq(node, ring.len > 0, ringFilter, q, budget)
-        inc result.stats.fanoutNodes
-        if node notin countedNodes:
-          result.stats.totalVectors += rr.totalVectors
-          countedNodes[node] = true
-        result.stats.scanned += rr.scanned
-        result.stats.ringsTouched += rr.ringsTouched
-        for h in rr.hits:
-          result.hits.add KoutenHit(id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
-                                               seq: h.seq, tWrite: h.tWrite),
-                                   score: h.score, payload: h.payload, codec: h.codec)
+        mergeRetrieve(node, rr)
     else:
       var rings = db.ringSummaries(q)
       if rings.len > result.plan.effectiveTopRings:
         rings.setLen(result.plan.effectiveTopRings)
       for rs in rings:
-        for node in 0 ..< db.client.peers.len:
-          let rr = db.client.retrieveReq(node, true, rs.ringKey, q, budget)
-          inc result.stats.fanoutNodes
-          if node notin countedNodes:
-            result.stats.totalVectors += rr.totalVectors
-            countedNodes[node] = true
-          result.stats.scanned += rr.scanned
-          result.stats.ringsTouched += rr.ringsTouched
-          for h in rr.hits:
-            result.hits.add KoutenHit(id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
-                                                 seq: h.seq, tWrite: h.tWrite),
-                                     score: h.score, payload: h.payload, codec: h.codec)
+        let node = int(db.tbl.placementOwner(rs.ringKey))
+        let rr = db.client.retrieveReq(node, true, rs.ringKey, q, budget)
+        mergeRetrieve(node, rr)
+    result.stats.fanoutNodes = contactedNodes.len
   result.hits.sort(proc(a, b: KoutenHit): int = cmp(b.score, a.score))
   if result.hits.len > budget:
     result.hits.setLen(budget)
@@ -4070,7 +4057,7 @@ proc retrieveWithStats*(db: KoutenDb, queryVec: seq[float32], ring: string = "",
 proc retrieve*(db: KoutenDb, queryVec: seq[float32], ring: string = "",
                budget = 8, topRings = 0, focus = 0): seq[KoutenHit] =
   ## 埋め込み近傍を取得する。ring を指定すると、その環だけを探索する。
-  ## cluster v1 は全ノード fan-out でローカル候補を集めてマージする。
+  ## cluster は ring 所有ノードへ直接送り、global 探索だけ全ノードを使う。
   db.retrieveWithStats(queryVec, ring = ring, budget = budget,
                        topRings = topRings, focus = focus).hits
 
