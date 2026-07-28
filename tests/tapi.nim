@@ -1517,17 +1517,32 @@ suite "永続化":
       check rr.hits.len == 2
       check rr.stats.totalVectors == 3
       check rr.stats.scanned == 2
+
+      let postPack = db.put(%*{"title": "post-pack"}, ring = "docs/a",
+                            vec = @[0.7'f32, 0.3'f32])
+      db.update(a, %*{"title": "alpha-updated", "kind": "doc"},
+                vec = @[1.0'f32, 0.0'f32])
+      let afterPackWrite = db.retrieveWithStats(
+        @[1.0'f32, 0.0'f32], ring = "docs/a", budget = 3)
+      check afterPackWrite.hits.len == 3
+      check afterPackWrite.stats.scanned == 3
+      check afterPackWrite.hits.anyIt(it.payload.contains("alpha-updated"))
+      check afterPackWrite.hits.anyIt(it.payload.contains("post-pack"))
+      check db.get(a).contains("alpha-updated")
+      check db.get(postPack).contains("post-pack")
       db.close()
 
       var reopened = open(dataDir = dir, diskBacked = true)
-      check reopened.get(a).contains("alpha")
+      check reopened.get(a).contains("alpha-updated")
       check dirExists(dir / "segments")
       check reopened.getEncoded(b).codec == pcNif
-      check reopened.countByRing("docs/a") == 2
+      check reopened.countByRing("docs/a") == 3
       let reopenedRead = reopened.retrieveWithStats(@[1.0'f32, 0.0'f32],
-                                                    ring = "docs/a", budget = 2)
-      check reopenedRead.hits.len == 2
-      check reopenedRead.stats.scanned == 2
+                                                    ring = "docs/a", budget = 3)
+      check reopenedRead.hits.len == 3
+      check reopenedRead.stats.scanned == 3
+      check reopenedRead.hits.anyIt(it.payload.contains("alpha-updated"))
+      check reopenedRead.hits.anyIt(it.payload.contains("post-pack"))
 
       writeFile(importPath,
         "{\"ring\":\"imports/a\",\"payload\":{\"title\":\"one\"},\"vec\":[1,0]}\n" &

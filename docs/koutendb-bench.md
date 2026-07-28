@@ -425,3 +425,39 @@ at 1.000. Wrong-ring retrieve scans the same small number of vectors but recall
 drops to 0.000. This is an important guardrail: narrowing the search scope is
 useful only when the ring, atlas, and import rule are correct enough to preserve
 quality.
+
+---
+
+# Cluster Physical Locality Benchmark
+
+- Date: 2026-07-28
+- Environment: AMD Ryzen 5 5600H / Linux x86_64 / Nim 2.2.10
+  `-d:release`
+- Topology: two local TCP nodes, buffered persistence enabled, one client
+- Backend: dependency-free exact vector scoring
+- Reproduction: `examples/cluster_retrieve_locality_bench.sh`
+- 100,000 unrelated records:
+  `KOUTEN_BENCH_UNRELATED=100000 KOUTEN_BENCH_QUERIES=30
+  examples/cluster_retrieve_locality_bench.sh`
+- Layout: the target and unrelated rings are deliberately assigned to the same
+  physical owner, preventing node placement alone from hiding a local full scan
+- Semantic check: global and ring-scoped queries returned the same top payloads
+
+| Target vectors | Unrelated vectors | Queries | Path | avg us/query | physical visits/query | scored/query | fan-out nodes |
+|---:|---:|---:|---|---:|---:|---:|---:|
+| 100 | 10,000 | 50 | ring-scoped | 140.0 | 100 | 100 | 1 |
+| 100 | 10,000 | 50 | global | 1,324.2 | 10,100 | 10,100 | 2 |
+| 100 | 100,000 | 30 | ring-scoped | 120.8 | 100 | 100 | 1 |
+| 100 | 100,000 | 30 | global | 19,758.1 | 100,100 | 100,100 | 2 |
+
+The second run increases unrelated data by 10x while keeping the selected ring
+fixed at 100 vectors. Ring-scoped physical work remains exactly 100 visits and
+100 scores per query; measured latency remains in the same local range despite
+normal short-run timing variation. Global
+work grows from 10,100 to 100,100 visits and latency grows accordingly.
+
+This is a local synthetic measurement, not a universal latency claim. Its
+primary purpose is to verify the implementation invariant that unrelated-ring
+growth does not re-enter the normal ring-scoped physical path. Override
+`KOUTEN_BENCH_UNRELATED`, `KOUTEN_BENCH_TARGET`, and
+`KOUTEN_BENCH_QUERIES` to test other sizes.

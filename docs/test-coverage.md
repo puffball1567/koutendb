@@ -43,6 +43,7 @@ scripts/cluster_authz_smoke.sh
 scripts/cluster_rbac_smoke.sh
 scripts/cluster_wire_driver_smoke.sh
 scripts/cluster_wire_fuzz_smoke.sh
+scripts/cluster_retrieve_routing_smoke.sh
 scripts/handoff_reclamation_smoke.sh
 scripts/placement_migration_smoke.sh
 scripts/scale_in_migration_smoke.sh
@@ -56,6 +57,14 @@ scripts/compose_config_smoke.sh
 `scripts/test_all_smoke.sh` runs the same sequence and skips driver
 compatibility by default. Set `KOUTEN_TEST_DRIVERS=1` when the local driver
 toolchains are available.
+
+`cluster_retrieve_routing_smoke.sh` checks both logical results and physical
+work. Its persistent two-node matrix verifies owner-only routing, ring-indexed
+record visits, both local-owner and remote-owner transaction apply, rollback,
+update, delete, empty-ring behavior, global fan-out, drain/resume, restart, and
+fail-closed behavior when the calculated owner is unavailable. The disk-backed
+API suite separately covers writes and updates made after segment packing and
+after reopen.
 
 ## Remaining Depth Targets
 

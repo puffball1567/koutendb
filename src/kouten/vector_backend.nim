@@ -85,7 +85,18 @@ proc clear*(b: VectorBackend) =
   b.indexed.clear()
   b.vectorCount = 0
 
-proc addTopCandidate(hits: var seq[VectorCandidate], cand: VectorCandidate, budget: int) =
+proc exactCandidate*(p: Particle, queryVec: seq[float32]): VectorCandidate =
+  VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
+                  score: 1.0 - cosineDistance(queryVec, p.vec),
+                  payload: p.payload, codec: p.codec)
+
+proc exactCandidate(p: VectorEntry, queryVec: seq[float32]): VectorCandidate =
+  VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
+                  score: 1.0 - cosineDistance(queryVec, p.vec),
+                  payload: p.payload, codec: p.codec)
+
+proc addTopCandidate*(hits: var seq[VectorCandidate], cand: VectorCandidate,
+                      budget: int) =
   if budget <= 0:
     return
   if hits.len < budget:
@@ -111,22 +122,14 @@ proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
           continue
         inc result.scanned
         rings[p.parent] = true
-        let score = 1.0 - cosineDistance(queryVec, p.vec)
-        result.hits.addTopCandidate(
-          VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                          score: score, payload: p.payload, codec: p.codec),
-          budget)
+        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     else:
       for p in st.allParticles():
         if p.vec.len == 0:
           continue
         inc result.scanned
         rings[p.parent] = true
-        let score = 1.0 - cosineDistance(queryVec, p.vec)
-        result.hits.addTopCandidate(
-          VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                          score: score, payload: p.payload, codec: p.codec),
-          budget)
+        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -140,11 +143,7 @@ proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
     for p in b.byRing.getOrDefault(ringKey, @[]):
       inc result.scanned
       rings[p.parent] = true
-      let score = 1.0 - cosineDistance(queryVec, p.vec)
-      result.hits.addTopCandidate(
-        VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                        score: score, payload: p.payload, codec: p.codec),
-        budget)
+      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -159,11 +158,7 @@ proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
     for p in entries:
       inc result.scanned
       rings[ring] = true
-      let score = 1.0 - cosineDistance(queryVec, p.vec)
-      result.hits.addTopCandidate(
-        VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                        score: score, payload: p.payload, codec: p.codec),
-        budget)
+      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
   result.ringsTouched = rings.len
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -192,11 +187,7 @@ proc searchMany*(b: VectorBackend, st: Store, queryVec: seq[float32],
           continue
         inc result.scanned
         rings[p.parent] = true
-        let score = 1.0 - cosineDistance(queryVec, p.vec)
-        result.hits.addTopCandidate(
-          VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                          score: score, payload: p.payload, codec: p.codec),
-          budget)
+        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -219,11 +210,7 @@ proc searchMany*(b: VectorBackend, st: Store, queryVec: seq[float32],
     for p in b.byRing.getOrDefault(ring, @[]):
       inc result.scanned
       rings[p.parent] = true
-      let score = 1.0 - cosineDistance(queryVec, p.vec)
-      result.hits.addTopCandidate(
-        VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                        score: score, payload: p.payload, codec: p.codec),
-        budget)
+      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
   result.ringsTouched = rings.len
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))

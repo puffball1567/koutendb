@@ -34,7 +34,7 @@ product decision.
 | R12 | No data-directory lock allowed two processes to corrupt or merge WAL transactions. | Done | `openStore` takes an exclusive data-directory lock on POSIX and fails cleanly if another process owns it. Covered by child-process lock test. |
 | R13 | Bare `D` replay bypassed `applyOp` and left `itemsByRing` inconsistent. | Done | Bare delete replay now routes through `applyOp`. Covered by delete replay consistency test. |
 | R14 | `seqs` and `maxTWrite` regressed across compaction. | Done | Snapshot records now persist `S <ringKey> <nextSeq>` and `M <maxTWrite>`. Covered by compact replay tests. |
-| R15 | Server `RETRIEVE` copied all candidates before applying budget. | Done | Server retrieve keeps only the current top candidates up to budget while scanning. Further scan caps/query deadlines remain separate guardrail work. |
+| R15 | Server `RETRIEVE` copied all candidates before applying budget. | Done | Server retrieve keeps only the current top candidates up to budget. Ring-scoped cluster retrieval now routes to the physical owner and walks `itemsByRing`; physical visits and scored candidates are separately observable. Scan caps/query deadlines remain separate guardrail work. |
 | R16 | Selection and JSON parsing had unbounded recursion risk. | Done | Selection parsing has `MaxSelectionDepth`; `UAPPLY` validates JSON depth before parsing. Covered by selection depth and wire fuzz tests. |
 
 ## Additional Audit Items

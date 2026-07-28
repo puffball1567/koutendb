@@ -14,7 +14,7 @@ import std/[algorithm, math, selectors, net, os, strutils, times, monotimes,
             json, tables, parseopt, hashes, atomics, heapqueue]
 when not defined(windows):
   import std/posix
-import kouten/[core, store, select, wire, field, auth]
+import kouten/[core, store, select, wire, field, auth, vector_backend]
 
 const
   Grace = 1.0       # [s] 転送 ACK 後も尾流コピーを残す猶予
@@ -194,6 +194,11 @@ type
     universeApplyForwarded: uint64
     universeApplyLastOk: float
     universeApplyLastError: float
+    retrieveRequests: uint64
+    retrieveScopedRequests: uint64
+    retrieveGlobalRequests: uint64
+    retrievePhysicalVisited: uint64
+    retrieveCandidatesScored: uint64
     preparedSelections: Table[string, Selection]
     preparedSelectionLru: seq[string]
     preparedSelectionBytes: int
@@ -275,14 +280,6 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
   finally:
     client.close()
 
-type LocalHit = object
-  parent: uint64
-  seq: uint32
-  tWrite: float
-  score: float
-  payload: string
-  codec: PayloadCodec
-
 proc stableErrorCode(e: ref Exception): string =
   ## Remote clients get stable protocol categories, not internal exception text.
   if e of ValueError or e of JsonParsingError or e of KeyError:
@@ -325,19 +322,6 @@ proc readSecretFile(path, label: string): string =
   result = readFile(path).strip()
   if result.len == 0:
     raise newException(ValueError, label & " file is empty")
-
-proc addTopHit(hits: var seq[LocalHit], hit: LocalHit, budget: int) =
-  if budget <= 0:
-    return
-  if hits.len < budget:
-    hits.add hit
-    return
-  var worst = 0
-  for i in 1 ..< hits.len:
-    if hits[i].score < hits[worst].score:
-      worst = i
-  if hit.score > hits[worst].score:
-    hits[worst] = hit
 
 proc compiledSelection(sv: Server, source: string): Selection =
   if source in sv.preparedSelections:
@@ -1156,6 +1140,13 @@ proc slowTick(sv: Server) =
   sv.fs.clusterTick(sv.st)
   discard sv.fs.captureTick(sv.st, epochTime())
 
+proc visibleVectorCount(sv: Server, sock: Socket): int =
+  if not sv.authzEnabled:
+    return sv.st.vectorCount
+  for ring, count in sv.st.vectorCountByRing:
+    if sv.ringKeyAllowed(sock, ring):
+      result += count
+
 proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
   requireParts(parts, "RETRIEVE", 5)
   let hasRing = parts[1] == "1"
@@ -1171,18 +1162,25 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
     raise newException(ValueError,
       "RETRIEVE budget exceeds max " & $MaxRetrieveBudget)
 
-  var hits: seq[LocalHit] = @[]
+  var hits: seq[VectorCandidate] = @[]
   var totalVectors = 0
   var scanned = 0
+  var physicalVisited = 0
+  defer:
+    sv.retrievePhysicalVisited += uint64(physicalVisited)
+    sv.retrieveCandidatesScored += uint64(scanned)
   var rings = initTable[uint64, bool]()
+  inc sv.retrieveRequests
+  if hasRing:
+    inc sv.retrieveScopedRequests
+  else:
+    inc sv.retrieveGlobalRequests
   if q.len > 0 and budget > 0:
-    for _, p in sv.st.items:
+    template scoreParticle(p: Particle) =
+      inc physicalVisited
       if p.vec.len == 0:
         continue
-      inc totalVectors
       if not sv.ringKeyAllowed(sock, p.parent):
-        continue
-      if hasRing and p.parent != ringKey:
         continue
       inc scanned
       if scanned > MaxRetrieveScan:
@@ -1195,12 +1193,15 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
           "RETRIEVE scan exceeds max " & $MaxRetrieveScan &
           "; use a ring-scoped query or narrower retrieval plan")
       rings[p.parent] = true
-      hits.addTopHit(LocalHit(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                              score: 1.0 - cosineDistance(q, p.vec),
-                              payload: p.payload, codec: p.codec),
-                     budget)
-    hits.sort(proc(a, b: LocalHit): int = cmp(b.score, a.score))
-
+      hits.addTopCandidate(p.exactCandidate(q), budget)
+    totalVectors = sv.visibleVectorCount(sock)
+    if hasRing:
+      for p in sv.st.particlesByRing(ringKey):
+        scoreParticle(p)
+    else:
+      for p in sv.st.allParticles():
+        scoreParticle(p)
+    hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
   var payloadBytes = 0
   for h in hits:
     payloadBytes += h.payload.len
@@ -1210,6 +1211,32 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
     sock.sendFrame("HIT " & $h.parent & " " & $h.seq & " " & $h.tWrite & " " &
                    $h.score & " " & $h.payload.len & sv.codecSuffix(sock, h.codec),
                    h.payload)
+
+proc applyClusterTxOp(sv: Server, op: ClusterTxOp,
+                      observedAt: float): bool =
+  if op.kind == ctxDelete:
+    var tombstone = sv.prepareTombstoneForNode(Tombstone(
+      parent: op.parent, seq: op.seq, period: op.period, head: op.head,
+      tWrite: op.tWrite, version: op.version, lastHere: observedAt), observedAt)
+    result = sv.st.applyTombstone(tombstone)
+    if result:
+      sv.queueTombstonePropagation((op.parent, op.seq))
+    return
+
+  var p = Particle(parent: op.parent, seq: op.seq, period: op.period,
+                   head: op.head, tWrite: op.tWrite, payload: op.payload,
+                   codec: op.codec, vec: op.vec, version: op.version,
+                   lastHere: observedAt)
+  if p.parent notin sv.st.ringMeta:
+    sv.st.putRingMeta(p.parent, p.period, p.head)
+  if p.seq >= sv.st.seqs.getOrDefault(p.parent, 0'u32):
+    sv.st.seqs[p.parent] = p.seq + 1
+  if sv.st.contains(p.parent, p.seq) and p.vec.len == 0:
+    p.vec = sv.st.getParticle(p.parent, p.seq).vec
+  result = sv.st.upsert(p, origin = uint32(sv.myId + 1),
+                        preserveVersion = true)
+  if result and p.parent != HaloKey:
+    sv.fs.observeRingPut(p.parent, p.vec)
 
 proc applyClusterTxTick(sv: Server) =
   ## node0 が landing zone。commit intent は全 op の apply ACK まで残す。
@@ -1223,13 +1250,19 @@ proc applyClusterTxTick(sv: Server) =
     for op in intent.ops:
       let node = int(sv.tbl.placementOwner(op.parent))
       try:
-        sv.peerLink.applyTxReq(node, txid,
-          TxWireOp(delete: op.kind == ctxDelete,
-                   parent: op.parent, seq: op.seq, period: op.period,
-                   head: op.head, tWrite: op.tWrite,
-                   payload: op.payload, codec: op.codec, vec: op.vec,
-                   version: op.version),
-          timeoutMs = 500)
+        if node == sv.myId:
+          if sv.draining:
+            allApplied = false
+            continue
+          discard sv.applyClusterTxOp(op, epochTime())
+        else:
+          sv.peerLink.applyTxReq(node, txid,
+            TxWireOp(delete: op.kind == ctxDelete,
+                     parent: op.parent, seq: op.seq, period: op.period,
+                     head: op.head, tWrite: op.tWrite,
+                     payload: op.payload, codec: op.codec, vec: op.vec,
+                     version: op.version),
+            timeoutMs = 500)
       except CatchableError:
         allApplied = false
     if allApplied:
@@ -1720,36 +1753,19 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       sock.drainBytes(bodyBytes)
       sock.sendFrame("OK")
       return true
-    var p = Particle(parent: parent, seq: seq,
-                     period: parseFloat(parts[data + 2]),
-                     head: parseFloat(parts[data + 3]),
-                     tWrite: parseFloat(parts[data + 4]),
-                     codec: codec,
-                     lastHere: now)
-    p.version = parseMutationVersion(parts, data + 8, p.tWrite)
-    p.payload = sock.readExact(payloadLen)
-    p.vec =
+    var op = ClusterTxOp(
+      kind: if isDelete: ctxDelete else: ctxPut,
+      parent: parent, seq: seq,
+      period: parseFloat(parts[data + 2]),
+      head: parseFloat(parts[data + 3]),
+      tWrite: parseFloat(parts[data + 4]),
+      codec: codec)
+    op.version = parseMutationVersion(parts, data + 8, op.tWrite)
+    op.payload = sock.readExact(payloadLen)
+    op.vec =
       if vecDim == 0: @[]
       else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
-    if isDelete:
-      var tombstone = sv.prepareTombstoneForNode(Tombstone(
-        parent: parent, seq: seq, period: p.period, head: p.head,
-        tWrite: p.tWrite, version: p.version, lastHere: now), now)
-      let applied = sv.st.applyTombstone(tombstone)
-      if applied:
-        sv.queueTombstonePropagation((parent, seq))
-      sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
-      return true
-    if p.parent notin sv.st.ringMeta:
-      sv.st.putRingMeta(p.parent, p.period, p.head)
-    if p.seq >= sv.st.seqs.getOrDefault(p.parent, 0'u32):
-      sv.st.seqs[p.parent] = p.seq + 1
-    if sv.st.contains(p.parent, p.seq) and p.vec.len == 0:
-      p.vec = sv.st.items[(p.parent, p.seq)].vec
-    let applied = sv.st.upsert(p, origin = uint32(sv.myId + 1),
-                               preserveVersion = true)
-    if applied and p.parent != HaloKey:
-      sv.fs.observeRingPut(p.parent, p.vec)
+    let applied = sv.applyClusterTxOp(op, now)
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "TXGETID", "TXQRYID":
     doAssert sv.myId == 0, "TXGETID/TXQRYID は node0 の landing zone で処理する"
@@ -1794,12 +1810,21 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     sock.sendFrame("MISS")
   of "RETRIEVE":
     requireParts(parts, "RETRIEVE", 5)
+    let retrieveBodyBytes = checkedVecBytes(parseInt(parts[4]))
     if parts[1] == "1":
       let ringKey = parseBiggestUInt(parts[2]).uint64
       if not sv.ringKeyAllowed(sock, ringKey):
-        sock.drainBytes(checkedVecBytes(parseInt(parts[4])))
+        sock.drainBytes(retrieveBodyBytes)
         sv.denyRingKey(sock, ringKey)
         return true
+    if sv.draining:
+      sock.drainBytes(retrieveBodyBytes)
+      inc sv.errorResponses
+      sv.audit("retrieve-denied", ok = false, user = sv.currentUser(sock),
+               ringKey = (if parts[1] == "1": parts[2] else: ""),
+               message = "server is draining; retrieval is not authoritative")
+      sock.sendFrame("ERR draining")
+      return true
     sv.handleRetrieve(sock, parts)
   of "RINGS":
     var allowedCount = 0
@@ -2217,6 +2242,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                      $(int(sv.universeApplyLastOk)) & " " &
                    "universeApplyLastError " &
                      $(int(sv.universeApplyLastError)) & " " &
+                   "retrieveRequests " & $sv.retrieveRequests & " " &
+                   "retrieveScopedRequests " & $sv.retrieveScopedRequests & " " &
+                   "retrieveGlobalRequests " & $sv.retrieveGlobalRequests & " " &
+                   "retrievePhysicalVisited " & $sv.retrievePhysicalVisited & " " &
+                   "retrieveCandidatesScored " & $sv.retrieveCandidatesScored & " " &
                    "persistent " & $(if sv.st.isPersistent: 1 else: 0) & " " &
                    "durabilityStrong " &
                      $(if sv.st.durability == durStrong: 1 else: 0) & " " &
