@@ -1768,13 +1768,26 @@ proc snapshotStatsFromFile(path, source: string): StoreBackupStats =
   s.replay(path, repair = false)
   result = s.snapshotStats(path, source)
 
-proc isLiveParticle(s: Store, p: Particle): bool =
+proc sameParticleRevision(current, candidate: Particle): bool =
+  current.parent == candidate.parent and
+    current.seq == candidate.seq and
+    current.version == candidate.version and
+    abs(current.tWrite - candidate.tWrite) < 1e-9
+
+proc isLiveParticle(s: Store, p: Particle, walOffset: int64): bool =
   let k = key(p.parent, p.seq)
+  if s.diskBacked:
+    if k in s.itemOffsets:
+      # The offset is the exact current WAL record identity. Checking its HLC
+      # version also catches divergence without reopening every live payload.
+      return s.itemOffsets[k] == walOffset and
+        k in s.itemVersions and s.itemVersions[k] == p.version
+    if k notin s.itemSegmentOffsets:
+      return false
+    return s.getParticle(p.parent, p.seq).sameParticleRevision(p)
   if k notin s.items:
     return false
-  let live = s.items[k]
-  live.parent == p.parent and live.seq == p.seq and
-    abs(live.tWrite - p.tWrite) < 1e-9
+  s.items[k].sameParticleRevision(p)
 
 proc localityReport*(s: Store): StoreLocalityReport =
   ## Inspect the physical WAL particle order and report ring locality.
@@ -1805,7 +1818,10 @@ proc localityReport*(s: Store): StoreLocalityReport =
   var runCounts = initTable[uint64, int]()
   var rings = initTable[uint64, bool]()
 
-  while fs.readLine(line):
+  while true:
+    let recordStart = fs.getPosition()
+    if not fs.readLine(line):
+      break
     if line.len == 0:
       continue
     if line == WalMagicLine:
@@ -1825,7 +1841,7 @@ proc localityReport*(s: Store): StoreLocalityReport =
       of "P":
         inc result.totalParticleRecords
         let p = recordStream.readParticleRecord(parts, 1)
-        if s.isLiveParticle(p):
+        if s.isLiveParticle(p, recordStart):
           inc result.liveParticleRecords
           rings[p.parent] = true
           if not haveLast or p.parent != lastRing:
@@ -1843,7 +1859,7 @@ proc localityReport*(s: Store): StoreLocalityReport =
       of "XP":
         inc result.totalParticleRecords
         let p = recordStream.readParticleRecord(parts, 2)
-        if s.isLiveParticle(p):
+        if s.isLiveParticle(p, recordStart):
           inc result.liveParticleRecords
           rings[p.parent] = true
           if not haveLast or p.parent != lastRing:
@@ -1861,7 +1877,8 @@ proc localityReport*(s: Store): StoreLocalityReport =
       else:
         discard
     except CatchableError:
-      break
+      raise newException(IOError, "cannot inspect WAL locality near byte " &
+        $recordStart & ": " & getCurrentExceptionMsg())
   if haveLast and currentRun > 0:
     result.maxRunRecords = max(result.maxRunRecords, currentRun)
 
@@ -1872,8 +1889,9 @@ proc localityReport*(s: Store): StoreLocalityReport =
   result.avgRunRecords = if result.ringRuns == 0: 0.0
                          else: float(result.liveParticleRecords) / float(result.ringRuns)
   result.localityScore =
-    if result.ringRuns == 0: 1.0
-    else: float(max(1, result.ringCount)) / float(result.ringRuns)
+    if result.totalParticleRecords == 0: 1.0
+    elif result.liveParticleRecords == 0 or result.ringRuns == 0: 0.0
+    else: float(result.ringCount) / float(result.ringRuns)
 
 proc compact*(s: Store): StoreCompactStats =
   ## 生存レコードだけで WAL を再構築する。

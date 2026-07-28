@@ -1037,6 +1037,86 @@ suite "store persistence":
     st.close()
     removeDir(dir)
 
+  test "disk-backed locality report classifies current update delete and transaction records":
+    let dir = createTempDir("kouten-store", "disk-locality")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: 7'u64, seq: 0'u32, period: 60.0,
+                       head: 0.0, tWrite: 1.0, payload: "old")
+    st.upsert Particle(parent: 7'u64, seq: 0'u32, period: 60.0,
+                       head: 0.0, tWrite: 2.0, payload: "current")
+    st.upsert Particle(parent: 8'u64, seq: 0'u32, period: 60.0,
+                       head: 0.0, tWrite: 3.0, payload: "deleted")
+    st.remove(8'u64, 0'u32)
+
+    let tx = st.beginTxn()
+    tx.upsert Particle(parent: 9'u64, seq: 0'u32, period: 60.0,
+                       head: 0.0, tWrite: 4.0, payload: "transaction")
+    tx.commit()
+    for i in 0'u32 ..< 16'u32:
+      st.upsert Particle(parent: 10'u64, seq: i, period: 60.0,
+                         head: 0.0, tWrite: 10.0 + float(i),
+                         payload: "packed-" & $i)
+
+    check st.items.len == 0
+    check st.itemOffsets.len == 18
+    let before = st.localityReport()
+    check before.totalParticleRecords == 20
+    check before.liveParticleRecords == 18
+    check before.deadParticleRecords == 2
+    check before.ringCount == 3
+    check before.ringRuns == 3
+    check before.fragmentedRings == 0
+    check before.localityScore == 1.0
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.items.len == 0
+    check reopened.itemOffsets.len == 18
+    check reopened.itemSegmentOffsets.len == 16
+    check reopened.getParticle(7'u64, 0'u32).payload == "current"
+    check reopened.getParticle(9'u64, 0'u32).payload == "transaction"
+    let after = reopened.localityReport()
+    check after.totalParticleRecords == 20
+    check after.liveParticleRecords == 18
+    check after.deadParticleRecords == 2
+    check after.ringCount == 3
+    check after.ringRuns == 3
+    check after.fragmentedRings == 0
+    check after.localityScore == 1.0
+    reopened.close()
+    removeDir(dir)
+
+  test "locality report does not claim perfect locality when every record is dead":
+    let dir = createTempDir("kouten-store", "disk-locality-no-live")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: 11'u64, seq: 0'u32, period: 60.0,
+                       head: 0.0, tWrite: 1.0, payload: "deleted")
+    st.remove(11'u64, 0'u32)
+
+    let report = st.localityReport()
+    check report.totalParticleRecords == 1
+    check report.liveParticleRecords == 0
+    check report.deadParticleRecords == 1
+    check report.ringCount == 0
+    check report.ringRuns == 0
+    check report.localityScore == 0.0
+    st.close()
+    removeDir(dir)
+
+  test "locality report fails visibly when the open WAL becomes corrupted":
+    let dir = createTempDir("kouten-store", "locality-corrupt")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: 12'u64, seq: 0'u32, period: 60.0,
+                       head: 0.0, tWrite: 1.0, payload: "checksum")
+    st.sync()
+
+    let walPath = dir / "kouten.log"
+    writeFile(walPath, readFile(walPath).replace("checksum", "checksux"))
+    expect IOError:
+      discard st.localityReport()
+    st.close()
+    removeDir(dir)
+
   test "strong durability の compact 後も WAL は復元できる":
     let dir = createTempDir("kouten-store", "strong-compact")
     var st = openStore(dir, durability = durStrong)
