@@ -39,6 +39,13 @@ The script prints the work directory and writes:
 - `snapshot-final.txt`
 - `metrics-final.txt`
 - `verify-node0.json`, `verify-node1.json`, `verify-node2.json`
+- `run-config.txt` with the tested commit and workload settings
+- `bin/` with the exact server, CLI, and runner binaries used by the run
+- `completed.ok` after the final snapshot and every offline verify succeed
+
+The run uses only the binaries stored under its work directory. Rebuilding the
+repository during a long soak therefore cannot change the binaries used for
+the final snapshot or offline verification.
 
 ## 72-Hour Run
 
