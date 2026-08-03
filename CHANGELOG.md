@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.1 - 2026-08-04
+
+### Changed
+
+- Repositioned the README around KoutenDB's locality-first retrieval model,
+  verified RAG working-set/token reductions, bounded related-data reads, and
+  completed 72-hour persistent cluster evidence.
+- Moved the operational scope boundary behind the primary product explanation,
+  benchmarks, and installation path.
+- Bumped package metadata to `0.10.1`.
+
 ## v0.10.0 - 2026-08-03
 
 ### Added
