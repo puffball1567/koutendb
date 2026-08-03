@@ -23,6 +23,9 @@ docs/ops
 R 1 60.0 0.0
 P 1 0 60.0 0.0 1.0 5 0
 hello
+P 1 1 60.0 0.0 2.0 7 0
+deleted
+L 1 1 60.0 0.0 2.0 3000000 0 1
 LOG
 
 cat > "$TMP/universe.json" <<JSON
@@ -220,6 +223,7 @@ grep -q "recoveryMirrorHealthy 1" <<<"$plain_metrics"
 grep -q "recoveryMirrorEncrypted 0" <<<"$plain_metrics"
 grep -q "recoveryMirrorReadonly 0" <<<"$plain_metrics"
 grep -q "recoveryMirrorItems 1" <<<"$plain_metrics"
+grep -q "recoveryMirrorTombstones 1" <<<"$plain_metrics"
 grep -q "recoveryMirrorRings 1" <<<"$plain_metrics"
 grep -q "recoveryMirrorPriority 10" <<<"$plain_metrics"
 grep -q "recoveryMirrorSnapshotSeq 42" <<<"$plain_metrics"
@@ -228,6 +232,7 @@ grep -q '"galaxy": "recovery-smoke"' "$TMP/plain-a/kouten.recovery.json"
 grep -q '"location": "local"' "$TMP/plain-a/kouten.recovery.json"
 grep -q '"authRef": "shared-recovery"' "$TMP/plain-a/kouten.recovery.json"
 grep -q '"readonly": false' "$TMP/plain-a/kouten.recovery.json"
+grep -q '"tombstones": 1' "$TMP/plain-a/kouten.recovery.json"
 grep -q '"archive": "'"$TMP"'/plain-a"' "$TMP/plain-a/kouten.recovery.json"
 
 bin/koutencli recovery-verify --mirror="$TMP/plain-b" >/dev/null
@@ -301,6 +306,16 @@ fi
 bin/koutencli recovery-status \
   --universe-config="$TMP/universe.json" \
   --required-healthy=1 >/dev/null
+
+echo "[recovery-smoke] tombstone manifest mismatch fails closed"
+perl -0pi -e 's/"items": 2/"items": 1/; s/"tombstones": 1/"tombstones": 2/' \
+  "$TMP/plain-a/kouten.recovery.json"
+if bin/koutencli recovery-verify --mirror="$TMP/plain-a" >/dev/null 2>&1; then
+  echo "recovery-verify unexpectedly accepted mismatched tombstone count" >&2
+  exit 1
+fi
+perl -0pi -e 's/"tombstones": 2/"tombstones": 1/' \
+  "$TMP/plain-a/kouten.recovery.json"
 
 echo "[recovery-smoke] universe galaxy mismatch fails closed"
 if bin/koutencli recovery-status \

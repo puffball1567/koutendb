@@ -14,12 +14,11 @@ Release checklist: [release-checklist.md](./release-checklist.md)
 | ORM foundation API | Done | Foundation for `update`, JSON `patch`, `deleteById`, `listByRing`, `countByRing`; driver exposure is still pending |
 | Warp belt | PoC | WAL-backed delayed patch queue with minimal retry / ack / dead-letter state |
 | JSON document query | Done | GraphQL-style selection |
-| Vector retrieve | Done | FAISS bridge is the intended production path; exact backend remains for tests and fallback |
+| Vector retrieve | Done | Dependency-free exact ranking runs after ring-scoped candidate reduction |
 | Ring / hierarchy | Done | `ring = "a/b/c"` and child-ring expansion |
 | Galaxy isolation | Done | Separate data dir / peer list / credential boundary |
 | Atlas / ring map | Done | `atlas()` and `kouten atlas` |
 | Retrieval tuning profile | Done | amount / scope / depth |
-| FAISS vector backend | PoC | Dynamic bridge via `libkouten_faiss.so`; default fetch tag is FAISS `v1.14.3`; exact commit pinning is optional via `KOUTEN_FAISS_COMMIT` |
 | WASM browser embedded | Post-v0.1 candidate | Browser state boundary / IndexedDB / OPFS |
 
 ## Persistence / Operations

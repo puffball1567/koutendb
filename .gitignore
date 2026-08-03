@@ -35,6 +35,9 @@ tests/tcluster_failure
 tests/tcluster_authz
 tests/tcluster_rbac
 tests/tcluster_wire_fuzz
+tests/tcluster_retrieve_routing
+tests/thandoff_ordering
+tests/thandoff_reclamation
 third_party/faiss/build/
 third_party/faiss/cmake-build-*/
 third_party/faiss/**/*.o

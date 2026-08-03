@@ -23,11 +23,16 @@
 ##   RP <ringKey> <len>\n<json>\n                              環payload profile
 ##   TO <ringKey> <len>\n<json>\n                              ring time-orbit profile
 ##   SM <len>\n<json>\n                                    stellar coordinate map
-##   P <parent> <seq> <period> <head> <tWrite> <len> <dim> <codec>\n<payload><vec>\n
+##   P <parent> <seq> <period> <head> <tWrite> <len> <dim> <codec>
+##     <physicalMicros> <logical> <origin>\n<payload><vec>\n
 ##                                                               粒子 upsert
 ##   E <parent> <seq> <dim>\n<dim×float32>\n                    埋め込み
 ##   F <oldParent> <oldSeq> <newParent> <newSeq> <newTWrite> <expiresAt>\n フォワーダ
-##   D <parent> <seq>\n                                        削除（ハンドオフ退去）
+##   D <parent> <seq>\n                                        物理退去
+##   L <parent> <seq> <period> <head> <tWrite>
+##     <physicalMicros> <logical> <origin> <ackedNodes> <reclaimAfter>\n
+##                                                               論理削除 tombstone
+##   LG <parent> <seq>\n                                      tombstone 安全回収
 ##   T <txid>\n / XP|XD|XF|XUJ|XUD <txid> ... / C <txid>\n atomic transaction
 ##   CT <txid>\n / CP <txid> ... / CC <txid>\n                cluster tx intent
 ##   CA <txid>\n                                          cluster tx applied
@@ -41,12 +46,13 @@
 ##   S <ringKey> <nextSeq>\n                            次の ring-local seq
 ##   M <maxTWrite>\n                                    最大 write timestamp
 
-import std/[algorithm, tables, os, streams, strutils, monotimes, times, posix, json,
-            tempfiles]
+import std/[algorithm, tables, os, streams, strutils, monotimes, times, posix,
+            json, tempfiles, math]
 import nimsodium
-import payload
+import ./[payload, mutation]
 
 export payload
+export mutation
 
 type
   StoreDurability* = enum
@@ -67,6 +73,20 @@ type
     payload*: string
     codec*: PayloadCodec
     vec*: seq[float32]
+    version*: MutationVersion
+    # serving 状態（永続化しない）
+    sentAhead*: bool
+    lastHere*: float
+
+  Tombstone* = object
+    parent*: uint64
+    seq*: uint32
+    period*: float
+    head*: float
+    tWrite*: float
+    version*: MutationVersion
+    acknowledgedNodes*: seq[uint16]
+    reclaimAfter*: float
     # serving 状態（永続化しない）
     sentAhead*: bool
     lastHere*: float
@@ -96,8 +116,7 @@ type
       segmentOffset: int64
       segmentBody: string
     of txRemove:
-      remParent: uint64
-      remSeq: uint32
+      tombstone: Tombstone
     of txForwarder:
       oldParent: uint64
       oldSeq: uint32
@@ -128,6 +147,7 @@ type
     payload*: string
     codec*: PayloadCodec
     vec*: seq[float32]
+    version*: MutationVersion
 
   ClusterTxIntent* = object
     id*: uint64
@@ -139,6 +159,7 @@ type
     beforeBytes*: BiggestInt
     afterBytes*: BiggestInt
     items*: int
+    tombstones*: int
     forwarders*: int
     ringMeta*: int
     ringNames*: int
@@ -166,6 +187,7 @@ type
   StoreBackupStats* = object
     bytes*: BiggestInt
     items*: int
+    tombstones*: int
     forwarders*: int
     ringMeta*: int
     ringNames*: int
@@ -176,8 +198,15 @@ type
     source*: string
     destination*: string
 
+  MutationState* = object
+    found*: bool
+    deleted*: bool
+    version*: MutationVersion
+
   Store* = ref object
     items*: Table[(uint64, uint32), Particle]
+    itemVersions*: Table[(uint64, uint32), MutationVersion]
+    tombstones*: Table[(uint64, uint32), Tombstone]
     itemsByRing*: Table[uint64, seq[(uint64, uint32)]]
     itemOffsets*: Table[(uint64, uint32), int64]
     itemSegmentOffsets*: Table[(uint64, uint32), int64]
@@ -194,6 +223,10 @@ type
     stellarMaps*: Table[string, string]
     galaxy*: string
     galaxyDescription*: string
+    placementEpoch*: uint32
+    placementNodes*: uint16
+    placementVirtualArcs*: int
+    maintenanceDrained*: bool
     clusterTx*: Table[uint64, ClusterTxIntent]
     appliedClusterTx*: Table[uint64, bool]
     warpJobs*: Table[uint64, string]
@@ -204,6 +237,9 @@ type
     writeFailed*: bool
     writeError*: string
     maxTWrite*: float
+    mutationClockPhysical: int64
+    mutationClockLogical: uint32
+    mutationOrigin: uint32
     nextTxId: uint64
     logFile: File
     logPath: string
@@ -233,6 +269,39 @@ type
   WalCorruptionError = object of CatchableError
 
 proc key(parent: uint64, seq: uint32): (uint64, uint32) = (parent, seq)
+
+proc getParticle*(s: Store, parent: uint64, seq: uint32): Particle
+
+proc observeMutationVersion(s: Store, version: MutationVersion) =
+  if version.physicalMicros > s.mutationClockPhysical:
+    s.mutationClockPhysical = version.physicalMicros
+    s.mutationClockLogical = version.logical
+  elif version.physicalMicros == s.mutationClockPhysical:
+    s.mutationClockLogical = max(s.mutationClockLogical, version.logical)
+
+proc nextMutationVersion*(s: Store, origin = 0'u32): MutationVersion =
+  let effectiveOrigin = if origin == 0: s.mutationOrigin else: origin
+  let wallMicros = max(1'i64, int64(floor(epochTime() * 1_000_000.0)))
+  if wallMicros > s.mutationClockPhysical:
+    s.mutationClockPhysical = wallMicros
+    s.mutationClockLogical = 0
+  else:
+    if s.mutationClockLogical == uint32.high:
+      if s.mutationClockPhysical == int64.high:
+        raise newException(IOError, "mutation clock exhausted")
+      inc s.mutationClockPhysical
+      s.mutationClockLogical = 0
+    else:
+      inc s.mutationClockLogical
+  MutationVersion(physicalMicros: s.mutationClockPhysical,
+                  logical: s.mutationClockLogical,
+                  origin: effectiveOrigin)
+
+proc normalizeMutationVersion(s: Store, version: MutationVersion,
+                              tWrite: float): MutationVersion =
+  result = if version.isZero: legacyMutationVersion(tWrite) else: version
+  result.validateMutationVersion()
+  s.observeMutationVersion(result)
 
 proc crc32(data: string): uint32 =
   var crc = 0xFFFFFFFF'u32
@@ -354,6 +423,49 @@ proc parseTimeOrbitProfile(raw: string): TimeOrbitProfile =
     salt: node{"salt"}.getStr(""))
   validateTimeOrbitProfile(result)
 
+proc evictState(s: Store, parent: uint64, seq: uint32) =
+  let k = key(parent, seq)
+  s.items.del k
+  s.itemOffsets.del k
+  s.itemSegmentOffsets.del k
+  s.itemVersions.del k
+  if s.itemHasVector.getOrDefault(k, false):
+    s.vectorCount = max(0, s.vectorCount - 1)
+    let n = max(0, s.vectorCountByRing.getOrDefault(parent, 0) - 1)
+    if n == 0:
+      s.vectorCountByRing.del parent
+    else:
+      s.vectorCountByRing[parent] = n
+    s.itemHasVector.del k
+  if parent in s.itemsByRing:
+    var entries = s.itemsByRing[parent]
+    for i in countdown(entries.len - 1, 0):
+      if entries[i] == k:
+        entries.delete(i)
+        break
+    if entries.len == 0:
+      s.itemsByRing.del parent
+    else:
+      s.itemsByRing[parent] = entries
+  s.forwarders.del k
+
+proc mergeTombstoneMetadata(current: var Tombstone,
+                            incoming: Tombstone): bool =
+  for node in incoming.acknowledgedNodes:
+    if current.acknowledgedNodes.acknowledgeNode(node):
+      result = true
+  if incoming.reclaimAfter > current.reclaimAfter:
+    current.reclaimAfter = incoming.reclaimAfter
+    result = true
+
+proc normalizeTombstoneMetadata(tombstone: var Tombstone) =
+  tombstone.acknowledgedNodes =
+    canonicalAcknowledgedNodes(tombstone.acknowledgedNodes)
+  if tombstone.reclaimAfter < 0 or
+      tombstone.reclaimAfter.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(ValueError,
+      "tombstone reclaimAfter must be finite and non-negative")
+
 proc applyOp(s: Store, op: TxOp) =
   case op.kind
   of txRingMeta:
@@ -362,8 +474,13 @@ proc applyOp(s: Store, op: TxOp) =
     if op.ringName.len > 0:
       s.ringNames[op.ringNameKey] = op.ringName
   of txUpsert:
-    let p = op.p
+    var p = op.p
+    p.version = s.normalizeMutationVersion(p.version, p.tWrite)
     let k = key(p.parent, p.seq)
+    if k in s.tombstones and p.version <= s.tombstones[k].version:
+      return
+    if k in s.itemVersions and p.version <= s.itemVersions[k]:
+      return
     s.maxTWrite = max(s.maxTWrite, p.tWrite)
     if p.seq >= s.seqs.getOrDefault(p.parent, 0'u32):
       s.seqs[p.parent] = p.seq + 1
@@ -380,35 +497,43 @@ proc applyOp(s: Store, op: TxOp) =
         let n = max(0, s.vectorCountByRing.getOrDefault(p.parent, 0) - 1)
         if n == 0: s.vectorCountByRing.del p.parent else: s.vectorCountByRing[p.parent] = n
     s.itemHasVector[k] = newHasVector
+    s.itemVersions[k] = p.version
+    s.tombstones.del k
     if s.diskBacked:
       if op.walOffset >= 0:
         s.itemOffsets[k] = op.walOffset
+        if op.segmentOffset < 0:
+          s.itemSegmentOffsets.del k
       if op.segmentOffset >= 0:
         s.itemSegmentOffsets[k] = op.segmentOffset
       s.items.del k
     else:
       s.items[k] = p
   of txRemove:
-    let k = key(op.remParent, op.remSeq)
-    s.items.del k
-    s.itemOffsets.del k
-    s.itemSegmentOffsets.del k
-    if s.itemHasVector.getOrDefault(k, false):
-      s.vectorCount = max(0, s.vectorCount - 1)
-      let n = max(0, s.vectorCountByRing.getOrDefault(op.remParent, 0) - 1)
-      if n == 0: s.vectorCountByRing.del op.remParent else: s.vectorCountByRing[op.remParent] = n
-      s.itemHasVector.del k
-    if op.remParent in s.itemsByRing:
-      var entries = s.itemsByRing[op.remParent]
-      for i in countdown(entries.len - 1, 0):
-        if entries[i] == k:
-          entries.delete(i)
-          break
-      if entries.len == 0:
-        s.itemsByRing.del op.remParent
-      else:
-        s.itemsByRing[op.remParent] = entries
-    s.forwarders.del k
+    var tombstone = op.tombstone
+    let k = key(tombstone.parent, tombstone.seq)
+    if tombstone.version.isZero:
+      if k notin s.itemVersions:
+        return
+      let current =
+        if k in s.items: s.items[k]
+        else: s.getParticle(tombstone.parent, tombstone.seq)
+      tombstone.period = current.period
+      tombstone.head = current.head
+      tombstone.tWrite = current.tWrite
+      tombstone.version = s.nextMutationVersion()
+    tombstone.version =
+      s.normalizeMutationVersion(tombstone.version, tombstone.tWrite)
+    if k in s.tombstones:
+      if tombstone.version < s.tombstones[k].version:
+        return
+      if tombstone.version == s.tombstones[k].version:
+        discard s.tombstones[k].mergeTombstoneMetadata(tombstone)
+        return
+    if k in s.itemVersions and tombstone.version <= s.itemVersions[k]:
+      return
+    s.evictState(tombstone.parent, tombstone.seq)
+    s.tombstones[k] = tombstone
   of txForwarder:
     s.forwarders[key(op.oldParent, op.oldSeq)] = op.f
   of txUniverseSyncEvent:
@@ -427,7 +552,8 @@ proc particleRecordBody(tag: string, txid: uint64, p: Particle): string =
   let prefix = if tag.len > 0: tag & " " & $txid & " " else: "P "
   result = prefix & $p.parent & " " & $p.seq & " " & $p.period & " " &
            $p.head & " " & $p.tWrite & " " & $p.payload.len & " " &
-           $p.vec.len & " " & p.codec.payloadCodecName & "\n"
+           $p.vec.len & " " & p.codec.payloadCodecName & " " &
+           p.version.mutationVersionFields & "\n"
   result.add p.payload
   if p.vec.len > 0:
     result.add p.vec.vecBytes()
@@ -435,6 +561,19 @@ proc particleRecordBody(tag: string, txid: uint64, p: Particle): string =
 
 proc writeParticleRecord(file: File, tag: string, txid: uint64, p: Particle) =
   file.writeWalRecord(particleRecordBody(tag, txid, p))
+
+proc tombstoneRecordBody(tag: string, txid: uint64,
+                         tombstone: Tombstone): string =
+  let prefix = if tag.len > 0: tag & " " & $txid & " " else: "L "
+  prefix & $tombstone.parent & " " & $tombstone.seq & " " &
+    $tombstone.period & " " & $tombstone.head & " " & $tombstone.tWrite &
+    " " & tombstone.version.mutationVersionFields & " " &
+    tombstone.acknowledgedNodes.acknowledgedNodesField & " " &
+    $tombstone.reclaimAfter
+
+proc writeTombstoneRecord(file: File, tag: string, txid: uint64,
+                          tombstone: Tombstone) =
+  file.writeWalLine(tombstoneRecordBody(tag, txid, tombstone))
 
 proc segmentFileName(ring: uint64): string =
   toHex(ring, 16) & ".seg"
@@ -479,7 +618,8 @@ proc clusterTxOpBody(txid: uint64, op: ClusterTxOp): string =
   result = "CP " & $txid & " " & kind & " " & $op.parent & " " & $op.seq & " " &
            $op.period & " " & $op.head & " " & $op.tWrite & " " &
            $op.payload.len & " " & $op.vec.len & " " &
-           op.codec.payloadCodecName & "\n"
+           op.codec.payloadCodecName & " " &
+           op.version.mutationVersionFields & "\n"
   result.add op.payload
   if op.vec.len > 0:
     result.add op.vec.vecBytes()
@@ -502,9 +642,32 @@ proc readParticleRecord(fs: Stream, parts: seq[string], firstData: int): Particl
                    parsePayloadCodec(parts[firstData + 7])
                  else:
                    pcRaw
+  result.version = parseMutationVersion(parts, firstData + 8, result.tWrite)
   result.payload = fs.readExactStr(len)
   result.vec = fs.readVec(dim)
   fs.readRecordSep()
+
+proc readTombstoneRecord(parts: seq[string], firstData: int,
+                         fallback: Tombstone = Tombstone()): Tombstone =
+  result = fallback
+  result.parent = parseBiggestUInt(parts[firstData]).uint64
+  result.seq = parseUInt(parts[firstData + 1]).uint32
+  if parts.len >= firstData + 8:
+    result.period = parseFloat(parts[firstData + 2])
+    result.head = parseFloat(parts[firstData + 3])
+    result.tWrite = parseFloat(parts[firstData + 4])
+    result.version = parseMutationVersion(parts, firstData + 5, result.tWrite)
+    if parts.len > firstData + 8:
+      result.acknowledgedNodes =
+        parseAcknowledgedNodes(parts[firstData + 8])
+    if parts.len > firstData + 9:
+      result.reclaimAfter = parseFloat(parts[firstData + 9])
+      if result.reclaimAfter < 0 or
+          result.reclaimAfter.classify in {fcNan, fcInf, fcNegInf}:
+        raise newException(ValueError,
+          "tombstone reclaimAfter must be finite and non-negative")
+  elif result.version.isZero:
+    result.version = legacyMutationVersion(result.tWrite)
 
 proc readParticleAtStream(fs: Stream, offset: int64): Particle =
   if fs.getPosition() != offset:
@@ -649,7 +812,6 @@ proc readParticleRecordAtCurrent(fs: Stream, line: string): Particle =
 
 iterator particlesByRing*(s: Store, ring: uint64): Particle =
   if s.diskBacked:
-    var yieldedFromSegment = false
     var walStream: FileStream = nil
     if s.segmentDir.len > 0 and fileExists(s.segmentPath(ring)):
       let segmentStream = s.openSegmentReadStream(ring)
@@ -660,20 +822,18 @@ iterator particlesByRing*(s: Store, ring: uint64): Particle =
           let p = segmentStream.readParticleRecordAtCurrent(line)
           let k = key(p.parent, p.seq)
           if k in s.itemSegmentOffsets and s.itemSegmentOffsets[k] == recordStart:
-            yieldedFromSegment = true
             yield p
       finally:
         segmentStream.close()
-    if not yieldedFromSegment:
-      try:
-        for k in s.itemsByRing.getOrDefault(ring, @[]):
-          if k in s.itemOffsets:
-            if walStream == nil:
-              walStream = s.openWalReadStream()
-            yield walStream.readParticleAtStream(s.itemOffsets[k])
-      finally:
-        if walStream != nil:
-          walStream.close()
+    try:
+      for k in s.itemsByRing.getOrDefault(ring, @[]):
+        if k notin s.itemSegmentOffsets and k in s.itemOffsets:
+          if walStream == nil:
+            walStream = s.openWalReadStream()
+          yield walStream.readParticleAtStream(s.itemOffsets[k])
+    finally:
+      if walStream != nil:
+        walStream.close()
   else:
     for k in s.itemsByRing.getOrDefault(ring, @[]):
       if k in s.items:
@@ -811,6 +971,7 @@ proc readClusterTxOp(fs: Stream, parts: seq[string], firstData: int): ClusterTxO
                    parsePayloadCodec(parts[data + 7])
                  else:
                    pcRaw
+  result.version = parseMutationVersion(parts, data + 8, result.tWrite)
   result.payload = fs.readExactStr(len)
   result.vec = fs.readVec(dim)
   fs.readRecordSep()
@@ -1035,6 +1196,25 @@ proc replay(s: Store, path: string, repair = true) =
         else:
           s.stellarMaps[stellar] = raw
         recordStream.readRecordSep()
+      of "PM":
+        if parts.len != 4:
+          raise newException(WalCorruptionError,
+            "invalid placement metadata record")
+        let epoch = parseUInt(parts[1])
+        let nodes = parseUInt(parts[2])
+        let virtualArcs = parseInt(parts[3])
+        if epoch == 0 or epoch > uint32.high.uint64 or
+            nodes == 0 or nodes > uint16.high.uint64 or virtualArcs <= 0:
+          raise newException(WalCorruptionError,
+            "invalid placement metadata values")
+        s.placementEpoch = uint32(epoch)
+        s.placementNodes = uint16(nodes)
+        s.placementVirtualArcs = virtualArcs
+      of "MD":
+        if parts.len != 2 or parts[1] notin ["0", "1"]:
+          raise newException(WalCorruptionError,
+            "invalid maintenance drain record")
+        s.maintenanceDrained = parts[1] == "1"
       of "P":
         let p = recordStream.readParticleRecord(parts, 1)
         s.applyOp(TxOp(kind: txUpsert, p: p, walOffset: recordStart,
@@ -1057,9 +1237,16 @@ proc replay(s: Store, path: string, repair = true) =
                     newTWrite: parseFloat(parts[5]),
                     expiresAt: parseFloat(parts[6]))
       of "D":
+        # Legacy/physical handoff eviction. Logical deletes use L and retain
+        # ordering metadata so delayed transfers cannot resurrect data.
+        s.evictState(parseBiggestUInt(parts[1]).uint64,
+                     parseUInt(parts[2]).uint32)
+      of "L":
         s.applyOp(TxOp(kind: txRemove,
-                       remParent: parseBiggestUInt(parts[1]).uint64,
-                       remSeq: parseUInt(parts[2]).uint32))
+                       tombstone: readTombstoneRecord(parts, 1)))
+      of "LG":
+        s.tombstones.del key(parseBiggestUInt(parts[1]).uint64,
+                             parseUInt(parts[2]).uint32)
       of "T":
         let txid = parseBiggestUInt(parts[1]).uint64
         pending[txid] = @[]
@@ -1091,8 +1278,15 @@ proc replay(s: Store, path: string, repair = true) =
       of "XD":
         let txid = parseBiggestUInt(parts[1]).uint64
         pending.mgetOrPut(txid, @[]).add TxOp(kind: txRemove,
-                                              remParent: parseBiggestUInt(parts[2]).uint64,
-                                              remSeq: parseUInt(parts[3]).uint32)
+          tombstone: Tombstone(
+            parent: parseBiggestUInt(parts[2]).uint64,
+            seq: parseUInt(parts[3]).uint32))
+        s.nextTxId = max(s.nextTxId, txid + 1)
+      of "XL":
+        let txid = parseBiggestUInt(parts[1]).uint64
+        pending.mgetOrPut(txid, @[]).add TxOp(
+          kind: txRemove,
+          tombstone: readTombstoneRecord(parts, 2))
         s.nextTxId = max(s.nextTxId, txid + 1)
       of "XF":
         let txid = parseBiggestUInt(parts[1]).uint64
@@ -1245,12 +1439,13 @@ when defined(koutenTestFailpoints):
     s.markWriteFailed(message)
 
 proc openStore*(dir: string, durability: StoreDurability = durBuffered,
-                diskBacked = false): Store =
+                diskBacked = false, mutationOrigin = 1'u32): Store =
   ## dir == "" ならメモリのみ。指定時は dir/kouten.log に追記・起動時に再生。
   result = Store(lastFlush: getMonoTime(), nextTxId: 1,
                  lockFd: -1,
                  durability: durability,
-                 diskBacked: diskBacked)
+                 diskBacked: diskBacked,
+                 mutationOrigin: mutationOrigin)
   if dir.len > 0:
     createDir(dir)
     result.lockFd = acquireDataDirLock(dir)
@@ -1289,6 +1484,74 @@ proc setGalaxy*(s: Store, galaxy: string) =
   if s.persistent:
     s.logFile.writeWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
     s.flushMaybe(force = true)
+
+proc clusterTxPending*(s: Store): int
+
+proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
+                         virtualArcs: int) =
+  ## Persist and fence the physical placement topology. Changing membership or
+  ## virtual-arc density requires an explicit epoch increase; rollback is
+  ## rejected because it could silently reintroduce stale ownership.
+  if epoch == 0:
+    raise newException(ValueError, "placement epoch must be positive")
+  if nodes == 0:
+    raise newException(ValueError, "placement nodes must be positive")
+  if virtualArcs <= 0:
+    raise newException(ValueError, "placement virtual arcs must be positive")
+  s.ensureWritable()
+  if s.placementEpoch > epoch:
+    raise newException(ValueError,
+      "placement epoch rollback is not allowed (stored=" &
+      $s.placementEpoch & ", requested=" & $epoch & ")")
+  if s.placementEpoch != 0 and nodes < s.placementNodes:
+    raise newException(ValueError,
+      "placement node removal requires an explicit drain/export workflow; " &
+      "automatic scale-in is not supported")
+  if s.placementEpoch == epoch and s.placementEpoch != 0:
+    if s.placementNodes != nodes or s.placementVirtualArcs != virtualArcs:
+      raise newException(ValueError,
+        "placement topology changed without increasing placement epoch")
+    return
+  if s.placementEpoch != 0 and not s.maintenanceDrained:
+    raise newException(ValueError,
+      "placement topology changes require persistent maintenance drain")
+  if s.placementEpoch != 0 and s.clusterTxPending > 0:
+    raise newException(ValueError,
+      "placement topology changes require zero pending cluster transactions")
+  if s.placementEpoch != 0 and s.warpJobs.len > 0:
+    raise newException(ValueError,
+      "placement topology changes require zero pending warp jobs")
+  if s.placementEpoch != 0 and s.universeSyncEvents.len > 0:
+    raise newException(ValueError,
+      "placement topology changes require zero pending Universe sync events")
+  s.placementEpoch = epoch
+  s.placementNodes = nodes
+  s.placementVirtualArcs = virtualArcs
+  if s.persistent:
+    s.logFile.writeWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
+    s.flushMaybe(force = true)
+
+proc setMaintenanceDrained*(s: Store, drained: bool) =
+  ## Persist the operator-controlled quiet point used by backup and explicit
+  ## topology migration. A restart must not silently resume writes.
+  if s.maintenanceDrained == drained:
+    if s.persistent:
+      s.flushMaybe(force = true)
+    return
+  s.ensureWritable()
+  if s.persistent:
+    s.logFile.writeWalLine("MD " & $(if drained: 1 else: 0))
+    s.flushMaybe(force = true)
+  s.maintenanceDrained = drained
+
+proc mutationState*(s: Store, parent: uint64, seq: uint32): MutationState =
+  let k = key(parent, seq)
+  if k in s.tombstones:
+    return MutationState(found: true, deleted: true,
+                         version: s.tombstones[k].version)
+  if k in s.itemVersions:
+    return MutationState(found: true, deleted: false,
+                         version: s.itemVersions[k])
 
 proc flushMaybe(s: Store, force: bool) =
   if not s.persistent: return
@@ -1347,6 +1610,11 @@ proc writeSnapshotFile(s: Store, path: string) =
     if s.galaxyDescription.len > 0:
       file.writeWalRecord("GD " & $s.galaxyDescription.len & "\n" &
                           s.galaxyDescription & "\n")
+    if s.placementEpoch > 0:
+      file.writeWalLine("PM " & $s.placementEpoch & " " &
+                        $s.placementNodes & " " & $s.placementVirtualArcs)
+    if s.maintenanceDrained:
+      file.writeWalLine("MD 1")
     file.writeWalLine("Q " & $s.nextTxId)
     file.writeWalLine("UQ " & $s.nextUniverseSyncId)
     file.writeWalLine("M " & $s.maxTWrite)
@@ -1414,6 +1682,15 @@ proc writeSnapshotFile(s: Store, path: string) =
     for k in itemKeys:
       let p = s.items[k]
       file.writeParticleRecord("", 0, p)
+    var tombstoneKeys: seq[(uint64, uint32)] = @[]
+    for k in s.tombstones.keys:
+      tombstoneKeys.add k
+    tombstoneKeys.sort(proc(a, b: (uint64, uint32)): int =
+      result = cmp(a[0], b[0])
+      if result == 0:
+        result = cmp(a[1], b[1]))
+    for k in tombstoneKeys:
+      file.writeTombstoneRecord("", 0, s.tombstones[k])
     var forwarderKeys: seq[(uint64, uint32)] = @[]
     for k in s.forwarders.keys:
       forwarderKeys.add k
@@ -1475,6 +1752,7 @@ proc writeSnapshotFile(s: Store, path: string) =
 proc snapshotStats(s: Store, path: string, source = ""): StoreBackupStats =
   StoreBackupStats(bytes: (if fileExists(path): getFileSize(path) else: 0),
                    items: s.items.len,
+                   tombstones: s.tombstones.len,
                    forwarders: s.forwarders.len,
                    ringMeta: s.ringMeta.len,
                    ringNames: s.ringNames.len,
@@ -1490,13 +1768,26 @@ proc snapshotStatsFromFile(path, source: string): StoreBackupStats =
   s.replay(path, repair = false)
   result = s.snapshotStats(path, source)
 
-proc isLiveParticle(s: Store, p: Particle): bool =
+proc sameParticleRevision(current, candidate: Particle): bool =
+  current.parent == candidate.parent and
+    current.seq == candidate.seq and
+    current.version == candidate.version and
+    abs(current.tWrite - candidate.tWrite) < 1e-9
+
+proc isLiveParticle(s: Store, p: Particle, walOffset: int64): bool =
   let k = key(p.parent, p.seq)
+  if s.diskBacked:
+    if k in s.itemOffsets:
+      # The offset is the exact current WAL record identity. Checking its HLC
+      # version also catches divergence without reopening every live payload.
+      return s.itemOffsets[k] == walOffset and
+        k in s.itemVersions and s.itemVersions[k] == p.version
+    if k notin s.itemSegmentOffsets:
+      return false
+    return s.getParticle(p.parent, p.seq).sameParticleRevision(p)
   if k notin s.items:
     return false
-  let live = s.items[k]
-  live.parent == p.parent and live.seq == p.seq and
-    abs(live.tWrite - p.tWrite) < 1e-9
+  s.items[k].sameParticleRevision(p)
 
 proc localityReport*(s: Store): StoreLocalityReport =
   ## Inspect the physical WAL particle order and report ring locality.
@@ -1527,7 +1818,10 @@ proc localityReport*(s: Store): StoreLocalityReport =
   var runCounts = initTable[uint64, int]()
   var rings = initTable[uint64, bool]()
 
-  while fs.readLine(line):
+  while true:
+    let recordStart = fs.getPosition()
+    if not fs.readLine(line):
+      break
     if line.len == 0:
       continue
     if line == WalMagicLine:
@@ -1547,7 +1841,7 @@ proc localityReport*(s: Store): StoreLocalityReport =
       of "P":
         inc result.totalParticleRecords
         let p = recordStream.readParticleRecord(parts, 1)
-        if s.isLiveParticle(p):
+        if s.isLiveParticle(p, recordStart):
           inc result.liveParticleRecords
           rings[p.parent] = true
           if not haveLast or p.parent != lastRing:
@@ -1565,7 +1859,7 @@ proc localityReport*(s: Store): StoreLocalityReport =
       of "XP":
         inc result.totalParticleRecords
         let p = recordStream.readParticleRecord(parts, 2)
-        if s.isLiveParticle(p):
+        if s.isLiveParticle(p, recordStart):
           inc result.liveParticleRecords
           rings[p.parent] = true
           if not haveLast or p.parent != lastRing:
@@ -1583,7 +1877,8 @@ proc localityReport*(s: Store): StoreLocalityReport =
       else:
         discard
     except CatchableError:
-      break
+      raise newException(IOError, "cannot inspect WAL locality near byte " &
+        $recordStart & ": " & getCurrentExceptionMsg())
   if haveLast and currentRun > 0:
     result.maxRunRecords = max(result.maxRunRecords, currentRun)
 
@@ -1594,13 +1889,15 @@ proc localityReport*(s: Store): StoreLocalityReport =
   result.avgRunRecords = if result.ringRuns == 0: 0.0
                          else: float(result.liveParticleRecords) / float(result.ringRuns)
   result.localityScore =
-    if result.ringRuns == 0: 1.0
-    else: float(max(1, result.ringCount)) / float(result.ringRuns)
+    if result.totalParticleRecords == 0: 1.0
+    elif result.liveParticleRecords == 0 or result.ringRuns == 0: 0.0
+    else: float(result.ringCount) / float(result.ringRuns)
 
 proc compact*(s: Store): StoreCompactStats =
   ## 生存レコードだけで WAL を再構築する。
   ## append-only の読みやすさを保ちながら、削除済み/上書き済みログの肥大化を抑える。
   result.items = s.items.len
+  result.tombstones = s.tombstones.len
   result.forwarders = s.forwarders.len
   result.ringMeta = s.ringMeta.len
   result.ringNames = s.ringNames.len
@@ -1772,6 +2069,9 @@ proc restoreEncryptedBackup*(backupDir, targetDir, passphrase: string,
       removeFile(tmp)
 
 proc putRingMeta*(s: Store, ringKey: uint64, period, head: float) =
+  if ringKey in s.ringMeta and
+      s.ringMeta[ringKey] == (period: period, head: head):
+    return
   s.ensureWritable()
   s.applyOp(TxOp(kind: txRingMeta, ringKey: ringKey,
                  ringPeriod: period, ringHead: head))
@@ -1791,6 +2091,8 @@ proc putRingName*(s: Store, ringKey: uint64, name: string) =
     s.flushMaybe()
 
 proc putGalaxyDescription*(s: Store, description: string) =
+  if s.galaxyDescription == description:
+    return
   s.ensureWritable()
   s.galaxyDescription = description
   if s.persistent:
@@ -1798,6 +2100,8 @@ proc putGalaxyDescription*(s: Store, description: string) =
     s.flushMaybe(force = true)
 
 proc putRingDescription*(s: Store, ringKey: uint64, description: string) =
+  if s.ringDescriptions.getOrDefault(ringKey, "") == description:
+    return
   s.ensureWritable()
   if description.len == 0:
     s.ringDescriptions.del ringKey
@@ -1810,6 +2114,9 @@ proc putRingDescription*(s: Store, ringKey: uint64, description: string) =
 
 proc putRingPayloadProfile*(s: Store, ringKey: uint64,
                             profile: RingPayloadProfile) =
+  if ringKey in s.ringPayloadProfiles and
+      s.ringPayloadProfiles[ringKey] == profile:
+    return
   s.ensureWritable()
   s.ringPayloadProfiles[ringKey] = profile
   if s.persistent:
@@ -1823,6 +2130,9 @@ proc putRingPayloadProfile*(s: Store, ringKey: uint64,
 
 proc putTimeOrbitProfile*(s: Store, ringKey: uint64,
                           profile: TimeOrbitProfile) =
+  if ringKey in s.ringTimeOrbitProfiles and
+      s.ringTimeOrbitProfiles[ringKey] == profile:
+    return
   s.ensureWritable()
   validateTimeOrbitProfile(profile)
   s.ringTimeOrbitProfiles[ringKey] = profile
@@ -1835,6 +2145,8 @@ proc putStellarMap*(s: Store, stellar, blob: string) =
   if stellar.len == 0:
     raise newException(ValueError, "stellar coordinate is empty")
   s.ensureWritable()
+  if blob.len > 0 and s.stellarMaps.getOrDefault(stellar, "") == blob:
+    return
   if blob.len == 0:
     s.stellarMaps.del stellar
     if s.persistent:
@@ -1938,31 +2250,117 @@ proc nextSeq*(s: Store, ring: uint64): uint32 =
   result = s.seqs.getOrDefault(ring, 0'u32)
   s.seqs[ring] = result + 1
 
-proc upsert*(s: Store, p: Particle) =
+proc upsert*(s: Store, p: Particle, origin = 0'u32,
+             preserveVersion = false): bool {.discardable.} =
   s.ensureWritable()
+  var effective = p
+  effective.version =
+    if preserveVersion and not p.version.isZero:
+      s.normalizeMutationVersion(p.version, p.tWrite)
+    else:
+      s.nextMutationVersion(origin)
+  let k = key(effective.parent, effective.seq)
+  if k in s.tombstones and effective.version <= s.tombstones[k].version:
+    return false
+  if k in s.itemVersions and effective.version <= s.itemVersions[k]:
+    return false
   var walOffset = -1'i64
   if s.persistent:
     walOffset = s.logFile.getFilePos()
-    s.logFile.writeParticleRecord("", 0, p)
+    s.logFile.writeParticleRecord("", 0, effective)
     s.flushMaybe()
-  s.applyOp(TxOp(kind: txUpsert, p: p, walOffset: walOffset,
+  s.applyOp(TxOp(kind: txUpsert, p: effective, walOffset: walOffset,
                  segmentOffset: -1'i64, segmentBody: ""))
+  true
 
 proc putForwarder*(s: Store, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
   s.ensureWritable()
-  s.forwarders[key(oldParent, oldSeq)] = f
+  let forwarderKey = key(oldParent, oldSeq)
+  if forwarderKey in s.forwarders and s.forwarders[forwarderKey] == f:
+    return
+  s.forwarders[forwarderKey] = f
   if s.persistent:
     s.logFile.writeWalLine("F " & $oldParent & " " & $oldSeq & " " & $f.newParent & " " &
                            $f.newSeq & " " & $f.newTWrite & " " & $f.expiresAt)
     s.flushMaybe()
 
-proc remove*(s: Store, parent: uint64, seq: uint32) =
+proc remove*(s: Store, parent: uint64, seq: uint32,
+             origin = 0'u32): bool {.discardable.} =
   s.ensureWritable()
-  s.applyOp(TxOp(kind: txRemove, remParent: parent, remSeq: seq))
+  let k = key(parent, seq)
+  var tombstone =
+    if k in s.items or k in s.itemOffsets or k in s.itemSegmentOffsets:
+      let p = s.getParticle(parent, seq)
+      let version = s.nextMutationVersion(origin)
+      Tombstone(parent: parent, seq: seq, period: p.period, head: p.head,
+                tWrite: p.tWrite, version: version,
+                acknowledgedNodes:
+                  (if version.origin > 0 and
+                      version.origin <= uint32(uint16.high):
+                     @[uint16(version.origin - 1)]
+                   else:
+                     @[]))
+    elif k in s.tombstones:
+      s.tombstones[k]
+    else:
+      return false
+  if k in s.tombstones and tombstone.version <= s.tombstones[k].version:
+    return false
+  if s.persistent:
+    s.logFile.writeTombstoneRecord("", 0, tombstone)
+    s.flushMaybe()
+  s.applyOp(TxOp(kind: txRemove, tombstone: tombstone))
+  true
+
+proc applyTombstone*(s: Store, tombstone: Tombstone): bool {.discardable.} =
+  ## Apply a transferred/replayed logical delete using its original version.
+  s.ensureWritable()
+  var effective = tombstone
+  effective.normalizeTombstoneMetadata()
+  effective.version =
+    s.normalizeMutationVersion(effective.version, effective.tWrite)
+  let k = key(effective.parent, effective.seq)
+  if k in s.tombstones:
+    if effective.version < s.tombstones[k].version:
+      return false
+    if effective.version == s.tombstones[k].version:
+      var merged = s.tombstones[k]
+      if not merged.mergeTombstoneMetadata(effective):
+        return false
+      if s.persistent:
+        s.logFile.writeTombstoneRecord("", 0, merged)
+        s.flushMaybe()
+      s.tombstones[k] = merged
+      return true
+  if k in s.itemVersions and effective.version <= s.itemVersions[k]:
+    return false
+  if s.persistent:
+    s.logFile.writeTombstoneRecord("", 0, effective)
+    s.flushMaybe()
+  s.applyOp(TxOp(kind: txRemove, tombstone: effective))
+  true
+
+proc evict*(s: Store, parent: uint64, seq: uint32) =
+  ## Remove a transferred source copy without creating a logical delete.
+  s.ensureWritable()
+  s.evictState(parent, seq)
   if s.persistent:
     s.logFile.writeWalLine("D " & $parent & " " & $seq)
     s.flushMaybe()
 
+proc reclaimTombstone*(s: Store, parent: uint64, seq: uint32): bool
+    {.discardable.} =
+  ## Remove the final logical-delete marker only after cluster-wide
+  ## acknowledgement and the server's stale-transfer drain grace.
+  s.ensureWritable()
+  let k = key(parent, seq)
+  if k notin s.tombstones:
+    return false
+  s.tombstones.del k
+  if s.persistent:
+    s.logFile.writeWalLine("LG " & $parent & " " & $seq)
+    s.flushMaybe()
+  true
 proc contains*(s: Store, parent: uint64, seq: uint32): bool =
   let k = key(parent, seq)
   k in s.items or k in s.itemOffsets
@@ -2002,12 +2400,48 @@ proc reserveTxId*(s: Store): uint64 =
 
 proc upsert*(tx: StoreTxn, p: Particle) =
   doAssert not tx.closed, "transaction is closed"
-  tx.ops.add TxOp(kind: txUpsert, p: p, walOffset: -1'i64,
+  var effective = p
+  effective.version = tx.store.nextMutationVersion()
+  tx.ops.add TxOp(kind: txUpsert, p: effective, walOffset: -1'i64,
                   segmentOffset: -1'i64, segmentBody: "")
 
 proc remove*(tx: StoreTxn, parent: uint64, seq: uint32) =
   doAssert not tx.closed, "transaction is closed"
-  tx.ops.add TxOp(kind: txRemove, remParent: parent, remSeq: seq)
+  let s = tx.store
+  let k = key(parent, seq)
+  var source = Particle()
+  var found = false
+  if tx.ops.len > 0:
+    for i in countdown(tx.ops.len - 1, 0):
+      let op = tx.ops[i]
+      case op.kind
+      of txUpsert:
+        if key(op.p.parent, op.p.seq) == k:
+          source = op.p
+          found = true
+          break
+      of txRemove:
+        if key(op.tombstone.parent, op.tombstone.seq) == k:
+          return
+      else:
+        discard
+  if not found and
+      (k in s.items or k in s.itemOffsets or k in s.itemSegmentOffsets):
+    source = s.getParticle(parent, seq)
+    found = true
+  if not found:
+    return
+  let tombstone = Tombstone(
+    parent: parent, seq: seq,
+    period: source.period, head: source.head, tWrite: source.tWrite,
+    version: s.nextMutationVersion(),
+    acknowledgedNodes:
+      (if s.mutationOrigin > 0 and
+          s.mutationOrigin <= uint32(uint16.high):
+         @[uint16(s.mutationOrigin - 1)]
+       else:
+         @[]))
+  tx.ops.add TxOp(kind: txRemove, tombstone: tombstone)
 
 proc putForwarder*(tx: StoreTxn, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
   doAssert not tx.closed, "transaction is closed"
@@ -2059,7 +2493,7 @@ proc commit*(tx: StoreTxn) =
         s.logFile.writeWalRecord(op.segmentBody)
         tx.ops[i] = op
       of txRemove:
-        s.logFile.writeWalLine("XD " & $tx.id & " " & $op.remParent & " " & $op.remSeq)
+        s.logFile.writeTombstoneRecord("XL", tx.id, op.tombstone)
       of txForwarder:
         s.logFile.writeWalLine("XF " & $tx.id & " " & $op.oldParent & " " &
                                $op.oldSeq & " " & $op.f.newParent & " " &
@@ -2105,12 +2539,17 @@ proc packCommittedSegments*(tx: StoreTxn) =
 
 proc putClusterTxIntent*(s: Store, intent: ClusterTxIntent) =
   s.ensureWritable()
-  s.clusterTx[intent.id] = intent
+  var effective = intent
+  for op in effective.ops.mitems:
+    op.version =
+      if op.version.isZero: s.nextMutationVersion()
+      else: s.normalizeMutationVersion(op.version, op.tWrite)
+  s.clusterTx[effective.id] = effective
   if s.persistent:
-    s.logFile.writeWalLine("CT " & $intent.id)
-    for op in intent.ops:
-      s.logFile.writeClusterTxOp(intent.id, op)
-    s.logFile.writeWalLine("CC " & $intent.id)
+    s.logFile.writeWalLine("CT " & $effective.id)
+    for op in effective.ops:
+      s.logFile.writeClusterTxOp(effective.id, op)
+    s.logFile.writeWalLine("CC " & $effective.id)
     s.flushMaybe(force = true)
 
 proc markClusterTxApplied*(s: Store, txid: uint64) =

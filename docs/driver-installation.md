@@ -27,23 +27,6 @@ and Python drivers are also published as language-native packages. Other
 non-Nim drivers are still repository-local foundations, so those examples
 assume a local clone of this repository.
 
-## Optional FAISS Setup
-
-The exact vector backend works without FAISS. For the FAISS bridge path, fetch
-and build FAISS after cloning:
-
-```sh
-scripts/fetch_faiss.sh
-scripts/setup_faiss_toolchain.sh   # only needed when system CMake is too old
-scripts/build_faiss_bridge.sh
-kouten doctor
-```
-
-By default, `scripts/fetch_faiss.sh` fetches the configured FAISS tag and records
-the actual commit in `third_party/faiss.version`. To pin an exact commit for a
-reproducible build, set `KOUTEN_FAISS_COMMIT`. See
-[faiss-versioning.md](./faiss-versioning.md).
-
 ## Build the Native Library
 
 Most C ABI wrappers need `lib/libkoutendb.so`:

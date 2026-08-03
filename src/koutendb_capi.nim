@@ -150,6 +150,20 @@ proc bytesFromC(data: pointer, len: csize_t): string =
   if len > 0:
     copyMem(addr result[0], data, int(len))
 
+proc countFromC(len: csize_t, name: string): int =
+  if len > csize_t(high(int)):
+    raise newException(ValueError, name & " is too large")
+  int(len)
+
+proc allocBytesFor(count: int, elemSize: int, name: string): int =
+  if count < 0:
+    raise newException(ValueError, name & " count is negative")
+  if elemSize <= 0:
+    raise newException(ValueError, name & " element size is invalid")
+  if count > high(int) div elemSize:
+    raise newException(ValueError, name & " allocation is too large")
+  count * elemSize
+
 proc kouten_abi_version(): cint {.exportc, cdecl, dynlib.} =
   KoutenAbiVersion
 
@@ -335,9 +349,10 @@ proc kouten_put_vec(h: pointer, ring: cstring, data: pointer, len: csize_t,
     if vecLen > 0 and vec == nil:
       raise newException(ValueError, "vec is nil")
     let payload = bytesFromC(data, len)
-    var values = newSeq[float32](int(vecLen))
+    let nVec = countFromC(vecLen, "vec_len")
+    var values = newSeq[float32](nVec)
     let rawVec = cast[ptr UncheckedArray[cfloat]](vec)
-    for i in 0 ..< int(vecLen):
+    for i in 0 ..< nVec:
       values[i] = float32(rawVec[i])
     outId[] = ensureHandle(h).put(payload, cstringToString(ring, "ring", allowNil = false),
                                   vec = values).toC
@@ -355,9 +370,10 @@ proc kouten_put_vec_codec(h: pointer, ring: cstring, data: pointer, len: csize_t
       raise newException(ValueError, "out_id is nil")
     if vecLen > 0 and vec == nil:
       raise newException(ValueError, "vec is nil")
-    var values = newSeq[float32](int(vecLen))
+    let nVec = countFromC(vecLen, "vec_len")
+    var values = newSeq[float32](nVec)
     let rawVec = cast[ptr UncheckedArray[cfloat]](vec)
-    for i in 0 ..< int(vecLen):
+    for i in 0 ..< nVec:
       values[i] = float32(rawVec[i])
     outId[] = ensureHandle(h).put(encodedPayload(bytesFromC(data, len),
       codecFromC(codec)), cstringToString(ring, "ring", allowNil = false),
@@ -412,15 +428,16 @@ proc kouten_batch_get(h: pointer, ids: ptr KoutenCId,
     if idsLen > 0 and ids == nil:
       raise newException(ValueError, "ids is nil")
     let db = ensureHandle(h)
-    var nimIds = newSeq[KoutenId](int(idsLen))
+    let nIds = countFromC(idsLen, "ids_len")
+    var nimIds = newSeq[KoutenId](nIds)
     let rawIds = cast[ptr UncheckedArray[KoutenCId]](ids)
-    for i in 0 ..< int(idsLen):
+    for i in 0 ..< nIds:
       nimIds[i] = fromC(rawIds[i])
     let values = db.batchGet(nimIds)
     result = cast[ptr KoutenCBatchResult](allocShared0(sizeof(KoutenCBatchResult)))
     result.len = csize_t(values.len)
     if values.len > 0:
-      let valueBytes = values.len * sizeof(KoutenCValue)
+      let valueBytes = allocBytesFor(values.len, sizeof(KoutenCValue), "batch values")
       result.values = cast[ptr KoutenCValue](allocShared0(valueBytes))
       let rawValues = cast[ptr UncheckedArray[KoutenCValue]](result.values)
       for i, value in values:
@@ -529,9 +546,10 @@ proc vecFromC(vec: ptr cfloat, vecLen: csize_t): seq[float32] =
     return @[]
   if vec == nil:
     raise newException(ValueError, "vec is nil")
-  result = newSeq[float32](int(vecLen))
+  let nVec = countFromC(vecLen, "vec_len")
+  result = newSeq[float32](nVec)
   let rawVec = cast[ptr UncheckedArray[cfloat]](vec)
-  for i in 0 ..< int(vecLen):
+  for i in 0 ..< nVec:
     result[i] = float32(rawVec[i])
 
 proc kouten_retrieve(h: pointer, vec: ptr cfloat, vecLen: csize_t, ring: cstring,
@@ -557,7 +575,7 @@ proc kouten_retrieve(h: pointer, vec: ptr cfloat, vecLen: csize_t, ring: cstring
     result.fanout_nodes = cint(rr.stats.fanoutNodes)
     result.candidate_reduction = cdouble(rr.stats.candidateReduction)
     if rr.hits.len > 0:
-      let hitBytes = rr.hits.len * sizeof(KoutenCHit)
+      let hitBytes = allocBytesFor(rr.hits.len, sizeof(KoutenCHit), "retrieve hits")
       result.hits = cast[ptr KoutenCHit](allocShared0(hitBytes))
       let rawHits = cast[ptr UncheckedArray[KoutenCHit]](result.hits)
       for i, hit in rr.hits:

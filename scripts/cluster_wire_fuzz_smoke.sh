@@ -43,4 +43,10 @@ src/koutencli health --peers="$PEERS" --user=alice --password=secret
 echo "[cluster-wire-fuzz] run tcluster_wire_fuzz"
 KOUTEN_TEST_PEERS="$PEERS" nim c --nimcache:/tmp/nimcache_kouten_tcluster_wire_fuzz -r tests/tcluster_wire_fuzz.nim
 
+echo "[cluster-wire-fuzz] verify retrieve guard audit event"
+if ! grep -R '"event":"broad-scan-denied"' "$DATA"/node*/kouten.audit.jsonl >/dev/null 2>&1; then
+  echo "missing broad-scan-denied server audit event" >&2
+  exit 1
+fi
+
 echo "[cluster-wire-fuzz] OK"

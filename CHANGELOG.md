@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.10.0 - 2026-08-03
+
+### Added
+
+- Added operational server configuration loading and verification, including
+  opt-in write guardrails, audit events, capacity thresholds, backup
+  verification, and a Docker Compose operational trial.
+- Added explicit scale-in migration and rolling topology activation with
+  migration progress, handoff, and drain controls.
+- Added a local three-node soak runner that isolates the exact binaries and
+  data directories used for a run, records JSONL progress, takes a final
+  snapshot, and performs offline verification after shutdown.
+- Added ring-scoped cluster retrieval coverage and a retrieval-locality
+  benchmark helper.
+
+### Changed
+
+### Changed
+
+- Removed the optional FAISS bridge, fetch/build scripts, vendored-source
+  metadata, and runtime backend selection API.
+- Standardized vector retrieval on the dependency-free exact path: KoutenDB
+  narrows candidates by ring before cosine ranking instead of maintaining a
+  second global vector index.
+- Reworked the vector benchmark to compare broad and ring-scoped exact
+  retrieval directly.
+
+### Fixed / Hardened
+
+- Decoupled physical placement from the logical orbit schedule so a logical
+  orbit boundary cannot stall local request processing.
+- Kept handoff I/O off the request loop and prevented stale handoff replay
+  from resurrecting an older mutation.
+- Corrected disk-backed locality verification so its score describes physical
+  WAL run locality rather than a misleading in-memory measure.
+- Restricted cluster `RETRIEVE` to its requested ring instead of falling back
+  to a cluster-wide scan.
+- Extended C ABI validation, coordinate-lock edge coverage, wire-fuzz smoke
+  coverage, topology migration tests, and recovery/handoff smoke coverage.
+
 ## v0.9.0 - 2026-07-21
 
 ### Added

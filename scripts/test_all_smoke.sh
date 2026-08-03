@@ -12,11 +12,16 @@ scripts/cluster_authz_smoke.sh
 scripts/cluster_rbac_smoke.sh
 scripts/cluster_wire_driver_smoke.sh
 scripts/cluster_wire_fuzz_smoke.sh
+scripts/cluster_retrieve_routing_smoke.sh
+scripts/handoff_reclamation_smoke.sh
+scripts/placement_migration_smoke.sh
+scripts/scale_in_migration_smoke.sh
 scripts/cluster_tls_smoke.sh
 scripts/recovery_smoke.sh
 scripts/universe_sync_failure_smoke.sh
 scripts/universe_sync_remote_smoke.sh
 scripts/demo_smoke.sh
+scripts/compose_config_smoke.sh
 
 if [[ "${KOUTEN_TEST_DRIVERS:-0}" == "1" ]]; then
   scripts/driver_compat.sh

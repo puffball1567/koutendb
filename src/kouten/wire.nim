@@ -7,20 +7,33 @@
 ##   PUTR <ringLen> <payloadLen> <vecDim>\n<ring><payload><vec>
 ##       → ID <parent> <epoch> <seq> <tWrite> <period> <head>\n
 ##   GETID <parent> <epoch> <seq> <tWrite> <period> <head>\n
-##       → VAL <node> <len>\n<payload> | MISS\n
+##       → VAL <node> <len>\n<payload> | MISS
+##         | FWD <parent> <epoch> <seq> <tWrite> <period> <head> [owner]\n
 ##   QRYID <parent> <epoch> <seq> <tWrite> <period> <head> <selLen>\n<sel>
-##       → VAL <node> <len>\n<json> | MISS | ERR <msg>\n
+##       → VAL <node> <len>\n<json> | MISS | ERR <msg>
+##         | FWD <parent> <epoch> <seq> <tWrite> <period> <head> [owner]\n
 ##   TXGETID <parent> <epoch> <seq> <tWrite> <period> <head>\n
 ##       → VAL <node> <len>\n<payload> | MISS\n
 ##   TXQRYID <parent> <epoch> <seq> <tWrite> <period> <head> <selLen>\n<sel>
 ##       → VAL <node> <len>\n<json> | MISS | ERR <msg>\n
 ##   PUT <ringKey> <period> <head> <len> <vecDim>\n<payload><vec> → OK <seq> <tWrite>\n
-##   GET <parent> <seq> <period> <head> <tWrite>\n             → VAL <node> <len>\n<payload> | MISS\n
-##   QRY <parent> <seq> <period> <head> <tWrite> <len>\n<sel>  → VAL <node> <len>\n<json>  | MISS\n | ERR <msg>\n
+##   GET <parent> <seq> <period> <head> <tWrite>\n
+##       → VAL <node> <len>\n<payload> | MISS
+##         | FWD <parent> <seq> <tWrite> [owner]\n
+##   QRY <parent> <seq> <period> <head> <tWrite> <len>\n<sel>
+##       → VAL <node> <len>\n<json> | MISS | ERR <msg>
+##         | FWD <parent> <seq> <tWrite> [owner]\n
 ##   BGET <n> <bodyLen>\n repeated: <parent> <seq> <period> <head> <tWrite>\n
 ##       → BVAL <n> <payloadLen>\n repeated: <len>\n<payload>
-##   TRF <parent> <seq> <period> <head> <tWrite> <len> <vecDim>\n<payload><vec> → OK\n
+##   TRF <parent> <seq> <period> <head> <tWrite> <len> <vecDim> <codec>
+##       [<physicalMicros> <logical> <origin>
+##        <placementEpoch> <placementNodes> <virtualArcs>]\n
+##       <payload><vec> → OK APPLIED|SKIPPED\n
 ##     （ノード間ハンドオフ）
+##   TRFD <parent> <seq> <period> <head> <tWrite>
+##       <physicalMicros> <logical> <origin> [<ackedNodes> <reclaimAfter>
+##       <placementEpoch> <placementNodes> <virtualArcs>]\n
+##       → OK APPLIED|SKIPPED\n
 ##   TXBEGIN\n                                                  → OK <txid>\n
 ##   TXRESERVE <txid> <ringKey> <period> <head>\n              → OK <seq> <tWrite>\n
 ##   TXCOMMIT <txid> <n>\n repeated: <parent> ... <vecDim>\n<payload><vec> → OK\n
@@ -36,11 +49,24 @@
 ##     → RHIT <scanned> <ringsTouched> <n>\n repeated: <parent> <seq> <tWrite> <score> <len>\n<payload>
 ##   RINGS\n → RINGS <n>\n repeated: RING <ringKey> <count> <vecDim>\n<centroid>
 ##   STATS\n                                                   → OK <node> <count>\n
+##   TOPOLOGY\n
+##       → TOPOLOGY <placementEpoch> <nNodes> <virtualArcsPerNode>\n
+##   MIGVERIFY <parent> <seq> <physicalMicros> <logical> <origin> <deleted>\n
+##       → MIGRATION MATCH|AHEAD LIVE|DELETED\n
+##   MIGMETA <placementEpoch> <placementNodes> <virtualArcs> <len>\n<json>
+##       → OK APPLIED\n
+##   MIGMETAVERIFY <placementEpoch> <placementNodes> <virtualArcs> <len>\n<json>
+##       → MIGRATION MATCH\n
+##   ACTIVATION
+##       → ACTIVATION READY|ACTIVE|BLOCKED <epoch> <nodes> <virtualArcs> <pending>\n
+##   Topology-fenced TRF/TRFD may append MIGRATION for admin-only transfer
+##   while the destination is persistently drained.
 
 import std/[net, strutils, tables]
-import ./[auth, payload]
+import ./[auth, payload, mutation, core]
 
 export payload
+export mutation
 
 const
   WireProtocolVersion* = 1
@@ -70,6 +96,7 @@ type
     payload*: string
     codec*: PayloadCodec
     vec*: seq[float32]
+    version*: MutationVersion
 
   WireId* = object
     parent*: uint64
@@ -82,6 +109,7 @@ type
   WireGetResult* = object
     found*: bool
     node*: int
+    targetNode*: int
     value*: string
     codec*: PayloadCodec
     deleted*: bool
@@ -139,7 +167,7 @@ type
     challengeHex: string
     buffer: string
 
-var secureConns = initTable[int, SecureState]()
+var secureConns {.threadvar.}: Table[int, SecureState]
 
 proc parsePeers*(s: string): seq[Peer] =
   ## "host:port,host:port,..." を解析。リスト内の位置 = ノードID。
@@ -399,7 +427,8 @@ proc putRingReq*(c: ClusterClient, node: int, ring: string, payload: string,
          period: parseFloat(r[5]),
          head: parseFloat(r[6]))
 
-proc getIdReq*(c: ClusterClient, node: int, id: WireId): WireGetResult =
+proc getIdReq*(c: ClusterClient, node: int, id: WireId,
+               redirectsLeft = 2): WireGetResult =
   c.ensureCodecMetadata(node)
   let r = c.rpc(node, "GETID " & $id.parent & " " & $id.epoch & " " &
                 $id.seq & " " & $id.tWrite & " " & $id.period & " " &
@@ -409,33 +438,43 @@ proc getIdReq*(c: ClusterClient, node: int, id: WireId): WireGetResult =
   if r[0] == "GONE":
     return WireGetResult(found: false, node: node, deleted: true)
   if r[0] == "FWD":
+    let forwardedId = WireId(parent: parseBiggestUInt(r[1]).uint64,
+                             epoch: parseUInt(r[2]).uint32,
+                             seq: parseUInt(r[3]).uint32,
+                             tWrite: parseFloat(r[4]),
+                             period: parseFloat(r[5]),
+                             head: parseFloat(r[6]))
+    let targetNode = if r.len >= 8: parseInt(r[7]) else: -1
+    if targetNode >= 0 and redirectsLeft > 0:
+      return c.getIdReq(targetNode, forwardedId, redirectsLeft - 1)
     return WireGetResult(found: false, node: node, forwarded: true,
-                         id: WireId(parent: parseBiggestUInt(r[1]).uint64,
-                                    epoch: parseUInt(r[2]).uint32,
-                                    seq: parseUInt(r[3]).uint32,
-                                    tWrite: parseFloat(r[4]),
-                                    period: parseFloat(r[5]),
-                                    head: parseFloat(r[6])))
+                         id: forwardedId, targetNode: targetNode)
   expect(r, "VAL", "GETID")
   WireGetResult(found: true, node: parseInt(r[1]),
                 value: c.socks[node].readExact(parseInt(r[2])),
                 codec: if r.len >= 4: parsePayloadCodec(r[3]) else: pcRaw)
 
 proc queryIdReq*(c: ClusterClient, node: int, id: WireId,
-                 selection: string): WireGetResult =
+                 selection: string, redirectsLeft = 2): WireGetResult =
+  c.ensureCodecMetadata(node)
   let r = c.rpc(node, "QRYID " & $id.parent & " " & $id.epoch & " " &
                 $id.seq & " " & $id.tWrite & " " & $id.period & " " &
                 $id.head & " " & $selection.len, selection)
   if r[0] == "MISS":
     return WireGetResult(found: false, node: node)
   if r[0] == "FWD":
+    let forwardedId = WireId(parent: parseBiggestUInt(r[1]).uint64,
+                             epoch: parseUInt(r[2]).uint32,
+                             seq: parseUInt(r[3]).uint32,
+                             tWrite: parseFloat(r[4]),
+                             period: parseFloat(r[5]),
+                             head: parseFloat(r[6]))
+    let targetNode = if r.len >= 8: parseInt(r[7]) else: -1
+    if targetNode >= 0 and redirectsLeft > 0:
+      return c.queryIdReq(targetNode, forwardedId, selection,
+                          redirectsLeft - 1)
     return WireGetResult(found: false, node: node, forwarded: true,
-                         id: WireId(parent: parseBiggestUInt(r[1]).uint64,
-                                    epoch: parseUInt(r[2]).uint32,
-                                    seq: parseUInt(r[3]).uint32,
-                                    tWrite: parseFloat(r[4]),
-                                    period: parseFloat(r[5]),
-                                    head: parseFloat(r[6])))
+                         id: forwardedId, targetNode: targetNode)
   if r[0] == "ERR":
     raise newException(ValueError, "query: " & r[1 .. ^1].join(" "))
   expect(r, "VAL", "QRYID")
@@ -470,18 +509,20 @@ proc getReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
              period, head, tWrite: float): tuple[found: bool, node: int, value: string,
                                                   codec: PayloadCodec,
                                                   forwarded: bool, newParent: uint64,
-                                                  newSeq: uint32, newTWrite: float] =
+                                                  newSeq: uint32, newTWrite: float,
+                                                  targetNode: int] =
   c.ensureCodecMetadata(node)
   let r = c.rpc(node, "GET " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite)
-  if r[0] == "MISS": return (false, node, "", pcRaw, false, 0'u64, 0'u32, 0.0)
+  if r[0] == "MISS": return (false, node, "", pcRaw, false, 0'u64, 0'u32, 0.0, -1)
   if r[0] == "FWD":
     return (false, node, "", pcRaw, true, parseBiggestUInt(r[1]).uint64,
-            parseUInt(r[2]).uint32, parseFloat(r[3]))
+            parseUInt(r[2]).uint32, parseFloat(r[3]),
+            if r.len >= 5: parseInt(r[4]) else: -1)
   expect(r, "VAL", "GET")
   (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])),
    (if r.len >= 4: parsePayloadCodec(r[3]) else: pcRaw),
-   false, 0'u64, 0'u32, 0.0)
+   false, 0'u64, 0'u32, 0.0, -1)
 
 proc getValueReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                   period, head, tWrite: float): tuple[found: bool, node: int,
@@ -489,19 +530,21 @@ proc getValueReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                                                        forwarded: bool,
                                                        newParent: uint64,
                                                        newSeq: uint32,
-                                                       newTWrite: float] =
+                                                       newTWrite: float,
+                                                       targetNode: int] =
   ## Hot path for ordinary get(). It intentionally ignores optional codec
   ## metadata because callers only need the payload bytes.
   let r = c.rpc(node, "GET " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite)
   if r[0] == "MISS":
-    return (false, node, "", false, 0'u64, 0'u32, 0.0)
+    return (false, node, "", false, 0'u64, 0'u32, 0.0, -1)
   if r[0] == "FWD":
     return (false, node, "", true, parseBiggestUInt(r[1]).uint64,
-            parseUInt(r[2]).uint32, parseFloat(r[3]))
+            parseUInt(r[2]).uint32, parseFloat(r[3]),
+            if r.len >= 5: parseInt(r[4]) else: -1)
   expect(r, "VAL", "GET")
   (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])),
-   false, 0'u64, 0'u32, 0.0)
+   false, 0'u64, 0'u32, 0.0, -1)
 
 proc batchGetReq*(c: ClusterClient, node: int,
                   ids: seq[tuple[parent: uint64, seq: uint32, period: float,
@@ -552,34 +595,129 @@ proc queryReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                selection: string): tuple[found: bool, node: int, value: string,
                                           codec: PayloadCodec,
                                           forwarded: bool, newParent: uint64,
-                                          newSeq: uint32, newTWrite: float] =
+                                          newSeq: uint32, newTWrite: float,
+                                          targetNode: int] =
   let r = c.rpc(node, "QRY " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " & $selection.len, selection)
-  if r[0] == "MISS": return (false, node, "", pcJson, false, 0'u64, 0'u32, 0.0)
+  if r[0] == "MISS": return (false, node, "", pcJson, false, 0'u64, 0'u32, 0.0, -1)
   if r[0] == "FWD":
     return (false, node, "", pcJson, true, parseBiggestUInt(r[1]).uint64,
-            parseUInt(r[2]).uint32, parseFloat(r[3]))
+            parseUInt(r[2]).uint32, parseFloat(r[3]),
+            if r.len >= 5: parseInt(r[4]) else: -1)
   if r[0] == "ERR":
     raise newException(ValueError, "query: " & r[1 .. ^1].join(" "))
   expect(r, "VAL", "QRY")
   (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])), pcJson,
-   false, 0'u64, 0'u32, 0.0)
+   false, 0'u64, 0'u32, 0.0, -1)
 
-proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
-                  period, head, tWrite: float, payload: string,
-                  vec: seq[float32] = @[],
-                  codec = pcRaw,
-                  timeoutMs = 10_000) =
+proc transferStatusReq*(c: ClusterClient, node: int, parent: uint64,
+                        seq: uint32, period, head, tWrite: float,
+                        payload: string, vec: seq[float32] = @[],
+                        codec = pcRaw,
+                        version = MutationVersion(),
+                        timeoutMs = 10_000,
+                        expectedPlacementEpoch = 0'u32,
+                        expectedPlacementNodes = 0'u16,
+                        expectedVirtualArcs = 0,
+                        maintenanceMigration = false): string =
   ## Inter-node handoff. koutend is single-threaded, so callers should pass a
   ## short timeoutMs to avoid long blocking during mutual transfer.
   let body =
     if vec.len == 0: payload
     else: payload & vec.vecBytes
+  let placementFence =
+    if expectedPlacementEpoch == 0 and expectedPlacementNodes == 0 and
+        expectedVirtualArcs == 0:
+      ""
+    elif expectedPlacementEpoch > 0 and expectedPlacementNodes > 0 and
+        expectedVirtualArcs > 0:
+      " " & $expectedPlacementEpoch & " " & $expectedPlacementNodes & " " &
+        $expectedVirtualArcs
+    else:
+      raise newException(ValueError,
+        "TRF placement fence must be entirely specified or omitted")
+  if maintenanceMigration and placementFence.len == 0:
+    raise newException(ValueError,
+      "maintenance migration requires a placement fence")
+  let migrationMarker = if maintenanceMigration: " MIGRATION" else: ""
   let r = c.rpc(node, "TRF " & $parent & " " & $seq & " " & $period & " " &
                 $head & " " & $tWrite & " " & $payload.len & " " & $vec.len &
-                " " & codec.payloadCodecName, body,
+                " " & codec.payloadCodecName & " " &
+                version.mutationVersionFields & placementFence &
+                migrationMarker, body,
                 timeoutMs = timeoutMs)
   expect(r, "OK", "TRF")
+  if r.len != 2 or r[1] notin ["APPLIED", "SKIPPED"]:
+    raise newException(IOError,
+      "TRF returned an invalid acknowledgement")
+  r[1]
+
+proc transferReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
+                  period, head, tWrite: float, payload: string,
+                  vec: seq[float32] = @[],
+                  codec = pcRaw,
+                  version = MutationVersion(),
+                  timeoutMs = 10_000,
+                  expectedPlacementEpoch = 0'u32,
+                  expectedPlacementNodes = 0'u16,
+                  expectedVirtualArcs = 0,
+                  maintenanceMigration = false) =
+  discard c.transferStatusReq(
+    node, parent, seq, period, head, tWrite, payload, vec, codec, version,
+    timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
+    expectedVirtualArcs, maintenanceMigration)
+
+proc transferDeleteStatusReq*(c: ClusterClient, node: int, parent: uint64,
+                              seq: uint32, period, head, tWrite: float,
+                              version: MutationVersion,
+                              acknowledgedNodes: seq[uint16] = @[],
+                              reclaimAfter = 0.0,
+                              timeoutMs = 10_000,
+                              expectedPlacementEpoch = 0'u32,
+                              expectedPlacementNodes = 0'u16,
+                              expectedVirtualArcs = 0,
+                              maintenanceMigration = false): string =
+  let placementFence =
+    if expectedPlacementEpoch == 0 and expectedPlacementNodes == 0 and
+        expectedVirtualArcs == 0:
+      ""
+    elif expectedPlacementEpoch > 0 and expectedPlacementNodes > 0 and
+        expectedVirtualArcs > 0:
+      " " & $expectedPlacementEpoch & " " & $expectedPlacementNodes & " " &
+        $expectedVirtualArcs
+    else:
+      raise newException(ValueError,
+        "TRFD placement fence must be entirely specified or omitted")
+  if maintenanceMigration and placementFence.len == 0:
+    raise newException(ValueError,
+      "maintenance migration requires a placement fence")
+  let migrationMarker = if maintenanceMigration: " MIGRATION" else: ""
+  let r = c.rpc(node, "TRFD " & $parent & " " & $seq & " " & $period & " " &
+                $head & " " & $tWrite & " " &
+                version.mutationVersionFields & " " &
+                acknowledgedNodes.acknowledgedNodesField & " " &
+                $reclaimAfter & placementFence & migrationMarker,
+                timeoutMs = timeoutMs)
+  expect(r, "OK", "TRFD")
+  if r.len != 2 or r[1] notin ["APPLIED", "SKIPPED"]:
+    raise newException(IOError,
+      "TRFD returned an invalid acknowledgement")
+  r[1]
+
+proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
+                        seq: uint32, period, head, tWrite: float,
+                        version: MutationVersion,
+                        acknowledgedNodes: seq[uint16] = @[],
+                        reclaimAfter = 0.0,
+                        timeoutMs = 10_000,
+                        expectedPlacementEpoch = 0'u32,
+                        expectedPlacementNodes = 0'u16,
+                        expectedVirtualArcs = 0,
+                        maintenanceMigration = false) =
+  discard c.transferDeleteStatusReq(
+    node, parent, seq, period, head, tWrite, version, acknowledgedNodes,
+    reclaimAfter, timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
+    expectedVirtualArcs, maintenanceMigration)
 
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
   let r = c.rpc(node, "TXBEGIN")
@@ -596,9 +734,13 @@ proc txReserveReq*(c: ClusterClient, node: int, txid, ringKey: uint64,
 proc txCommitReq*(c: ClusterClient, node: int, txid: uint64, ops: seq[TxWireOp]) =
   var body = ""
   for op in ops:
-    body.add((if op.delete: "D " else: "P ") & $op.parent & " " & $op.seq & " " & $op.period & " " &
-             $op.head & " " & $op.tWrite & " " & $op.payload.len & " " &
-             $op.vec.len & " " & op.codec.payloadCodecName & "\n")
+    body.add((if op.delete: "D " else: "P ") & $op.parent & " " & $op.seq &
+             " " & $op.period & " " & $op.head & " " & $op.tWrite & " " &
+             $op.payload.len & " " & $op.vec.len & " " &
+             op.codec.payloadCodecName)
+    if not op.version.isZero:
+      body.add " " & op.version.mutationVersionFields
+    body.add "\n"
     body.add(op.payload)
     if op.vec.len > 0:
       body.add(op.vec.vecBytes)
@@ -645,7 +787,8 @@ proc applyTxReq*(c: ClusterClient, node: int, txid: uint64, op: TxWireOp,
   let r = c.rpc(node, "APPLYTX " & $txid & " " & kind & " " & $op.parent & " " & $op.seq & " " &
                 $op.period & " " & $op.head & " " & $op.tWrite & " " &
                 $op.payload.len & " " & $op.vec.len & " " &
-                op.codec.payloadCodecName, body, timeoutMs = timeoutMs)
+                op.codec.payloadCodecName & " " &
+                op.version.mutationVersionFields, body, timeoutMs = timeoutMs)
   expect(r, "OK", "APPLYTX")
 
 proc retrieveReq*(c: ClusterClient, node: int, hasRing: bool, ringKey: uint64,
@@ -705,10 +848,108 @@ proc metricsReq*(c: ClusterClient, node: int): string =
   expect(r, "OK", "METRICS")
   r[1 .. ^1].join(" ")
 
+proc drainReq*(c: ClusterClient, node: int): string =
+  let r = c.rpc(node, "DRAIN")
+  expect(r, "OK", "DRAIN")
+  r[1 .. ^1].join(" ")
+
+proc resumeReq*(c: ClusterClient, node: int): string =
+  let r = c.rpc(node, "RESUME")
+  expect(r, "OK", "RESUME")
+  r[1 .. ^1].join(" ")
+
+proc snapshotReq*(c: ClusterClient, node: int): string =
+  let r = c.rpc(node, "SNAPSHOT")
+  expect(r, "SNAPSHOT", "SNAPSHOT")
+  r[1 .. ^1].join(" ")
+
 proc wireVersionReq*(c: ClusterClient, node: int): int =
   let r = c.rpc(node, "WIREVER")
   expect(r, "WIREVER", "WIREVER")
   parseInt(r[1])
+
+proc topologyReq*(c: ClusterClient, node: int): ArcTable =
+  let r = c.rpc(node, "TOPOLOGY")
+  expect(r, "TOPOLOGY", "TOPOLOGY")
+  if r.len != 4:
+    raise newException(IOError, "TOPOLOGY returned an invalid response")
+  let epoch = parseUInt(r[1])
+  let nNodes = parseUInt(r[2])
+  let virtualArcs = parseInt(r[3])
+  if epoch == 0 or epoch > uint32.high.uint64 or
+      nNodes == 0 or nNodes > uint16.high.uint64 or virtualArcs <= 0:
+    raise newException(IOError, "TOPOLOGY returned invalid values")
+  virtualArcTable(uint32(epoch), uint16(nNodes), virtualArcs)
+
+proc activationReq*(c: ClusterClient, node: int): tuple[
+    state: string, epoch: uint32, nodes: uint16, virtualArcs: int,
+    migrationPending: int] =
+  let r = c.rpc(node, "ACTIVATION")
+  expect(r, "ACTIVATION", "ACTIVATION")
+  if r.len != 6 or r[1] notin ["READY", "ACTIVE", "BLOCKED"]:
+    raise newException(IOError, "ACTIVATION returned an invalid response")
+  let epoch = parseUInt(r[2])
+  let nodes = parseUInt(r[3])
+  let virtualArcs = parseInt(r[4])
+  let migrationPending = parseInt(r[5])
+  if epoch == 0 or epoch > uint32.high.uint64 or
+      nodes == 0 or nodes > uint16.high.uint64 or virtualArcs <= 0 or
+      migrationPending < 0:
+    raise newException(IOError, "ACTIVATION returned invalid values")
+  (r[1], uint32(epoch), uint16(nodes), virtualArcs, migrationPending)
+
+proc migrationVerifyReq*(c: ClusterClient, node: int, parent: uint64,
+                         seq: uint32, version: MutationVersion,
+                         deleted: bool): tuple[ahead: bool, deleted: bool] =
+  version.validateMutationVersion()
+  if version.isZero:
+    raise newException(ValueError,
+      "migration verification requires a non-zero mutation version")
+  let r = c.rpc(node, "MIGVERIFY " & $parent & " " & $seq & " " &
+                version.mutationVersionFields & " " &
+                $(if deleted: 1 else: 0))
+  expect(r, "MIGRATION", "MIGVERIFY")
+  if r.len != 3 or r[1] notin ["MATCH", "AHEAD"] or
+      r[2] notin ["LIVE", "DELETED"]:
+    raise newException(IOError,
+      "MIGVERIFY returned an invalid response: " & r.join(" "))
+  (ahead: r[1] == "AHEAD", deleted: r[2] == "DELETED")
+
+proc migrationMetadataReq*(c: ClusterClient, node: int, metadataJson: string,
+                           expectedPlacementEpoch: uint32,
+                           expectedPlacementNodes: uint16,
+                           expectedVirtualArcs: int) =
+  if metadataJson.len == 0:
+    raise newException(ValueError, "migration metadata is empty")
+  if expectedPlacementEpoch == 0 or expectedPlacementNodes == 0 or
+      expectedVirtualArcs <= 0:
+    raise newException(ValueError,
+      "migration metadata requires a complete topology fence")
+  let r = c.rpc(node, "MIGMETA " & $expectedPlacementEpoch & " " &
+                $expectedPlacementNodes & " " & $expectedVirtualArcs & " " &
+                $metadataJson.len, metadataJson)
+  expect(r, "OK", "MIGMETA")
+  if r.len != 2 or r[1] != "APPLIED":
+    raise newException(IOError,
+      "MIGMETA returned an invalid acknowledgement")
+
+proc migrationMetadataVerifyReq*(
+    c: ClusterClient, node: int, metadataJson: string,
+    expectedPlacementEpoch: uint32, expectedPlacementNodes: uint16,
+    expectedVirtualArcs: int) =
+  if metadataJson.len == 0:
+    raise newException(ValueError, "migration metadata is empty")
+  if expectedPlacementEpoch == 0 or expectedPlacementNodes == 0 or
+      expectedVirtualArcs <= 0:
+    raise newException(ValueError,
+      "migration metadata verification requires a complete topology fence")
+  let r = c.rpc(node, "MIGMETAVERIFY " & $expectedPlacementEpoch & " " &
+                $expectedPlacementNodes & " " & $expectedVirtualArcs & " " &
+                $metadataJson.len, metadataJson)
+  expect(r, "MIGRATION", "MIGMETAVERIFY")
+  if r.len != 2 or r[1] != "MATCH":
+    raise newException(IOError,
+      "MIGMETAVERIFY returned an invalid response")
 
 proc codecsReq*(c: ClusterClient, node: int): seq[PayloadCodec] =
   let r = c.rpc(node, "CODECS")

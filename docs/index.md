@@ -22,6 +22,9 @@ downstream AI/RAG or application logic.
 - [Use Case Recipes](use-case-recipes.md)
 - [Technical FAQ](technical-faq.md)
 - [Feature Status / Roadmap](koutendb-status.md)
+- [v0.10 Roadmap](v0.10-roadmap.md)
+- [Operational Trials](operational-trials.md)
+- [Soak Testing](soak-testing.md)
 - [Benchmark Notes](koutendb-bench.md)
 - [Benchmark Comparison Tables](benchmark-comparison.md)
 - [Effect Validation](effect-validation.md)
@@ -50,10 +53,9 @@ downstream AI/RAG or application logic.
 - [TLS Transport](tls-transport.md)
 - [Query Safety](query-safety.md)
 - [Payload Codecs](payload-codecs.md)
-- [Vector Backend Selection](vector-backends.md)
-- [FAISS Versioning Policy](faiss-versioning.md)
+- [Exact Vector Retrieval](vector-backends.md)
 
 ## Release
 
 - [Release Checklist](release-checklist.md)
-- [GitHub Release Draft](github-release-v0.9.0.md)
+- [GitHub Release Draft](github-release-v0.10.0.md)

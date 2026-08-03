@@ -7,7 +7,7 @@ waste, reducing search scope, transfer volume, prompt tokens, worker fanout,
 retries, and unsafe context inclusion in aggregate.
 
 KoutenDB reduces the candidate set before data reaches an LLM or reranker through
-placement, rings, halos, galaxies, vector backends, and retrieval statistics.
+placement, rings, halos, galaxies, exact vector ranking, and retrieval statistics.
 Shelfer handles MCP execution boundaries, Delivery, worker routing,
 token/cost budgets, RAG utility, and audit.
 
@@ -17,7 +17,7 @@ or retrieval source.
 
 ```text
 corpus / events / documents
-  -> KoutenDB galaxy / ring / vector backend
+  -> KoutenDB galaxy / ring / exact vector retrieval
   -> KoutenDB retrieval envelope
   -> Shelfer RAG source adapter
   -> Shelfer Delivery / policy / metrics / audit
@@ -139,7 +139,7 @@ KoutenDB exposes:
 | `source.provider` | Usually `koutendb`; adapters may namespace derived providers |
 | `source.galaxy` | Isolation / tenant boundary when available |
 | `source.ring` | Routed ring / topic namespace when available |
-| `source.backend` | `vbExact`, `cluster`, future `faiss`, etc. |
+| `source.backend` | `exact` for embedded retrieval or `cluster` for remote retrieval |
 | `source.sourceType` | `document`, `event`, `code`, `metric`, etc. |
 | `query.mode` | Retrieval mode such as `vector` |
 | `query.budget` | Requested result budget |
@@ -256,7 +256,7 @@ The analogy to RDB tuning is:
 | --- | --- |
 | SQL text | retrieval request + base ring |
 | optimizer plan | `RetrievalPlan` |
-| index choice | ring / future vector backend / future hierarchy traversal choice |
+| index choice | ring / hierarchy traversal choice |
 | optimizer hint | `SearchProfile` / internal `RetrievalTuning` profile |
 | workload advisor | external agent using atlas and stats, not KoutenDB read path |
 | `EXPLAIN` | envelope `plan` + `stats` |

@@ -1,0 +1,46 @@
+services:
+  kouten-app:
+    build:
+      context: ../..
+      dockerfile: examples/compose/Dockerfile
+    command:
+      - --config=/etc/koutendb/server.json
+      - --user=app
+      - --password=${KOUTEN_APP_PASSWORD:-change-me}
+      - --secret-key=${KOUTEN_APP_SECRET_KEY:-change-me-too}
+    ports:
+      - "7361:7301"
+    volumes:
+      - kouten_operational_app:/data
+      - ./operational-server.json:/etc/koutendb/server.json:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          koutencli health --peers=127.0.0.1:7301
+          --user=app
+          --password=$${KOUTEN_APP_PASSWORD:-change-me}
+          --secret-key=$${KOUTEN_APP_SECRET_KEY:-change-me-too}
+          >/dev/null
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  kouten-tools:
+    profiles:
+      - tools
+    build:
+      context: ../..
+      dockerfile: examples/compose/Dockerfile
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - koutencli verify --data=/data/app-main --segments --json
+    volumes:
+      - kouten_operational_app:/data
+      - kouten_operational_backup:/backup
+
+volumes:
+  kouten_operational_app:
+  kouten_operational_backup:

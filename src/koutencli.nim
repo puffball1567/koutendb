@@ -6,17 +6,16 @@
 ##   kouten query [--data=DIR | --peers=host:port,...] --ring=RING [--filter='{"id":"RAW_ID"}' | --id=RAW_ID] --selection=SEL
 ##   kouten list-ring [--data=DIR | --peers=host:port,...] --ring=RING [--limit=N] [--cursor=CURSOR]
 ##   kouten count-ring [--data=DIR | --peers=host:port,...] --ring=RING
-##   kouten health --peers=host:port,...
-##   kouten metrics --peers=host:port,...
+##   kouten health|metrics|drain|snapshot|resume --peers=host:port,...
 ##   kouten atlas [--data=DIR | --peers=host:port,...]
 ##   kouten driver list|info|install [LANG] [--manifest-path=FILE] [--execute]
 ##   kouten doctor
 
 import std/[algorithm, base64, os, osproc, strutils, strformat, json, times, monotimes,
-            parseopt, net, dynlib, tempfiles, tables]
+            parseopt, net, tempfiles, tables]
 import nimsodium/hash
 import koutendb
-import kouten/wire
+import kouten/[scale_in, wire]
 
 const
   RagTopics = 8
@@ -294,6 +293,39 @@ proc jsonPeersOpt(node: JsonNode, default: string): string =
   else:
     raise newException(ValueError, "config peers must be a string or array")
 
+proc jsonStringListOpt(node: JsonNode, key: string): seq[string] =
+  if node.kind != JObject or not node.hasKey(key):
+    return @[]
+  let value = node[key]
+  case value.kind
+  of JString:
+    for part in value.getStr().split(','):
+      let item = part.strip()
+      if item.len > 0:
+        result.add item
+  of JArray:
+    for item in value:
+      if item.kind != JString:
+        raise newException(ValueError, "config " & key & " entries must be strings")
+      let value = item.getStr().strip()
+      if value.len > 0:
+        result.add value
+  else:
+    raise newException(ValueError, "config " & key & " must be a string or array")
+
+proc configSecretValue(cfg: JsonNode, plainKey, fileKey, fileAlias: string): tuple[
+    hasValue: bool, source: string] =
+  let filePath = jsonStringOpt(cfg, fileKey, jsonStringOpt(cfg, fileAlias, ""))
+  if filePath.len > 0:
+    if not fileExists(filePath):
+      return (false, fileAlias & " missing: " & filePath)
+    if readFile(filePath).strip().len == 0:
+      return (false, fileAlias & " empty: " & filePath)
+    return (true, fileAlias)
+  if jsonStringOpt(cfg, plainKey, "").len > 0:
+    return (true, plainKey)
+  (false, "")
+
 proc requireCliTarget(dataDir, peers: string): string =
   resolveDataDir(dataDir, peers)
 
@@ -377,49 +409,349 @@ proc paginationName(mode: KoutenPaginationMode): string =
   of rpOff: "off"
   of rpOn: "on"
 
-proc checkFile(path, label: string): bool =
-  result = fileExists(path)
-  if result:
-    echo "ok   ", label, ": ", path
-  else:
-    echo "miss ", label, ": ", path
-
-proc checkDir(path, label: string): bool =
-  result = dirExists(path)
-  if result:
-    echo "ok   ", label, ": ", path
-  else:
-    echo "miss ", label, ": ", path
-
-proc runDoctor() =
+proc runDoctorSetup() =
   echo "KoutenDB setup doctor"
-  var ok = true
-  ok = checkDir("third_party/faiss", "FAISS source") and ok
-  ok = checkFile("third_party/faiss.version", "FAISS pinned version") and ok
-  ok = checkFile("lib/libkouten_faiss.so", "FAISS bridge") and ok
+  echo "ok   vector retrieval: dependency-free ring-scoped exact search"
+  echo "status: ready"
 
-  if fileExists("lib/libkouten_faiss.so"):
-    let lib = loadLib("lib/libkouten_faiss.so")
-    if lib == nil:
-      echo "fail FAISS bridge load: lib/libkouten_faiss.so"
-      echo "     Check that FAISS shared libraries are discoverable."
-      ok = false
-    else:
-      unloadLib(lib)
-      echo "ok   FAISS bridge load: lib/libkouten_faiss.so"
+proc printOperationalReport(report: KoutenOperationalVerifyReport;
+                            metricsFormat, jsonFormat: bool) =
+  if metricsFormat:
+    echo &"verifyOk {int(report.ok)}"
+    echo &"verifyWalExists {int(report.walExists)}"
+    echo &"verifyWalBytes {report.walBytes}"
+    echo &"verifyItems {report.items}"
+    echo &"verifyRings {report.rings}"
+    echo &"verifyRingNames {report.ringNames}"
+    echo &"verifyVectors {report.vectors}"
+    echo &"verifyDiskBacked {int(report.diskBacked)}"
+    echo &"verifySegmentDirExists {int(report.segmentDirExists)}"
+    echo &"verifySegmentFiles {report.segmentFiles}"
+    echo &"verifySegmentPackRecords {report.segmentPackRecords}"
+    echo &"verifyLocalityRingRuns {report.locality.ringRuns}"
+    echo &"verifyLocalityScore {report.locality.localityScore:.6f}"
+    for check in report.checks:
+      echo &"verifyCheck{{name=\"{check.name}\"}} {int(check.ok)}"
+    return
 
-  if ok:
-    echo "status: ready"
+  if jsonFormat:
+    var checks = newJArray()
+    for check in report.checks:
+      checks.add %*{
+        "name": check.name,
+        "ok": check.ok,
+        "message": check.message
+      }
+    echo pretty(%*{
+      "ok": report.ok,
+      "kind": "data",
+      "dataDir": report.dataDir,
+      "persistent": report.persistent,
+      "diskBacked": report.diskBacked,
+      "wal": {
+        "path": report.walPath,
+        "exists": report.walExists,
+        "bytes": report.walBytes
+      },
+      "store": {
+        "items": report.items,
+        "rings": report.rings,
+        "ringNames": report.ringNames,
+        "vectors": report.vectors,
+        "galaxy": report.galaxy
+      },
+      "segments": {
+        "path": report.segmentDir,
+        "exists": report.segmentDirExists,
+        "files": report.segmentFiles,
+        "rebuiltRecords": report.segmentPackRecords
+      },
+      "locality": {
+        "persistent": report.locality.persistent,
+        "walBytes": report.locality.walBytes,
+        "totalParticleRecords": report.locality.totalParticleRecords,
+        "liveParticleRecords": report.locality.liveParticleRecords,
+        "deadParticleRecords": report.locality.deadParticleRecords,
+        "ringCount": report.locality.ringCount,
+        "ringRuns": report.locality.ringRuns,
+        "fragmentedRings": report.locality.fragmentedRings,
+        "avgRunRecords": report.locality.avgRunRecords,
+        "maxRunRecords": report.locality.maxRunRecords,
+        "localityScore": report.locality.localityScore
+      },
+      "checks": checks
+    })
+    return
+
+  let statusName = if report.ok: "ok" else: "failed"
+  let galaxyName = if report.galaxy.len > 0: report.galaxy else: "<none>"
+  echo &"verify status: {statusName}"
+  echo &"data: {report.dataDir}"
+  echo &"wal: exists={report.walExists} bytes={report.walBytes} path={report.walPath}"
+  echo &"store: items={report.items} rings={report.rings} ringNames={report.ringNames} vectors={report.vectors} galaxy={galaxyName}"
+  echo &"segments: diskBacked={report.diskBacked} exists={report.segmentDirExists} files={report.segmentFiles} rebuiltRecords={report.segmentPackRecords}"
+  echo &"locality: ringRuns={report.locality.ringRuns} fragmentedRings={report.locality.fragmentedRings} score={report.locality.localityScore:.6f}"
+  for check in report.checks:
+    let prefix = if check.ok: "ok  " else: "fail"
+    echo &"{prefix} {check.name}: {check.message}"
+
+proc printBackupVerifyStats(stats: BackupStats; encrypted: bool;
+                            metricsFormat, jsonFormat: bool) =
+  if metricsFormat:
+    echo "verifyOk 1"
+    echo "verifyBackup 1"
+    echo &"verifyBackupEncrypted {int(encrypted)}"
+    echo &"verifyBackupBytes {stats.bytes}"
+    echo &"verifyBackupItems {stats.items}"
+    echo &"verifyBackupTombstones {stats.tombstones}"
+    echo &"verifyBackupForwarders {stats.forwarders}"
+    echo &"verifyBackupRings {stats.ringMeta}"
+    echo &"verifyBackupRingNames {stats.ringNames}"
+    echo &"verifyBackupClusterTx {stats.clusterTx}"
+    echo &"verifyBackupAppliedClusterTx {stats.appliedClusterTx}"
+    echo &"verifyBackupWarpJobs {stats.warpJobs}"
+    echo &"verifyBackupUniverseSyncEvents {stats.universeSyncEvents}"
+    return
+
+  if jsonFormat:
+    echo pretty(%*{
+      "ok": true,
+      "kind": "backup",
+      "encrypted": encrypted,
+      "bytes": stats.bytes,
+      "items": stats.items,
+      "tombstones": stats.tombstones,
+      "forwarders": stats.forwarders,
+      "rings": stats.ringMeta,
+      "ringNames": stats.ringNames,
+      "clusterTx": stats.clusterTx,
+      "appliedClusterTx": stats.appliedClusterTx,
+      "warpJobs": stats.warpJobs,
+      "universeSyncEvents": stats.universeSyncEvents,
+      "source": stats.source,
+      "destination": stats.destination
+    })
+    return
+
+  let kind = if encrypted: "encrypted backup" else: "backup"
+  echo &"verify status: ok"
+  echo &"{kind}: bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} source={stats.source} destination={stats.destination}"
+
+proc addConfigCheck(checks: var seq[KoutenOperationalCheck], name: string,
+                    ok: bool, message: string) =
+  checks.add KoutenOperationalCheck(name: name, ok: ok, message: message)
+
+proc jsonIntOpt(node: JsonNode, key: string, default: int): int =
+  if node.kind == JObject and node.hasKey(key):
+    node[key].getInt().int
   else:
-    echo "status: setup incomplete"
-    echo ""
-    echo "Run:"
-    echo "  scripts/fetch_faiss.sh"
-    echo "  scripts/setup_faiss_toolchain.sh   # if system CMake is too old"
-    echo "  scripts/build_faiss_bridge.sh"
-    echo "  nim c -d:ssl -o:bin/kouten src/kouten.nim"
-    echo "  bin/kouten doctor"
+    default
+
+proc verifyServerConfigFile(path: string): tuple[ok: bool,
+    checks: seq[KoutenOperationalCheck]] =
+  result.ok = true
+  try:
+    let cfg = parseFile(path)
+    if cfg.kind != JObject:
+      result.checks.addConfigCheck("server-config", false,
+        "server config must contain a JSON object")
+      result.ok = false
+      return
+
+    result.checks.addConfigCheck("server-config", true, "parsed JSON object")
+
+    let id =
+      if cfg.hasKey("id"): cfg["id"].getInt().int
+      else: -1
+    let peers = jsonPeersOpt(cfg, "")
+    let peerCount =
+      if peers.len == 0: 0
+      else: peers.split(',').len
+    let idOk = id >= 0 and peerCount > 0 and id < peerCount
+    result.checks.addConfigCheck("node-id-peers", idOk,
+      if idOk: &"id={id} peers={peerCount}"
+      else: "server config requires id within peers")
+
+    let dataDir = jsonStringOpt(cfg, "dataDir", jsonStringOpt(cfg, "data", ""))
+    result.checks.addConfigCheck("persistence", dataDir.len > 0,
+      if dataDir.len > 0: "dataDir configured: " & dataDir
+      else: "dataDir is empty; server would run memory-only")
+
+    let user = jsonStringOpt(cfg, "user", jsonStringOpt(cfg, "username", ""))
+    let password = configSecretValue(cfg, "password", "passwordFile",
+                                     "password-file")
+    let token = configSecretValue(cfg, "authToken", "authTokenFile",
+                                  "auth-token-file")
+    let secretKey = configSecretValue(cfg, "secretKey", "secretKeyFile",
+                                      "secret-key-file")
+    let hasUserPassword = user.len > 0 and password.hasValue
+    let hasToken = token.hasValue
+    let secretSourceOk = (password.source.len == 0 or password.hasValue) and
+                         (token.source.len == 0 or token.hasValue) and
+                         (secretKey.source.len == 0 or secretKey.hasValue)
+    let authOk = secretSourceOk and
+                 ((user.len == 0 and not password.hasValue and
+                   not secretKey.hasValue and not token.hasValue) or
+                  hasUserPassword or hasToken)
+    result.checks.addConfigCheck("auth", authOk,
+      if hasToken: "auth token configured via " & token.source
+      elif hasUserPassword: "username/password configured; password source=" & password.source
+      elif user.len == 0 and not password.hasValue and not secretKey.hasValue:
+        "auth disabled"
+      elif user.len == 0: "password or secret-key requires user"
+      else: "user requires password or passwordFile")
+    result.checks.addConfigCheck("secret-key-gate",
+      secretKey.source.len == 0 or hasUserPassword or hasToken,
+      if secretKey.source.len == 0: "secret-key gate disabled"
+      elif secretKey.hasValue: "secret-key gate configured via " & secretKey.source
+      else: secretKey.source)
+
+    var roleOk = true
+    var roleCount = 0
+    if cfg.hasKey("roles"):
+      if cfg["roles"].kind != JArray:
+        roleOk = false
+      else:
+        for item in cfg["roles"]:
+          inc roleCount
+          if item.kind == JString:
+            let parts = item.getStr().split(':', maxsplit = 3)
+            if parts.len < 3 or parts[0].len == 0 or parts[1].len == 0:
+              roleOk = false
+          elif item.kind == JObject:
+            let roleUser = jsonStringOpt(item, "user",
+              jsonStringOpt(item, "username", ""))
+            let rolePassword = configSecretValue(item, "password",
+              "passwordFile", "password-file")
+            if roleUser.len == 0 or not rolePassword.hasValue or
+                jsonStringOpt(item, "role", "").len == 0:
+              roleOk = false
+          else:
+            roleOk = false
+    result.checks.addConfigCheck("roles", roleOk,
+      if roleOk: &"roles={roleCount}"
+      else: "roles must be strings or objects with user/password/role")
+
+    let prefixes = jsonStringListOpt(cfg, "allowRing") &
+                   jsonStringListOpt(cfg, "allow-ring")
+    result.checks.addConfigCheck("ring-prefix-authz", true,
+      if prefixes.len > 0: &"prefixes={prefixes.len}"
+      else: "no ring-prefix boundary configured")
+
+    let placementEpoch = jsonIntOpt(cfg, "placementEpoch",
+      jsonIntOpt(cfg, "placement-epoch", 1))
+    let virtualArcs = jsonIntOpt(cfg, "virtualArcsPerNode",
+      jsonIntOpt(cfg, "virtual-arcs-per-node", 64))
+    let placementOk = placementEpoch > 0 and virtualArcs > 0
+    result.checks.addConfigCheck("physical-placement", placementOk,
+      if placementOk:
+        &"epoch={placementEpoch} nodes={peerCount} virtualArcsPerNode={virtualArcs}"
+      else:
+        "placementEpoch and virtualArcsPerNode must be positive")
+
+    let tlsCert = jsonStringOpt(cfg, "tlsCertFile", jsonStringOpt(cfg, "tls-cert", ""))
+    let tlsKey = jsonStringOpt(cfg, "tlsKeyFile", jsonStringOpt(cfg, "tls-key", ""))
+    let tlsCa = jsonStringOpt(cfg, "tlsCaFile", jsonStringOpt(cfg, "tls-ca", ""))
+    let tlsInsecure = jsonBoolOpt(cfg, "tlsInsecureSkipVerify",
+      jsonBoolOpt(cfg, "tls-insecure-skip-verify", false))
+    let tlsPairOk = (tlsCert.len == 0 and tlsKey.len == 0) or
+                    (tlsCert.len > 0 and tlsKey.len > 0)
+    result.checks.addConfigCheck("tls-cert-key", tlsPairOk,
+      if tlsPairOk and tlsCert.len > 0: "TLS listener certificate/key configured"
+      elif tlsPairOk: "TLS listener disabled"
+      else: "tlsCertFile and tlsKeyFile must be provided together")
+    if tlsCert.len > 0:
+      result.checks.addConfigCheck("tls-cert-file", fileExists(tlsCert), tlsCert)
+    if tlsKey.len > 0:
+      result.checks.addConfigCheck("tls-key-file", fileExists(tlsKey), tlsKey)
+    if tlsCa.len > 0:
+      result.checks.addConfigCheck("tls-ca-file", fileExists(tlsCa), tlsCa)
+    result.checks.addConfigCheck("tls-verify", not tlsInsecure,
+      if tlsInsecure: "tls-insecure-skip-verify is enabled"
+      else: "certificate verification is not explicitly disabled")
+
+    for check in result.checks:
+      if not check.ok:
+        result.ok = false
+  except CatchableError as e:
+    result.ok = false
+    result.checks.addConfigCheck("server-config", false, e.msg)
+
+proc printServerConfigReport(path: string, metricsFormat, jsonFormat: bool) =
+  let report = verifyServerConfigFile(path)
+  if metricsFormat:
+    echo &"verifyOk {int(report.ok)}"
+    for check in report.checks:
+      echo &"verifyCheck{{name=\"{check.name}\"}} {int(check.ok)}"
+    if not report.ok:
+      quit(1)
+    return
+  if jsonFormat:
+    var checks = newJArray()
+    for check in report.checks:
+      checks.add %*{"name": check.name, "ok": check.ok,
+                    "message": check.message}
+    echo pretty(%*{"ok": report.ok, "kind": "server-config",
+                   "path": path, "checks": checks})
+    if not report.ok:
+      quit(1)
+    return
+  let statusName = if report.ok: "ok" else: "failed"
+  echo &"verify status: {statusName}"
+  echo &"server-config: {path}"
+  for check in report.checks:
+    let prefix = if check.ok: "ok  " else: "fail"
+    echo &"{prefix} {check.name}: {check.message}"
+  if not report.ok:
     quit(1)
+
+proc runOperationalVerify(dataDir, backupDir, serverConfigPath,
+                          passphrase: string;
+                          verifySegments, metricsFormat, jsonFormat: bool;
+                          maxWalBytes: int64 = -1;
+                          maxSegmentFiles = -1;
+                          maxItems = -1;
+                          maxRings = -1) =
+  if serverConfigPath.len > 0:
+    printServerConfigReport(serverConfigPath, metricsFormat, jsonFormat)
+    return
+
+  if backupDir.len > 0:
+    let stats =
+      if passphrase.len > 0: verifyEncryptedBackup(backupDir, passphrase)
+      else: verifyBackup(backupDir)
+    printBackupVerifyStats(stats, passphrase.len > 0, metricsFormat,
+                           jsonFormat)
+    return
+
+  if dataDir.len == 0:
+    raise newException(ValueError, "verify requires --data=DIR or --backup=DIR")
+  let report = operationalVerify(dataDir, diskBacked = true,
+                                 verifySegments = verifySegments,
+                                 maxWalBytes = maxWalBytes,
+                                 maxSegmentFiles = maxSegmentFiles,
+                                 maxItems = maxItems,
+                                 maxRings = maxRings)
+  printOperationalReport(report, metricsFormat, jsonFormat)
+  if not report.ok:
+    quit(1)
+
+proc runDoctor(dataDir, backupDir, serverConfigPath, passphrase: string;
+               verifySegments, metricsFormat, jsonFormat: bool;
+               maxWalBytes: int64 = -1;
+               maxSegmentFiles = -1;
+               maxItems = -1;
+               maxRings = -1) =
+  if dataDir.len > 0 or serverConfigPath.len > 0:
+    runOperationalVerify(dataDir, backupDir, serverConfigPath, passphrase,
+                         verifySegments, metricsFormat, jsonFormat,
+                         maxWalBytes, maxSegmentFiles, maxItems, maxRings)
+  elif backupDir.len > 0:
+    runOperationalVerify(dataDir, backupDir, serverConfigPath, passphrase,
+                         verifySegments, metricsFormat, jsonFormat,
+                         maxWalBytes, maxSegmentFiles, maxItems, maxRings)
+  else:
+    runDoctorSetup()
 
 proc redisBulk(parts: varargs[string]): string =
   result.add "*" & $parts.len & "\r\n"
@@ -588,6 +920,42 @@ proc runShutdown(peers, username, password, authToken, secretKey, galaxy: string
                    tlsServerName = tlsServerName,
                    tlsInsecureSkipVerify = tlsInsecureSkipVerify)
   for line in db.shutdownCluster():
+    echo line
+  db.close()
+
+proc runDrain(peers, username, password, authToken, secretKey, galaxy: string,
+              tls: bool, tlsCaFile, tlsServerName: string,
+              tlsInsecureSkipVerify: bool) =
+  var db = connect(peers, username = username, password = password,
+                   authToken = authToken, secretKey = secretKey, galaxy = galaxy,
+                   tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  for line in db.drainCluster():
+    echo line
+  db.close()
+
+proc runResume(peers, username, password, authToken, secretKey, galaxy: string,
+               tls: bool, tlsCaFile, tlsServerName: string,
+               tlsInsecureSkipVerify: bool) =
+  var db = connect(peers, username = username, password = password,
+                   authToken = authToken, secretKey = secretKey, galaxy = galaxy,
+                   tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  for line in db.resumeCluster():
+    echo line
+  db.close()
+
+proc runSnapshot(peers, username, password, authToken, secretKey, galaxy: string,
+                 tls: bool, tlsCaFile, tlsServerName: string,
+                 tlsInsecureSkipVerify: bool) =
+  var db = connect(peers, username = username, password = password,
+                   authToken = authToken, secretKey = secretKey, galaxy = galaxy,
+                   tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  for line in db.snapshotCluster():
     echo line
   db.close()
 
@@ -1670,7 +2038,7 @@ proc runCompact(dataDir: string, durability: KoutenDurability) =
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.compact()
   db.close()
-  echo &"compact OK before={stats.beforeBytes} after={stats.afterBytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} clusterTx={stats.clusterTx}"
+  echo &"compact OK before={stats.beforeBytes} after={stats.afterBytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} clusterTx={stats.clusterTx}"
 
 proc runLocality(dataDir: string, metricsFormat: bool) =
   if dataDir.len == 0:
@@ -1699,7 +2067,7 @@ proc runBackup(dataDir, backupDir: string, durability: KoutenDurability) =
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.backup(backupDir)
   db.close()
-  echo &"backup OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"backup OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 proc runRestore(backupDir, dataDir: string, overwrite: bool,
                 durability: KoutenDurability) =
@@ -1707,7 +2075,7 @@ proc runRestore(backupDir, dataDir: string, overwrite: bool,
     raise newException(ValueError, "restore requires --backup=DIR --data=DIR")
   let stats = restoreBackup(backupDir, dataDir, overwrite = overwrite,
                             durability = durability)
-  echo &"restore OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"restore OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 proc runBackupEncrypted(dataDir, backupDir, passphrase: string,
                         durability: KoutenDurability) =
@@ -1717,7 +2085,7 @@ proc runBackupEncrypted(dataDir, backupDir, passphrase: string,
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.backupEncrypted(backupDir, passphrase)
   db.close()
-  echo &"backup-encrypted OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"backup-encrypted OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 proc runRestoreEncrypted(backupDir, dataDir, passphrase: string,
                          overwrite: bool, durability: KoutenDurability) =
@@ -1727,7 +2095,7 @@ proc runRestoreEncrypted(backupDir, dataDir, passphrase: string,
   let stats = restoreEncryptedBackup(backupDir, dataDir, passphrase,
                                      overwrite = overwrite,
                                      durability = durability)
-  echo &"restore-encrypted OK bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
+  echo &"restore-encrypted OK bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} from={stats.source} to={stats.destination}"
 
 type
   RecoveryCandidate = object
@@ -1982,6 +2350,7 @@ proc recoveryManifest(encrypted: bool, archive, backupFile, universeName,
     "checksum": artifactChecksum(backupFile),
     "bytes": stats.bytes,
     "items": stats.items,
+    "tombstones": stats.tombstones,
     "rings": stats.ringMeta,
     "names": stats.ringNames,
     "clusterTx": stats.clusterTx,
@@ -2053,6 +2422,9 @@ proc verifyRecoveryMirror(archive, passphrase: string): RecoveryCandidate =
       raise newException(IOError, "recovery manifest checksum mismatch")
     if manifest.hasKey("items") and manifest["items"].getInt() != stats.items:
       raise newException(IOError, "recovery manifest item count mismatch")
+    if manifest.hasKey("tombstones") and
+        manifest["tombstones"].getInt() != stats.tombstones:
+      raise newException(IOError, "recovery manifest tombstone count mismatch")
     if manifest.hasKey("rings") and manifest["rings"].getInt() != stats.ringMeta:
       raise newException(IOError, "recovery manifest ring count mismatch")
     if manifest.hasKey("names") and manifest["names"].getInt() != stats.ringNames:
@@ -2069,9 +2441,9 @@ proc runRecoveryVerify(archive, passphrase: string, metricsFormat: bool) =
   let candidate = verifyRecoveryMirror(archive, passphrase)
   let stats = candidate.stats
   if metricsFormat:
-    echo &"recoveryMirrorHealthy 1 recoveryMirrorEncrypted {int(candidate.encrypted)} recoveryMirrorReadonly {int(candidate.readonly)} recoveryMirrorBytes {stats.bytes} recoveryMirrorItems {stats.items} recoveryMirrorRings {stats.ringMeta} recoveryMirrorNames {stats.ringNames} recoveryMirrorClusterTx {stats.clusterTx} recoveryMirrorWarpJobs {stats.warpJobs} recoveryMirrorUniverseSyncEvents {stats.universeSyncEvents} recoveryMirrorPriority {candidate.priority} recoveryMirrorSnapshotSeq {candidate.snapshotSeq}"
+    echo &"recoveryMirrorHealthy 1 recoveryMirrorEncrypted {int(candidate.encrypted)} recoveryMirrorReadonly {int(candidate.readonly)} recoveryMirrorBytes {stats.bytes} recoveryMirrorItems {stats.items} recoveryMirrorTombstones {stats.tombstones} recoveryMirrorRings {stats.ringMeta} recoveryMirrorNames {stats.ringNames} recoveryMirrorClusterTx {stats.clusterTx} recoveryMirrorWarpJobs {stats.warpJobs} recoveryMirrorUniverseSyncEvents {stats.universeSyncEvents} recoveryMirrorPriority {candidate.priority} recoveryMirrorSnapshotSeq {candidate.snapshotSeq}"
   else:
-    echo &"recovery-verify OK archive={archive} encrypted={candidate.encrypted} readonly={candidate.readonly} bytes={stats.bytes} items={stats.items} rings={stats.ringMeta} names={stats.ringNames} priority={candidate.priority} snapshotSeq={candidate.snapshotSeq}"
+    echo &"recovery-verify OK archive={archive} encrypted={candidate.encrypted} readonly={candidate.readonly} bytes={stats.bytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} priority={candidate.priority} snapshotSeq={candidate.snapshotSeq}"
 
 proc recoveryCandidateCmp(a, b: RecoveryCandidate): int =
   result = cmp(b.priority, a.priority)
@@ -2205,6 +2577,144 @@ proc runImportJsonl(dataDir, inPath, defaultRing, ringField, ringPrefix,
                              batchSize = batchSize)
   db.close()
   echo &"import-jsonl OK read={stats.read} imported={stats.imported} skipped={stats.skipped} errors={stats.errors} rings={stats.rings} batches={stats.batches} batchSize={stats.batchSize} source={stats.source}"
+
+proc scaleInClient(peers, username, password, authToken, secretKey, galaxy:
+                   string; tls: bool; tlsCaFile, tlsServerName: string;
+                   tlsInsecureSkipVerify: bool): ClusterClient =
+  if peers.len == 0:
+    raise newException(ValueError,
+      "scale-in commands require --peers=TARGET_HOSTS")
+  newClusterClient(parsePeers(peers), username = username, password = password,
+                   authToken = authToken, secretKey = secretKey,
+                   galaxy = galaxy, tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+
+proc scaleInPlanNode(plan: ScaleInPlan): JsonNode =
+  %*{
+    "source": {
+      "epoch": plan.sourceEpoch,
+      "nodes": plan.sourceNodes,
+      "virtualArcsPerNode": plan.sourceVirtualArcs
+    },
+    "target": {
+      "epoch": plan.targetEpoch,
+      "nodes": plan.targetNodes,
+      "virtualArcsPerNode": plan.targetVirtualArcs
+    },
+    "records": plan.records,
+    "tombstones": plan.tombstones,
+    "metadataObjects": plan.metadataObjects,
+    "recordsByTarget": plan.recordsByTarget,
+    "tombstonesByTarget": plan.tombstonesByTarget
+  }
+
+proc runScaleInPlan(dataDir, peers, username, password, authToken, secretKey,
+                    galaxy: string; tls: bool; tlsCaFile, tlsServerName: string;
+                    tlsInsecureSkipVerify, jsonFormat: bool) =
+  var client = scaleInClient(peers, username, password, authToken, secretKey,
+                             galaxy, tls, tlsCaFile, tlsServerName,
+                             tlsInsecureSkipVerify)
+  try:
+    let plan = planScaleIn(dataDir, client)
+    if jsonFormat:
+      echo $plan.scaleInPlanNode
+    else:
+      echo &"scale-in-plan OK sourceEpoch={plan.sourceEpoch} sourceNodes={plan.sourceNodes} targetEpoch={plan.targetEpoch} targetNodes={plan.targetNodes} records={plan.records} tombstones={plan.tombstones} metadataObjects={plan.metadataObjects}"
+      echo "recordsByTarget=" & $plan.recordsByTarget
+      echo "tombstonesByTarget=" & $plan.tombstonesByTarget
+  finally:
+    client.close()
+
+proc runScaleInMigrate(dataDir, peers, username, password, authToken,
+                       secretKey, galaxy, checkpointPath: string;
+                       checkpointEvery, retryLimit, retryDelayMs,
+                       maxTransfers: int;
+                       resetCheckpoint, tls: bool;
+                       tlsCaFile, tlsServerName: string;
+                       tlsInsecureSkipVerify, jsonFormat: bool) =
+  var client = scaleInClient(peers, username, password, authToken, secretKey,
+                             galaxy, tls, tlsCaFile, tlsServerName,
+                             tlsInsecureSkipVerify)
+  try:
+    let stats = migrateScaleIn(
+      dataDir, client, checkpointPath = checkpointPath,
+      checkpointEvery = checkpointEvery, retryLimit = retryLimit,
+      retryDelayMs = retryDelayMs, resetCheckpoint = resetCheckpoint,
+      maxTransfers = maxTransfers)
+    if jsonFormat:
+      echo $(%*{
+        "recordsAcked": stats.recordsAcked,
+        "tombstonesAcked": stats.tombstonesAcked,
+        "applied": stats.applied,
+        "skipped": stats.skipped,
+        "retries": stats.retries,
+        "metadataObjects": stats.metadataObjects,
+        "resumed": stats.resumed,
+        "complete": stats.complete,
+        "checkpoint": stats.checkpoint
+      })
+    else:
+      echo &"scale-in-migrate OK recordsAcked={stats.recordsAcked} tombstonesAcked={stats.tombstonesAcked} metadataObjects={stats.metadataObjects} applied={stats.applied} skipped={stats.skipped} retries={stats.retries} resumed={stats.resumed} complete={stats.complete} checkpoint={stats.checkpoint}"
+  finally:
+    client.close()
+
+proc runScaleInVerify(dataDir, peers, username, password, authToken,
+                      secretKey, galaxy, checkpointPath: string;
+                      retryLimit, retryDelayMs: int; tls: bool;
+                      tlsCaFile, tlsServerName: string;
+                      tlsInsecureSkipVerify, jsonFormat: bool) =
+  var client = scaleInClient(peers, username, password, authToken, secretKey,
+                             galaxy, tls, tlsCaFile, tlsServerName,
+                             tlsInsecureSkipVerify)
+  try:
+    let stats = verifyScaleIn(
+      dataDir, client, checkpointPath = checkpointPath,
+      retryLimit = retryLimit, retryDelayMs = retryDelayMs)
+    if jsonFormat:
+      echo $(%*{
+        "records": stats.records,
+        "tombstones": stats.tombstones,
+        "metadataObjects": stats.metadataObjects,
+        "matching": stats.matching,
+        "ahead": stats.ahead,
+        "retries": stats.retries,
+        "verified": true,
+        "checkpoint": stats.checkpoint
+      })
+    else:
+      echo &"scale-in-verify OK records={stats.records} tombstones={stats.tombstones} metadataObjects={stats.metadataObjects} matching={stats.matching} ahead={stats.ahead} retries={stats.retries} checkpoint={stats.checkpoint}"
+  finally:
+    client.close()
+
+proc scaleInCheckpointNode(checkpoint: ScaleInCheckpoint): JsonNode =
+  %*{
+    "format": checkpoint.format,
+    "phase": checkpoint.phase,
+    "complete": checkpoint.complete,
+    "verified": checkpoint.verified,
+    "sourceEpoch": checkpoint.sourceEpoch,
+    "sourceNodes": checkpoint.sourceNodes,
+    "targetEpoch": checkpoint.targetEpoch,
+    "targetNodes": checkpoint.targetNodes,
+    "recordsAcked": checkpoint.recordsAcked,
+    "tombstonesAcked": checkpoint.tombstonesAcked,
+    "metadataTransferred": checkpoint.metadataTransferred,
+    "ringIndex": checkpoint.ringIndex,
+    "itemIndex": checkpoint.itemIndex,
+    "tombstoneIndex": checkpoint.tombstoneIndex,
+    "targetPeers": checkpoint.targetPeers
+  }
+
+proc runScaleInStatus(checkpointPath: string; jsonFormat: bool) =
+  if checkpointPath.len == 0:
+    raise newException(ValueError,
+      "scale-in-status requires --checkpoint=FILE")
+  let checkpoint = loadScaleInCheckpoint(checkpointPath)
+  if jsonFormat:
+    echo $checkpoint.scaleInCheckpointNode
+  else:
+    echo &"scale-in-status phase={checkpoint.phase} complete={checkpoint.complete} verified={checkpoint.verified} metadataTransferred={checkpoint.metadataTransferred} sourceEpoch={checkpoint.sourceEpoch} sourceNodes={checkpoint.sourceNodes} targetEpoch={checkpoint.targetEpoch} targetNodes={checkpoint.targetNodes} recordsAcked={checkpoint.recordsAcked} tombstonesAcked={checkpoint.tombstonesAcked} checkpoint={checkpointPath}"
 
 proc universeSyncEventNode(event: UniverseSyncEvent): JsonNode =
   %*{
@@ -2482,18 +2992,23 @@ proc printHelp() =
   echo "  kouten ring-profile --data=DIR --ring=RING [--codec=raw|json|nif|bif] [--charset=UTF-8] [--format-version=VERSION]"
   echo "  kouten shell [--data=DIR | --peers=host:port,...]"
   echo "  kouten atlas [--data=DIR | --peers=host:port,...]"
-  echo "  kouten health|metrics|rings --peers=host:port,..."
+  echo "  kouten health|metrics|rings|drain|resume|snapshot --peers=host:port,..."
   echo "  kouten driver list|info|install [LANG] [--manifest-path=FILE] [--execute]"
   echo "  kouten compact --data=DIR"
   echo "  kouten locality --data=DIR [--metrics]"
   echo "  kouten backup --data=DIR --backup=DIR [--durability=buffered|strong]"
   echo "  kouten restore --backup=DIR --data=DIR [--overwrite] [--durability=buffered|strong]"
+  echo "  kouten verify [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
   echo "  kouten dump --data=DIR [--out=FILE] [--no-vectors]"
   echo "  kouten import-jsonl --data=DIR --in=FILE [--ring-field=FIELD] [--default-ring=RING] [--batch-size=N]"
+  echo "  kouten scale-in-plan --data=OLD_DIR --peers=TARGET_PEERS [--json]"
+  echo "  kouten scale-in-migrate --data=OLD_DIR --peers=TARGET_PEERS [--checkpoint=FILE] [--checkpoint-every=N] [--max-transfers=N] [--retry-limit=N] [--retry-delay-ms=N] [--reset-checkpoint] [--json]"
+  echo "  kouten scale-in-verify --data=OLD_DIR --peers=TARGET_PEERS [--checkpoint=FILE] [--retry-limit=N] [--retry-delay-ms=N] [--json]"
+  echo "  kouten scale-in-status --checkpoint=FILE [--json]"
   echo "  kouten universe-sync --data=SOURCE_DIR [--target-data=TARGET_DIR | --peers=host:port,...] [--prune-acked]"
   echo "  kouten universe-status [--data=DIR | --peers=host:port,...] [--metrics]"
   echo "  kouten recovery-status [--mirror=DIR...] [--universe-config=FILE] [--required-healthy=N] [--metrics]"
-  echo "  kouten doctor"
+  echo "  kouten doctor [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
   echo ""
   echo "ID formats:"
   echo "  parent:seq"
@@ -2516,6 +3031,7 @@ proc main() =
   var mirrors: seq[string] = @[]
   var outPath = ""
   var inPath = ""
+  var checkpointPath = ""
   var payload = ""
   var codecName = "auto"
   var charset = ""
@@ -2546,7 +3062,13 @@ proc main() =
   var pruneAcked = false
   var includeVectors = true
   var metricsFormat = false
+  var jsonFormat = false
   var readonly = false
+  var verifySegments = false
+  var maxWalBytes: int64 = -1
+  var maxSegmentFiles = -1
+  var maxItems = -1
+  var maxRings = -1
   var username = ""
   var password = ""
   var passwordFile = ""
@@ -2566,6 +3088,7 @@ proc main() =
   var authRef = ""
   var redisEndpoint = "127.0.0.1:6379"
   var configPath = getEnv("KOUTEN_CONFIG")
+  var serverConfigPath = ""
   var universeConfig = ""
   var driverManifestPath = ""
   var driverProjectDir = ""
@@ -2576,6 +3099,11 @@ proc main() =
   var ringCount = 100
   var payloadBytes = 100
   var importBatchSize = 1000
+  var checkpointEvery = DefaultScaleInCheckpointEvery
+  var retryLimit = DefaultScaleInRetryLimit
+  var retryDelayMs = DefaultScaleInRetryDelayMs
+  var maxTransfers = 0
+  var resetCheckpoint = false
   var priority = 0
   var snapshotSeq: BiggestInt = 0
   var requiredHealthy = 1
@@ -2651,6 +3179,7 @@ proc main() =
       case key
       of "help": help = true
       of "config": configPath = val
+      of "server-config": serverConfigPath = val
       of "peers": peers = val
       of "data": dataDir = val
       of "target-data": targetDataDir = val
@@ -2658,6 +3187,7 @@ proc main() =
       of "mirror": mirrors.add val
       of "out": outPath = val
       of "in": inPath = val
+      of "checkpoint": checkpointPath = val
       of "payload": payload = val
       of "codec": codecName = val
       of "charset": charset = val
@@ -2723,9 +3253,16 @@ proc main() =
       of "vec-field": vecField = val
       of "overwrite": overwrite = true
       of "prune-acked": pruneAcked = true
+      of "reset-checkpoint": resetCheckpoint = true
       of "readonly": readonly = true
+      of "segments": verifySegments = true
+      of "max-wal-bytes": maxWalBytes = parseBiggestInt(val).int64
+      of "max-segment-files": maxSegmentFiles = parseInt(val)
+      of "max-items": maxItems = parseInt(val)
+      of "max-rings": maxRings = parseInt(val)
       of "execute": executeDriverInstall = true
       of "metrics": metricsFormat = true
+      of "json": jsonFormat = true
       of "no-vectors": includeVectors = false
       of "user": username = val
       of "password": password = val
@@ -2757,6 +3294,10 @@ proc main() =
       of "rings": ringCount = parseInt(val)
       of "payload-bytes": payloadBytes = parseInt(val)
       of "batch-size": importBatchSize = parseInt(val)
+      of "checkpoint-every": checkpointEvery = parseInt(val)
+      of "retry-limit": retryLimit = parseInt(val)
+      of "retry-delay-ms": retryDelayMs = parseInt(val)
+      of "max-transfers": maxTransfers = parseInt(val)
       of "priority": priority = parseInt(val)
       of "snapshot-seq": snapshotSeq = parseBiggestInt(val)
       of "required-healthy":
@@ -2852,6 +3393,15 @@ proc main() =
   of "shutdown":
     runShutdown(peers, username, password, authToken, secretKey, galaxy, tls,
                 tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
+  of "drain":
+    runDrain(peers, username, password, authToken, secretKey, galaxy, tls,
+             tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
+  of "resume":
+    runResume(peers, username, password, authToken, secretKey, galaxy, tls,
+              tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
+  of "snapshot":
+    runSnapshot(peers, username, password, authToken, secretKey, galaxy, tls,
+                tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
   of "rings":
     runRings(peers, username, password, authToken, secretKey, galaxy, tls,
              tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
@@ -2871,7 +3421,10 @@ proc main() =
   of "working-set-bench": runWorkingSetBench(n, ringCount, queries, budget)
   of "memory-pressure-bench": runMemoryPressureBench(n, ringCount, queries,
                                                      budget, payloadBytes)
-  of "doctor": runDoctor()
+  of "doctor": runDoctor(dataDir, backupDir, serverConfigPath,
+                         backupPassphrase, verifySegments, metricsFormat,
+                         jsonFormat, maxWalBytes, maxSegmentFiles,
+                         maxItems, maxRings)
   of "driver":
     let driverArgs = if positionals.len > 1: positionals[1 .. ^1] else: @[]
     runDriver(driverArgs, driverManifestPath, driverProjectDir,
@@ -2880,6 +3433,11 @@ proc main() =
   of "locality": runLocality(dataDir, metricsFormat)
   of "backup": runBackup(dataDir, backupDir, durability)
   of "restore": runRestore(backupDir, dataDir, overwrite, durability)
+  of "verify": runOperationalVerify(dataDir, backupDir, serverConfigPath,
+                                    backupPassphrase, verifySegments,
+                                    metricsFormat, jsonFormat,
+                                    maxWalBytes, maxSegmentFiles,
+                                    maxItems, maxRings)
   of "backup-encrypted": runBackupEncrypted(dataDir, backupDir, backupPassphrase,
                                             durability)
   of "restore-encrypted": runRestoreEncrypted(backupDir, dataDir,
@@ -2919,6 +3477,22 @@ proc main() =
   of "import-jsonl": runImportJsonl(dataDir, inPath, defaultRing, ringField,
                                     ringPrefix, payloadField, vecField, n,
                                     importBatchSize)
+  of "scale-in-plan":
+    runScaleInPlan(dataDir, peers, username, password, authToken, secretKey,
+                   galaxy, tls, tlsCaFile, tlsServerName,
+                   tlsInsecureSkipVerify, jsonFormat)
+  of "scale-in-migrate":
+    runScaleInMigrate(dataDir, peers, username, password, authToken, secretKey,
+                      galaxy, checkpointPath, checkpointEvery, retryLimit,
+                      retryDelayMs, maxTransfers, resetCheckpoint, tls, tlsCaFile,
+                      tlsServerName, tlsInsecureSkipVerify, jsonFormat)
+  of "scale-in-verify":
+    runScaleInVerify(dataDir, peers, username, password, authToken, secretKey,
+                     galaxy, checkpointPath, retryLimit, retryDelayMs, tls,
+                     tlsCaFile, tlsServerName, tlsInsecureSkipVerify,
+                     jsonFormat)
+  of "scale-in-status":
+    runScaleInStatus(checkpointPath, jsonFormat)
   of "universe-export": runUniverseExport(dataDir, outPath)
   of "universe-apply": runUniverseApply(dataDir, inPath)
   of "universe-sync":

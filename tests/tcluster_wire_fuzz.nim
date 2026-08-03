@@ -4,7 +4,7 @@
 ## frames that previously could block or escape the connection boundary.
 
 import std/[net, os, strutils, unittest]
-import ../src/kouten/payload
+import ../src/kouten/[core, payload]
 import ../src/kouten/wire
 
 type FuzzCase = object
@@ -75,6 +75,27 @@ suite "cluster wire fuzz":
                payload: deepJson),
       FuzzCase(name: "short-applytx", header: "APPLYTX"),
       FuzzCase(name: "short-trf", header: "TRF"),
+      FuzzCase(name: "negative-trf-version",
+               header: "TRF 1 0 60 0 1 0 0 raw -1 0 1"),
+      FuzzCase(name: "zero-physical-trf-version",
+               header: "TRF 1 0 60 0 1 0 0 raw 0 1 1"),
+      FuzzCase(name: "oversized-trf-logical-version",
+               header: "TRF 1 0 60 0 1 0 0 raw 1 4294967296 1"),
+      FuzzCase(name: "oversized-trf-origin-version",
+               header: "TRF 1 0 60 0 1 0 0 raw 1 0 4294967296"),
+      FuzzCase(name: "short-trfd", header: "TRFD"),
+      FuzzCase(name: "negative-trfd-version",
+               header: "TRFD 1 0 60 0 1 -1 0 1"),
+      FuzzCase(name: "zero-physical-trfd-version",
+               header: "TRFD 1 0 60 0 1 0 1 1"),
+      FuzzCase(name: "malformed-trfd-ack-set",
+               header: "TRFD 1 0 60 0 1 1 0 1 0,,2 0"),
+      FuzzCase(name: "oversized-trfd-ack-node",
+               header: "TRFD 1 0 60 0 1 1 0 1 65536 0"),
+      FuzzCase(name: "negative-trfd-reclaim-deadline",
+               header: "TRFD 1 0 60 0 1 1 0 1 0 -1"),
+      FuzzCase(name: "nan-trfd-reclaim-deadline",
+               header: "TRFD 1 0 60 0 1 1 0 1 0 nan"),
       FuzzCase(name: "unknown-command", header: "WHAT_IS_THIS 1 2 3"),
       FuzzCase(name: "bad-codec-negotiation", header: "CODECMETA MAYBE"),
       FuzzCase(name: "truncated-txcommit", header: "TXCOMMIT 1 1",
@@ -110,10 +131,13 @@ suite "cluster wire fuzz":
         break
     check rejected
 
+    var costId: WireId
     for i in 0 ..< 5:
-      discard c.putRingReq(0, "allowed/fuzz/retrieve-cost/" & $i,
-                           "cost-" & $i, @[1.0'f32, float32(i) / 10.0])
+      costId = c.putRingReq(0, "allowed/fuzz/retrieve-cost",
+                            "cost-" & $i, @[1.0'f32, float32(i) / 10.0])
+    let costOwner = int(c.topologyReq(0).placementOwner(costId.parent))
     expect IOError:
-      discard c.retrieveReq(0, false, 0'u64, @[1.0'f32, 0.0'f32], 2)
+      discard c.retrieveReq(costOwner, false, 0'u64,
+                            @[1.0'f32, 0.0'f32], 2)
     c.close()
     checkAlive(ps, "retrieve-cost-limit")

@@ -58,13 +58,13 @@ under the documented conditions.
 | C ABI library | `scripts/build_capi.sh` is the canonical build and includes `-d:ssl`; CA-verified C ABI TLS smoke passes | Done |
 | Warp belt | WAL persistence, reopen recovery, ack cleanup, idempotent patch behavior | Done |
 | Cluster smoke | tx / failure retry / authz fail-fast / RBAC / wire fuzz smoke scripts pass locally | Done |
-| FAISS bridge | `kouten doctor` and FAISS bridge smoke are documented and reproducible | Done |
+| Exact retrieval | Ring-scoped exact retrieval and candidate-reduction metrics are documented and reproducible | Done |
 | Drivers | Driver status table is accurate and does not overclaim package publication | Done |
 | Bench docs | Benchmark conditions, limitations, Redis/PostgreSQL wording, and environment are consistent | Done |
 | AI/RAG case study | Generated JSONL corpus is imported and measured with global / routed / wrong-ring retrieval | Done |
 | Security docs | Threat model and third-party notices are present | Done |
 | License docs | Core license and third-party dependency licenses are clear | Done |
-| Generated files | Test binaries and temporary outputs are not included in release artifacts | Done; build/test binaries removed, ignored local FAISS bridge may remain for doctor |
+| Generated files | Test binaries and temporary outputs are not included in release artifacts | Done; build/test binaries are ignored or removed |
 
 ## Recommended Before v0.1.0
 

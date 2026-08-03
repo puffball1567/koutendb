@@ -34,6 +34,10 @@ suite "cluster rbac":
     writer = newClusterClient(ps, username = "writer", password = "write")
     expect IOError:
       discard writer.metricsReq(0)
+    expect IOError:
+      discard writer.drainReq(0)
+    expect IOError:
+      discard writer.snapshotReq(0)
     writer.close()
 
     var admin = newClusterClient(ps, username = "admin", password = "admin")
@@ -50,4 +54,37 @@ suite "cluster rbac":
     check metrics.contains("walBytes")
     check metrics.contains("warpJobs")
     check metrics.contains("activeConnections")
+
+    check admin.drainReq(0).contains("draining")
+    let drainedMetrics = admin.metricsReq(0)
+    check drainedMetrics.contains("draining 1")
+    let snapshot = admin.snapshotReq(0)
+    check snapshot.contains("draining 1")
+    check snapshot.contains("pendingTx")
+
+    writer = newClusterClient(ps, username = "writer", password = "write")
+    expect IOError:
+      discard writer.putRingReq(0, "allowed/docs", "during-drain", @[])
+    expect IOError:
+      discard writer.transferStatusReq(
+        0, id.parent, id.seq, id.period, id.head, id.tWrite,
+        "forged-maintenance-transfer", version = MutationVersion(
+          physicalMicros: 9_000_000, logical: 0, origin: 9),
+        expectedPlacementEpoch = 1, expectedPlacementNodes = 1,
+        expectedVirtualArcs = 64, maintenanceMigration = true)
+    let stillReadable = writer.getIdReq(0, id)
+    check stillReadable.found
+    check stillReadable.value == "writer-value"
+    writer.close()
+
+    check admin.metricsReq(0).contains("drainRejectedWrites")
+    check admin.resumeReq(0).contains("resumed")
+    let resumedMetrics = admin.metricsReq(0)
+    check resumedMetrics.contains("draining 0")
+    check resumedMetrics.contains("drainStartedAt 0")
+
+    writer = newClusterClient(ps, username = "writer", password = "write")
+    let resumed = writer.putRingReq(0, "allowed/docs", "after-resume", @[])
+    check writer.getIdReq(0, resumed).value == "after-resume"
+    writer.close()
     admin.close()

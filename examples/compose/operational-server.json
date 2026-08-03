@@ -1,0 +1,8 @@
+{
+  "id": 0,
+  "peers": ["0.0.0.0:7301"],
+  "dataDir": "/data/app-main",
+  "galaxy": "app-main",
+  "user": "app",
+  "durability": "buffered"
+}

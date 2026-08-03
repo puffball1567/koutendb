@@ -19,7 +19,6 @@ This notice was prepared from the dependency declarations currently present in:
 - `drivers/php/Dockerfile`
 - `drivers/swift/Dockerfile`
 - `drivers/kotlin/Dockerfile`
-- `third_party/README.md`
 
 ## Runtime Dependencies
 
@@ -63,16 +62,6 @@ vendored or redistributed by the KoutenDB source tree.
 | Eclipse Temurin Docker image | Kotlin/JNI smoke tests | GPLv2 with Classpath Exception for OpenJDK; image contains multiple components | `drivers/kotlin/Dockerfile`: `FROM eclipse-temurin:21-jdk-jammy` | Used only for Docker-backed smoke tests. |
 | Kotlin compiler | Kotlin/JNI smoke tests | Apache-2.0 | `drivers/kotlin/Dockerfile`: `KOTLIN_VERSION=2.0.21` | Downloaded in the Kotlin Docker test image. |
 | Debian / Ubuntu packages in Docker smoke images | Docker-backed smoke tests | Package-specific | `apt-get install` lines in driver Dockerfiles | Includes packages such as `ca-certificates`, `curl`, `unzip`, `g++`, `libffi-dev`, and `libsodium23`. These are not vendored in this repository. |
-
-## Optional / Planned Dependencies
-
-These components are referenced by design or roadmap documents. FAISS is the
-intended production vector backend path, but KoutenDB loads it through a dynamic
-bridge instead of statically linking it into the default core build.
-
-| Component | Planned scope | License | Source / declaration | Notes |
-|---|---|---|---|---|
-| FAISS | Production vector backend bridge | MIT | Source checkout target: `third_party/faiss` via `scripts/fetch_faiss.sh`; bridge source: `src/kouten/faiss_bridge.cpp`; KoutenDB core loads `libkouten_faiss.so` dynamically when `vbFaiss` is selected | Default tag: `v1.14.3`; last verified commit recorded in `third_party/faiss.version`. Users can pin an exact commit with `KOUTEN_FAISS_COMMIT`. License text is available in the fetched checkout at `third_party/faiss/LICENSE`. FAISS is not vendored, not statically linked by the default core build, and not committed to this repository. See `docs/faiss-versioning.md`. |
 
 ## Current Repository Policy
 

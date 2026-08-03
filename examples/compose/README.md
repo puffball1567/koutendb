@@ -57,3 +57,54 @@ docker compose -f examples/compose/single-galaxy.compose.yml up --build
 ```
 
 Do not use the default values in production.
+
+## Operational Trial
+
+`operational-trial.compose.yml` is a v0.10-style production trial shape. It
+loads non-secret server defaults from `operational-server.json` and keeps
+password / secret-key values as Compose environment overrides. It separates
+live health checks from offline maintenance:
+
+- while the server is running, use `health`;
+- when the server is stopped, use `verify`, `backup`, `restore`, and the audit
+  JSONL file against the persistent volume.
+
+Start one authenticated persistent node:
+
+```sh
+docker compose -f examples/compose/operational-trial.compose.yml up -d --build
+docker compose -f examples/compose/operational-trial.compose.yml ps
+docker compose -f examples/compose/operational-trial.compose.yml exec -T kouten-app \
+  koutencli health --peers=127.0.0.1:7301 \
+  --user=app --password=change-me --secret-key=change-me-too
+```
+
+Write a small record through the live server:
+
+```sh
+docker compose -f examples/compose/operational-trial.compose.yml exec -T kouten-app \
+  koutencli put --peers=127.0.0.1:7301 \
+  --user=app --password=change-me --secret-key=change-me-too \
+  --ring=users/123/profile --payload='{"name":"Alice"}' --codec=json
+```
+
+Then stop the server and run offline verification / backup from the tools
+container. Offline tools intentionally open the data directory directly, so the
+server should not hold the data-dir lock:
+
+```sh
+docker compose -f examples/compose/operational-trial.compose.yml stop kouten-app
+docker compose -f examples/compose/operational-trial.compose.yml --profile tools run --rm kouten-tools \
+  'koutencli verify --data=/data/app-main --segments --json'
+docker compose -f examples/compose/operational-trial.compose.yml --profile tools run --rm kouten-tools \
+  'koutencli backup --data=/data/app-main --backup=/backup/app-main'
+docker compose -f examples/compose/operational-trial.compose.yml --profile tools run --rm kouten-tools \
+  'koutencli verify --backup=/backup/app-main --json'
+docker compose -f examples/compose/operational-trial.compose.yml --profile tools run --rm kouten-tools \
+  'tail -n 20 /data/app-main/kouten.audit.jsonl'
+docker compose -f examples/compose/operational-trial.compose.yml down
+```
+
+This is not a managed-service recipe. It is a local operational evaluation
+shape: data volume, health check, offline verify, backup verification, and audit
+inspection.

@@ -5,6 +5,8 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
+Current next-release planning: [v0.10-roadmap.md](./v0.10-roadmap.md)
+
 Translations:
 
 - Japanese: [koutendb-status.ja.md](./koutendb-status.ja.md)
@@ -24,15 +26,13 @@ Translations:
 | JSON document query | Done | GraphQL-style selection |
 | Payload codecs | PoC | Per-record `raw` / `json` / `nif` / `bif` metadata survives WAL, cluster transport, handoff, transactions, Universe sync, and retrieval. NIF/BIF encoding/decoding remains outside the core; optional adapter: [`koutendb-nif`](https://github.com/puffball1567/koutendb-nif) backed by [`nifkit`](https://github.com/puffball1567/nifkit) |
 | Prepared selection | Done | Reusable validated projection tree in embedded mode plus a bounded server-side parse cache for cluster queries |
-| Vector retrieve | Done | FAISS bridge is the intended production vector path. Exact backend remains for small datasets, tests, and fallback |
+| Vector retrieve | Done | Dependency-free exact ranking runs after ring-scoped candidate reduction |
 | Ring / hierarchy | Done | `ring = "a/b/c"` and child-ring expansion |
 | Galaxy isolation | Done | Separate data dir / peer list / credential boundary |
 | Atlas / ring map | Done | `atlas()` and `kouten atlas` |
 | Galaxy/ring description | Done | Atlas map annotations, not payload text |
 | Time orbit | PoC | Embedded ring-local 60-bit millisecond orbit for log/event/time-series placement. Includes persisted profiles, `putTime` / `readTime`, and `kouten time-orbit/time-put/time-get`; cluster profile administration is still pending. Design note: [time-orbit.md](./time-orbit.md) |
 | Retrieval tuning profile | Done | amount / scope / depth |
-| FAISS vector backend | PoC | Dynamic bridge via `libkouten_faiss.so`; default fetch tag is FAISS `v1.14.3`, exact commit pinning is optional via `KOUTEN_FAISS_COMMIT`; `kouten doctor`, bridge build, `tests/tapi.nim`, and `examples/vector_backend_bench.sh` are verified locally |
-| FAISS GPU backend | Not planned for core | KoutenDB is designed to reduce the search set before ANN/LLM work. Needing GPU FAISS is treated as a placement or retrieval-profile issue first |
 | Retrieval planner | PoC | Deterministic heuristic planner. Stronger planner claims require larger real-corpus benchmarks and further tuning |
 | WASM browser embedded | Post-v0.1 candidate | Browser state boundary / IndexedDB / OPFS |
 
@@ -42,12 +42,14 @@ Translations:
 |---|---|---|
 | Append-only WAL | Done | Batched flush by default; `durStrong` / `--durability=strong` adds flush + fsync write boundaries. New WAL files use a magic/version header and per-record length + CRC32 wrappers; legacy pre-v1.0 WAL remains readable for migration |
 | Reopen recovery | Done | Items / vectors / ring metadata / descriptions |
+| Operational verify | Foundation | `operationalVerify(dataDir)` and `kouten verify --data=DIR` open/replay a persistent store and report WAL, metadata, segment, and locality health. `--max-wal-bytes`, `--max-segment-files`, `--max-items`, and `--max-rings` add operator-defined capacity thresholds. `kouten verify --backup=DIR` verifies backup readability. `kouten doctor --data=DIR` / `--backup=DIR` use the same operational paths |
 | Transaction | Done | Embedded atomic transaction plus all-or-nothing `batchPutAtomic`, `batchUpdateAtomic`, and `batchDeleteAtomic` helpers |
 | Cooperative coordinate locks | Done | Embedded opt-in `ring` and `stellar` locks for high-integrity workflows; normal NoSQL read/write paths do not check locks |
 | Cluster transaction landing | PoC | node0 landing. `scripts/cluster_tx_smoke.sh` covers apply smoke; `scripts/cluster_failure_smoke.sh` covers owner crash/restart retry; redundancy is not implemented yet |
 | Cluster CRUD/list/count | PoC | `update`, `deleteById`, JSON `patch`, `listByRing`, `countByRing` use landing intents or node fan-out; `scripts/cluster_tx_smoke.sh` covers smoke |
 | Compact | Done | Rebuilds WAL from live records |
 | Backup / restore | Done | Backup as compacted WAL and restore into another data dir |
+| Drain / snapshot barrier | Foundation | `DRAIN`, `SNAPSHOT`, and `RESUME` provide an admin-only maintenance boundary for cluster nodes. Drain is persisted across restart, rejects new writes while preserving read access and wire framing, and is required by explicit scale-in. Snapshot flushes and reports item/ring/pending-tx/WAL state. Coordinator redundancy and managed backup orchestration are still planned |
 | Dump / import-jsonl | Done | NoSQL JSONL import rules. This is the stable human-readable migration boundary while the pre-v1.0 internal WAL format can still evolve |
 | Universe sync outbox | PoC | WAL-backed eventual sync event queue with idempotent apply, ack/prune, transaction-backed `putSynced`, prune-safe monotonic source ids, latest-only pending coalescing, delayed timestamp apply windows, retryAt / maxAttempts / dead-letter state, `kouten universe-export` / `universe-apply` JSONL handoff, one-shot `kouten universe-sync` between local data dirs, remote `--peers` delivery via `UAPPLY`, and `universe-status` operational counters. It is a durable scheduler boundary, not immediate global consistency |
 | Crash recovery tests | Partial | Torn WAL tail repair, versioned-WAL checksum mismatch refusal, mid-file WAL corruption refusal, compact interruption, partial commit cases |
@@ -62,17 +64,18 @@ Translations:
 | Feature | Status | Notes |
 |---|---|---|
 | Static cluster | Done | `koutend --id --peers` |
-| Deterministic locate | Done | `E(id,t) -> node` |
-| Handoff / forwarder | PoC | Slow tick integration exists. Fully distributed forwarder placement is not done |
+| Deterministic locate | Done | Logical `L(id,t)` remains available for orbital planning; physical `P(ringKey, topologyEpoch)` provides stable server ownership |
+| Handoff / forwarder | Foundation | Physical migration is explicit, version-checked, destination-topology-fenced, bounded per tick, retried after failure, and independent of logical orbit frequency. Fully automated membership orchestration is not done |
 | Driver-friendly wire | Done | `PUTR/GETID/QRYID`; `WIREVER` exposes the current protocol version and `CODECS` exposes payload formats. Compatibility policy is documented in `docs/protocol-compatibility.md` |
-| Health / metrics / rings | Done | CLI and wire protocol; metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, and storage/ring counts |
+| Health / metrics / rings | Done | CLI and wire protocol; metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, storage/ring counts, and physical/scored retrieval work |
 | Authn + secret key | Done | username/password/secret-key; unusable credential combinations fail at startup |
 | TLS | Done | Standard TLS transport for `koutend` and CLI/client connections when built with `-d:ssl`; `scripts/cluster_tls_smoke.sh` covers authenticated TLS, secret-key transport, JSON put/get, and plain-client rejection |
 | Authz / RBAC | PoC | `koutend --allow-ring=prefix[,prefix...]` and `--role=user:password:reader|writer|admin[:prefixes]`; `scripts/cluster_authz_smoke.sh` and `scripts/cluster_rbac_smoke.sh` cover prefix and role matrix behavior |
 | Wire fuzz smoke | Done | `scripts/cluster_wire_fuzz_smoke.sh` runs deterministic malformed-frame cases, including oversized headers and deep JSON, and verifies the cluster stays healthy |
 | Server resource guardrails | Partial | Accepted sockets have a body-read timeout and fixed active-connection cap; fuller request-deadline and per-query cost controls remain planned |
-| Bounded server retrieve | Done | `koutend` keeps only the current top candidates up to request budget while scanning local vectors instead of retaining every matching payload before truncation |
-| Dynamic membership / epoch migration | Foundation | Current peer list is still static at runtime, but v0.6 adds explicit arc tables, weighted arcs, deterministic virtual arcs, topology validation, and `remapFraction` so membership changes can be modeled with less unnecessary remapping than naive `mod nNodes`. Online rebalance workflow is still planned |
+| Embedded write guardrails | Foundation | Opt-in `KoutenGuardrails` can cap payload bytes, vector dimension, ring count, and records per ring for production trials; default zero values preserve existing behavior |
+| Bounded server retrieve | Done | `koutend` keeps only the current top candidates up to request budget. Ring-scoped retrieval routes to the calculated owner and walks the ring index; only global retrieval scans every node |
+| Dynamic membership / epoch migration | Foundation | Scale-out supports a write-quiesced, one-node-at-a-time restart into a higher persisted placement epoch. Persistent drain, topology-fenced admin migration, cluster-wide activation preflight, bounded handoff, and source retention prevent mixed-epoch write acknowledgement. Explicit stop-the-world scale-in adds durable checkpoints, version/tombstone and metadata preservation, and independent verification. Live-write topology changes, in-place/live scale-in, and discovery orchestration remain unsupported and fail closed |
 | Cluster transaction coordinator redundancy | Planned | Remove node0 as a single point of failure |
 | Read-your-writes for cluster tx | PoC | `get/query/batchGet` fallback to node0 landing intent before owner apply; cluster smoke covers update/delete |
 | Fault-tolerance improvements | Planned | Post-v0.1 work; universe sync outbox is now the first durable eventual-convergence primitive |
@@ -110,7 +113,7 @@ Translations:
 | PostgreSQL comparison | Done | Limited reference comparison |
 | Redis comparison | Done | Smoke test with conditions and limits documented |
 | C ABI bench | Done | `examples/cbench.c` |
-| Docker case study | Partial | memory pressure / PHP / Swift smoke |
+| Docker case study | Partial | memory pressure / PHP / Swift smoke plus `examples/compose/operational-trial.compose.yml` for server JSON config loading, authenticated persistent startup, live health, offline verify, backup verification, and audit JSONL inspection |
 | Unique data model demo | Done | `examples/stellar_data_model_demo.sh` demonstrates separate rings, stellar attach/detach, narrowed reads, and non-copy visibility changes |
 | Cluster transaction smoke | Partial | `scripts/cluster_tx_smoke.sh` starts 3 local nodes and verifies apply / retrieve |
 | Cluster failure retry smoke | Partial | `scripts/cluster_failure_smoke.sh` kills the owner node, verifies the intent remains pending, restarts the owner, and verifies retry apply |
@@ -132,7 +135,7 @@ Translations:
 | TLS | Done | Standard TCP transport TLS is implemented for `-d:ssl` builds; certificate rotation and managed CA workflows remain operational work |
 | Ring/galaxy authz | PoC | Ring prefix authorization is implemented for named-ring wire operations; richer role policy is pending |
 | Backup encryption | Done | `backupEncrypted` / `restoreEncryptedBackup` and `kouten backup-encrypted` / `restore-encrypted` use nimsodium secretbox |
-| General audit log | Planned | Full append-only access/change audit for enterprise / regulated workloads. Warp jobs already persist attempts / retryAt / ack / dead-letter state, but that is job state, not a database-wide audit log |
+| General audit log | Foundation | Persistent embedded stores append `kouten.audit.jsonl` for direct write/update/delete, backup, restore, compact, and guardrail denial events. Persistent `koutend` nodes also append auth success/failure, authz denial, and retrieve/broad-scan denial events. Full enterprise audit policy remains planned |
 | Threat model document | Draft | `docs/threat-model.md` covers assets, trust boundaries, current controls, and known gaps |
 
 ## Post-v0.1 Roadmap Candidates
@@ -173,7 +176,7 @@ fully covered by the current concepts or code:
 | TLS and certificate rotation | Username/password/secret-key auth exists, but managed public or VPC deployments need transport TLS and rotation workflows. |
 | Secret rotation | `authProfiles` reference external secrets, but the server and drivers need an explicit rotation story for username/password/secret-key credentials. |
 | Point-in-time recovery / generation checkpoints | Backup/restore exists. Managed services normally require recoverable generations, restore-point selection, and verification before promotion. |
-| Drain / quiesce / snapshot barrier | Rolling maintenance and consistent managed backups need a control-plane hook to stop accepting new writes, flush durable state, and report readiness. |
+| Managed drain / quiesce orchestration | The server has admin-only `DRAIN` / `SNAPSHOT` / `RESUME` primitives. Managed services still need rolling orchestration, promotion policy, and backup scheduling around those primitives. |
 | OpenMetrics / CloudWatch / Datadog adapters | KoutenDB exposes key/value metrics, but managed integrations need standard exporters or collectors. |
 | Quotas and capacity guardrails | Galaxy isolation exists, but managed multi-tenant operation needs limits for WAL bytes, item count, ring count, payload size, and connection pressure. |
 | Protocol / storage compatibility policy | Managed upgrades need clear compatibility rules for wire protocol, WAL records, snapshots, and drivers. |

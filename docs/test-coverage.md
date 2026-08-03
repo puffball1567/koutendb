@@ -8,20 +8,25 @@ matrix used before releases.
 
 | Area | Primary checks | Current status |
 | --- | --- | --- |
-| Orbital placement core | `tests/tcore.nim` | Unit-covered: angle wrapping, ownership, weighted arcs, virtual arc remap reduction, future arrival, conjunctions |
+| Orbital / physical placement core | `tests/tcore.nim` | Unit-covered: angle wrapping, logical ownership, stable physical ring coordinates, weighted arcs, virtual arc remap reduction, future arrival, conjunctions |
 | Field / halo movement | `tests/tfield.nim` | Unit-covered: field state and ring movement behavior |
 | Selection parser | `tests/tselect.nim` | Unit-covered: GraphQL-like selection parsing, bounded selection depth, and projection basics |
-| Store / WAL | `tests/tstore.nim` | Unit-covered: codec persistence, time-orbit profile persistence, versioned WAL magic/checksum, checksum mismatch refusal, torn-tail repair, mid-file WAL corruption refusal, transaction replay, data-dir locking, compact, locality report, delete/backfill locality matrix, compact-before/after logical query invariants, backup/restore, encrypted backup verification temp isolation, universe sync applied-key retention replay; `-d:koutenTestFailpoints` covers poisoned write-path rejection after simulated durability failure |
-| Public embedded API | `tests/tapi.nim` | Unit-covered: put/get, codec-aware projection, ring profiles, time-orbit put/read, readRing filtering, typed filter builders, pagination, sorting, stellar neighborhood reads from either side, stellar attach/detach persistence, chunked JSONL import stats, atomic batch rollback, cooperative ring/stellar locks with fencing values, warp, universe sync retry/dead-letter state |
-| CLI embedded usage | `scripts/cli_crud_smoke.sh` | Smoke-covered: help, put/get/query/list/count, readRing options, `--near` placement, `--stellar`, stellar attach/detach, `--subring` neighborhood narrowing, codec display, ring profile auto codec, time-orbit put/get, dump/import JSONL round-trip, shell, auth error text |
-| C ABI | `examples/cabi_contract.c`, `examples/cabi_tls_contract.c`, `scripts/cabi_tls_smoke.sh`, `scripts/driver_compat.sh` | Contract-covered: ABI version, put/get, codec metadata, read ring page shape, validation errors, handle close/reuse safety, atlas, CA-verified TLS-enabled connect path |
-| Wire protocol | `tests/twire_driver.nim`, `scripts/cluster_wire_driver_smoke.sh`, `scripts/cluster_wire_fuzz_smoke.sh` | Smoke-covered: driver-facing PUTR/GETID/QRYID, codec metadata negotiation, malformed frame behavior, oversized/deep JSON rejection, and `RETRIEVE` query-cost rejection |
-| TLS transport | `scripts/cluster_tls_smoke.sh` | Smoke-covered: TLS-enabled `koutend`/CLI build, CA-verified authenticated TLS health, secret-key auth transport, JSON put/get, and plain-client rejection |
+| Store / WAL | `tests/tstore.nim` | Unit-covered: codec persistence, time-orbit profile persistence, placement topology persistence/epoch fencing, versioned WAL magic/checksum, checksum mismatch refusal, torn-tail repair, mid-file WAL corruption refusal, transaction replay, data-dir locking, compact, locality report, delete/backfill locality matrix, compact-before/after logical query invariants, backup/restore, encrypted backup verification temp isolation, universe sync applied-key retention replay; `-d:koutenTestFailpoints` covers poisoned write-path rejection after simulated durability failure |
+| Public embedded API | `tests/tapi.nim` | Unit-covered: put/get, codec-aware projection, ring profiles, time-orbit put/read, readRing filtering, typed filter builders, pagination, sorting, stellar neighborhood reads from either side, stellar attach/detach persistence, chunked JSONL import stats, atomic batch rollback, cooperative ring/stellar locks with fencing values, idempotent release and stale-token lock safety, specialized validation/guardrail/conflict exceptions, warp, universe sync retry/dead-letter state |
+| CLI embedded usage | `scripts/cli_crud_smoke.sh` | Smoke-covered: help, put/get/query/list/count, readRing options, `--near` placement, `--stellar`, stellar attach/detach, `--subring` neighborhood narrowing, codec display, ring profile auto codec, time-orbit put/get, dump/import JSONL round-trip, operational data/backup/server-config verify, shell, auth error text |
+| C ABI | `examples/cabi_contract.c`, `examples/cabi_tls_contract.c`, `scripts/cabi_tls_smoke.sh`, `scripts/driver_compat.sh` | Contract-covered: ABI version, put/get, codec metadata, read ring page shape, validation errors, NULL output pointers, oversized payload/vector/batch lengths, invalid codecs, handle close/reuse safety, atlas, CA-verified TLS-enabled connect path |
+| Wire protocol | `tests/twire_driver.nim`, `scripts/cluster_wire_driver_smoke.sh`, `scripts/cluster_wire_fuzz_smoke.sh` | Smoke-covered: driver-facing PUTR/GETID/QRYID, codec metadata negotiation, malformed frame behavior, oversized/deep JSON rejection, `RETRIEVE` query-cost rejection, and broad-scan-denied server audit emission |
+| TLS transport | `scripts/cluster_tls_smoke.sh` | Smoke-covered: TLS-enabled `koutend`/CLI build, three-node CA-verified authenticated TLS health, secret-key auth transport, JSON put/get, apply-time placement fencing, destination-side mutation/tombstone ordering on the stable physical owner, ID query, and plain-client rejection |
+| Handoff mutation ordering | `tests/tstore.nim`, `tests/twire_driver.nim`, `tests/thandoff_ordering.nim`, `tests/thandoff_ordering_remote.nim`, `tests/thandoff_reclamation.nim` | Matrix-covered: stale and duplicate values, delete-before-delayed-transfer protection, newer recreation, WAL replay, compact, backup/restore, transaction delete, destination restart, TLS/authenticated transfer, canonical acknowledgement merging, single-node reclamation, all-node guard propagation, and bounded final reclamation |
+| Placement epoch migration | `tests/tplacement_migration.nim`, `tests/twire_driver.nim`, `scripts/placement_migration_smoke.sh` | Integration-covered: short logical periods do not generate physical handoff, persistent drain before topology change, one-by-one mixed-epoch 2-to-3-node restart, wrong-epoch resume rejection, destination-down source retention/retry, admin-only maintenance transfer, preflight and apply-time topology fencing, unsupported in-place scale-in rejection, bounded convergence, activation preflight, post-resume writes, owner-routed reads, and settled-topology restart |
+| Explicit scale-in migration | `tests/tscale_in_migration.nim`, `scripts/scale_in_migration_smoke.sh` | Integration-covered: persistent drain marker, 3-to-2-node migration, checkpoint/resume, target outage, mixed/wrong epoch, source fingerprint mismatch, versioned records and tombstones, metadata transfer and independent verification, pending operational queue rejection, malformed frame recovery, and idempotent rerun |
 | Cluster transactions | `tests/tcluster_tx.nim`, `scripts/cluster_tx_smoke.sh` | Smoke-covered: landing intent, apply retry, basic owner failure path |
-| Cluster auth / RBAC | `tests/tcluster_authz.nim`, `tests/tcluster_rbac.nim`, related scripts | Smoke-covered: username/password/secret key, unusable auth config fail-fast, role/ring-prefix authorization, admin-only metrics, and minimal non-admin health |
+| Cluster auth / RBAC | `tests/tcluster_authz.nim`, `tests/tcluster_rbac.nim`, related scripts | Smoke-covered: username/password/secret key, unusable auth config fail-fast, server JSON config loading, role/ring-prefix authorization, admin-only metrics/drain/snapshot, minimal non-admin health, drain-mode write rejection with readable connection preservation, forged writer-level maintenance migration rejection, and auth/authz server audit emission |
 | Cluster failure | `tests/tcluster_failure.nim`, `scripts/cluster_failure_smoke.sh` | Smoke-covered: owner restart and retry boundaries |
 | Universe sync | `examples/universe_sync_demo.nim`, `scripts/universe_sync_*_smoke.sh` | Smoke-covered: local export/apply, remote apply, idempotency, retry/dead-letter handling, applied-key retention, malformed JSONL handling |
-| Recovery | `scripts/recovery_smoke.sh` | Smoke-covered: backup/restore and recovery status paths |
+| Recovery | `scripts/recovery_smoke.sh` | Smoke-covered: backup/restore, recovery status, checksum/item/tombstone manifest mismatch rejection, and encrypted/readonly mirror paths |
+| Compose examples | `scripts/compose_config_smoke.sh` | Smoke-covered: every `examples/compose/*.compose.yml` file parses with Docker Compose, including the optional tools profile |
+| Soak testing | `examples/soak_72h.sh`, `examples/soak_runner.nim` | Optional local runner: long-running three-node cluster validation with mixed writes, point reads, query projection, ring reads, retrieval, metrics, snapshot, and offline verify. Not part of CI. |
 | Driver compatibility | `scripts/driver_compat.sh` | Optional smoke: C, C++, and published driver-facing C ABI paths when enabled |
 | Data model demos | `scripts/demo_smoke.sh`, `examples/stellar_data_model_demo.sh`, `examples/locality_layout_demo.sh`, `examples/payload_codecs_demo.sh`, `examples/effect_validation_demo.sh` | Demo-covered: non-copy stellar visibility, narrowed stellar reads, original ring preservation after detach, payload codec persistence, compaction locality reporting, messy locality workloads, compact-before/after logical result invariants, lightweight effect validation, and read micro-samples. `examples/effect_validation_matrix.sh` and `examples/offline_effect_validation.sh` are manual validation tools, not default CI smoke steps. |
 
@@ -36,22 +41,37 @@ scripts/cluster_tx_smoke.sh
 scripts/cluster_failure_smoke.sh
 scripts/cluster_authz_smoke.sh
 scripts/cluster_rbac_smoke.sh
+scripts/cluster_wire_driver_smoke.sh
 scripts/cluster_wire_fuzz_smoke.sh
+scripts/cluster_retrieve_routing_smoke.sh
+scripts/handoff_reclamation_smoke.sh
+scripts/placement_migration_smoke.sh
+scripts/scale_in_migration_smoke.sh
+scripts/cluster_tls_smoke.sh
 scripts/recovery_smoke.sh
 scripts/universe_sync_failure_smoke.sh
 scripts/universe_sync_remote_smoke.sh
+scripts/compose_config_smoke.sh
 ```
 
 `scripts/test_all_smoke.sh` runs the same sequence and skips driver
 compatibility by default. Set `KOUTEN_TEST_DRIVERS=1` when the local driver
 toolchains are available.
 
+`cluster_retrieve_routing_smoke.sh` checks both logical results and physical
+work. Its persistent two-node matrix verifies owner-only routing, ring-indexed
+record visits, both local-owner and remote-owner transaction apply, rollback,
+update, delete, empty-ring behavior, global fan-out, drain/resume, restart, and
+fail-closed behavior when the calculated owner is unavailable. The disk-backed
+API suite separately covers writes and updates made after segment packing and
+after reopen.
+
 ## Remaining Depth Targets
 
 The following areas are intentionally tracked as deeper follow-up work rather
 than hidden assumptions:
 
-- long-running cluster soak tests with node restarts during active traffic;
+- long-running node-restart soak tests during active traffic;
 - mixed-version wire protocol compatibility tests;
 - TLS certificate lifecycle, rotation, expiry, and deployment policy tests beyond the local CA smoke;
 - larger universe sync replay and backlog-pressure tests;

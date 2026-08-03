@@ -232,6 +232,98 @@ bin/kouten get --data="$WORK/imported" --ring=artifacts/nif --limit=1 |
 bin/kouten get --data="$WORK/imported" --ring=artifacts/bif --limit=1 |
   grep -q '"codec": "bif"'
 
+echo "[cli-crud] operational verify"
+for i in $(seq 1 16); do
+  bin/kouten put --ring=ops/packed \
+    --payload="{\"i\":$i}" --codec=json >/dev/null
+done
+bin/kouten verify --data="$KOUTEN_DATA" |
+  grep -q "verify status: ok"
+bin/kouten verify --data="$KOUTEN_DATA" --metrics |
+  grep -q "verifyOk 1"
+bin/kouten verify --data="$KOUTEN_DATA" --json |
+  grep -q '"kind": "data"'
+bin/kouten verify --data="$KOUTEN_DATA" --segments |
+  grep -q "ok   segments:"
+if bin/kouten verify --data="$KOUTEN_DATA" --max-wal-bytes=1 >/dev/null 2>&1; then
+  echo "verify accepted WAL bytes above configured limit" >&2
+  exit 1
+fi
+if bin/kouten verify --data="$KOUTEN_DATA" --max-items=1 >/dev/null 2>&1; then
+  echo "verify accepted items above configured limit" >&2
+  exit 1
+fi
+if bin/kouten verify --data="$KOUTEN_DATA" --max-rings=1 >/dev/null 2>&1; then
+  echo "verify accepted rings above configured limit" >&2
+  exit 1
+fi
+if bin/kouten verify --data="$KOUTEN_DATA" --segments --max-segment-files=0 >/dev/null 2>&1; then
+  echo "verify accepted segment files above configured limit" >&2
+  exit 1
+fi
+bin/kouten backup --data="$KOUTEN_DATA" --backup="$WORK/verify-backup" >/dev/null
+bin/kouten verify --backup="$WORK/verify-backup" |
+  grep -q "verify status: ok"
+bin/kouten verify --backup="$WORK/verify-backup" --metrics |
+  grep -q "verifyBackup 1"
+bin/kouten verify --backup="$WORK/verify-backup" --json |
+  grep -q '"kind": "backup"'
+bin/kouten doctor --data="$KOUTEN_DATA" |
+  grep -q "verify status: ok"
+printf 'right\n' > "$WORK/server-password"
+printf 'secret\n' > "$WORK/server-secret"
+cat >"$WORK/server-config.json" <<CONFIG
+{
+  "id": 0,
+  "peers": ["127.0.0.1:${BASE_PORT}"],
+  "dataDir": "$KOUTEN_DATA",
+  "durability": "buffered",
+  "user": "app",
+  "passwordFile": "$WORK/server-password",
+  "secretKeyFile": "$WORK/server-secret",
+  "allowRing": ["docs", "cluster"],
+  "roles": [
+    {
+      "user": "reader",
+      "passwordFile": "$WORK/server-password",
+      "role": "reader",
+      "prefixes": ["docs"]
+    }
+  ]
+}
+CONFIG
+bin/kouten verify --server-config="$WORK/server-config.json" |
+  grep -q "server-config:"
+bin/kouten verify --server-config="$WORK/server-config.json" --metrics |
+  grep -q "verifyOk 1"
+bin/kouten doctor --server-config="$WORK/server-config.json" --json |
+  grep -q '"kind": "server-config"'
+cat >"$WORK/bad-server-config.json" <<CONFIG
+{
+  "id": 4,
+  "peers": ["127.0.0.1:${BASE_PORT}"],
+  "secretKey": "secret",
+  "tlsInsecureSkipVerify": true
+}
+CONFIG
+if bin/kouten verify --server-config="$WORK/bad-server-config.json" >/dev/null 2>&1; then
+  echo "verify accepted bad server config" >&2
+  exit 1
+fi
+cat >"$WORK/bad-placement-config.json" <<CONFIG
+{
+  "id": 0,
+  "peers": ["127.0.0.1:${BASE_PORT}"],
+  "dataDir": "$KOUTEN_DATA",
+  "placementEpoch": 0,
+  "virtualArcsPerNode": 64
+}
+CONFIG
+if bin/kouten verify --server-config="$WORK/bad-placement-config.json" >/dev/null 2>&1; then
+  echo "verify accepted a non-positive placement epoch" >&2
+  exit 1
+fi
+
 echo "[cli-crud] shell"
 shell_out="$(bin/kouten shell --data="$WORK/shell" <<'SHELL'
 put docs/japan {"title":"Shell","status":"ok"}

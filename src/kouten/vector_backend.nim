@@ -1,17 +1,9 @@
-## kouten/vector_backend — pluggable vector search backends.
-##
-## Core KoutenDB keeps an exact, dependency-free backend. ANN engines such as
-## FAISS should plug in behind this boundary instead of changing the public DB
-## model.
+## kouten/vector_backend — dependency-free, ring-scoped exact vector search.
 
 import std/[algorithm, tables]
 import ./[field, store]
 
 type
-  VectorBackendKind* = enum
-    vbExact
-    vbFaiss
-
   VectorCandidate* = object
     parent*: uint64
     seq*: uint32
@@ -29,10 +21,7 @@ type
     estimatedTokens*: int
     hits*: seq[VectorCandidate]
 
-  VectorBackend* = ref object of RootObj
-    kind*: VectorBackendKind
-
-  ExactVectorEntry = object
+  VectorEntry = object
     parent: uint64
     seq: uint32
     tWrite: float
@@ -40,36 +29,19 @@ type
     payload: string
     codec: PayloadCodec
 
-  ExactVectorLoc = object
+  VectorLoc = object
     ring: uint64
     index: int
 
-  ExactVectorBackend* = ref object of VectorBackend
-    byRing: Table[uint64, seq[ExactVectorEntry]]
-    indexed: Table[(uint64, uint32), ExactVectorLoc]
+  VectorBackend* = ref object
+    byRing: Table[uint64, seq[VectorEntry]]
+    indexed: Table[(uint64, uint32), VectorLoc]
     vectorCount: int
 
-method upsert*(b: VectorBackend, p: Particle) {.base.} =
-  discard
-
-method remove*(b: VectorBackend, parent: uint64, seq: uint32) {.base.} =
-  discard
-
-method clear*(b: VectorBackend) {.base.} =
-  discard
-
-method search*(b: VectorBackend, st: Store, queryVec: seq[float32],
-               hasRing: bool, ringKey: uint64, budget: int): VectorSearchResult {.base.} =
-  discard
-
-method searchMany*(b: VectorBackend, st: Store, queryVec: seq[float32],
-                   ringKeys: seq[uint64], budget: int): VectorSearchResult {.base.} =
-  discard
-
 proc newExactVectorBackend*(): VectorBackend =
-  ExactVectorBackend(kind: vbExact)
+  VectorBackend()
 
-method upsert*(b: ExactVectorBackend, p: Particle) =
+proc upsert*(b: VectorBackend, p: Particle) =
   if p.vec.len == 0:
     return
   let k = (p.parent, p.seq)
@@ -77,17 +49,17 @@ method upsert*(b: ExactVectorBackend, p: Particle) =
     let loc = b.indexed[k]
     if loc.ring in b.byRing and loc.index >= 0 and loc.index < b.byRing[loc.ring].len:
       b.byRing[loc.ring][loc.index] =
-        ExactVectorEntry(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                         vec: p.vec, payload: p.payload, codec: p.codec)
+        VectorEntry(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
+                    vec: p.vec, payload: p.payload, codec: p.codec)
     return
   let idx = b.byRing.mgetOrPut(p.parent, @[]).len
-  b.byRing[p.parent].add ExactVectorEntry(parent: p.parent, seq: p.seq,
-                                          tWrite: p.tWrite, vec: p.vec,
-                                          payload: p.payload, codec: p.codec)
-  b.indexed[k] = ExactVectorLoc(ring: p.parent, index: idx)
+  b.byRing[p.parent].add VectorEntry(parent: p.parent, seq: p.seq,
+                                     tWrite: p.tWrite, vec: p.vec,
+                                     payload: p.payload, codec: p.codec)
+  b.indexed[k] = VectorLoc(ring: p.parent, index: idx)
   inc b.vectorCount
 
-method remove*(b: ExactVectorBackend, parent: uint64, seq: uint32) =
+proc remove*(b: VectorBackend, parent: uint64, seq: uint32) =
   let k = (parent, seq)
   if k notin b.indexed:
     return
@@ -101,19 +73,30 @@ method remove*(b: ExactVectorBackend, parent: uint64, seq: uint32) =
       if loc.index != last:
         entries[loc.index] = entries[last]
         b.indexed[(entries[loc.index].parent, entries[loc.index].seq)] =
-          ExactVectorLoc(ring: loc.ring, index: loc.index)
+          VectorLoc(ring: loc.ring, index: loc.index)
       entries.setLen(last)
     if entries.len == 0:
       b.byRing.del loc.ring
     else:
       b.byRing[loc.ring] = entries
 
-method clear*(b: ExactVectorBackend) =
+proc clear*(b: VectorBackend) =
   b.byRing.clear()
   b.indexed.clear()
   b.vectorCount = 0
 
-proc addTopCandidate(hits: var seq[VectorCandidate], cand: VectorCandidate, budget: int) =
+proc exactCandidate*(p: Particle, queryVec: seq[float32]): VectorCandidate =
+  VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
+                  score: 1.0 - cosineDistance(queryVec, p.vec),
+                  payload: p.payload, codec: p.codec)
+
+proc exactCandidate(p: VectorEntry, queryVec: seq[float32]): VectorCandidate =
+  VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
+                  score: 1.0 - cosineDistance(queryVec, p.vec),
+                  payload: p.payload, codec: p.codec)
+
+proc addTopCandidate*(hits: var seq[VectorCandidate], cand: VectorCandidate,
+                      budget: int) =
   if budget <= 0:
     return
   if hits.len < budget:
@@ -126,8 +109,8 @@ proc addTopCandidate(hits: var seq[VectorCandidate], cand: VectorCandidate, budg
   if cand.score > hits[worst].score:
     hits[worst] = cand
 
-method search*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
-               hasRing: bool, ringKey: uint64, budget: int): VectorSearchResult =
+proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
+             hasRing: bool, ringKey: uint64, budget: int): VectorSearchResult =
   if queryVec.len == 0 or budget <= 0:
     return
   if st.diskBacked:
@@ -139,22 +122,14 @@ method search*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
           continue
         inc result.scanned
         rings[p.parent] = true
-        let score = 1.0 - cosineDistance(queryVec, p.vec)
-        result.hits.addTopCandidate(
-          VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                          score: score, payload: p.payload, codec: p.codec),
-          budget)
+        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     else:
       for p in st.allParticles():
         if p.vec.len == 0:
           continue
         inc result.scanned
         rings[p.parent] = true
-        let score = 1.0 - cosineDistance(queryVec, p.vec)
-        result.hits.addTopCandidate(
-          VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                          score: score, payload: p.payload, codec: p.codec),
-          budget)
+        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -168,11 +143,7 @@ method search*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
     for p in b.byRing.getOrDefault(ringKey, @[]):
       inc result.scanned
       rings[p.parent] = true
-      let score = 1.0 - cosineDistance(queryVec, p.vec)
-      result.hits.addTopCandidate(
-        VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                        score: score, payload: p.payload, codec: p.codec),
-        budget)
+      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -187,11 +158,7 @@ method search*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
     for p in entries:
       inc result.scanned
       rings[ring] = true
-      let score = 1.0 - cosineDistance(queryVec, p.vec)
-      result.hits.addTopCandidate(
-        VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                        score: score, payload: p.payload, codec: p.codec),
-        budget)
+      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
   result.ringsTouched = rings.len
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -199,8 +166,8 @@ method search*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
     result.payloadBytes += h.payload.len
   result.estimatedTokens = (result.payloadBytes + 3) div 4
 
-method searchMany*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
-                   ringKeys: seq[uint64], budget: int): VectorSearchResult =
+proc searchMany*(b: VectorBackend, st: Store, queryVec: seq[float32],
+                 ringKeys: seq[uint64], budget: int): VectorSearchResult =
   if queryVec.len == 0 or budget <= 0:
     return
   if st.diskBacked:
@@ -220,11 +187,7 @@ method searchMany*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
           continue
         inc result.scanned
         rings[p.parent] = true
-        let score = 1.0 - cosineDistance(queryVec, p.vec)
-        result.hits.addTopCandidate(
-          VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                          score: score, payload: p.payload, codec: p.codec),
-          budget)
+        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -247,11 +210,7 @@ method searchMany*(b: ExactVectorBackend, st: Store, queryVec: seq[float32],
     for p in b.byRing.getOrDefault(ring, @[]):
       inc result.scanned
       rings[p.parent] = true
-      let score = 1.0 - cosineDistance(queryVec, p.vec)
-      result.hits.addTopCandidate(
-        VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                        score: score, payload: p.payload, codec: p.codec),
-        budget)
+      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
   result.ringsTouched = rings.len
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))

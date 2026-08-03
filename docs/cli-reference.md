@@ -67,6 +67,7 @@ bin/kouten --help
 | `--tls-server-name=NAME` | Optional hostname override for TLS verification and SNI. |
 | `--tls-insecure-skip-verify` | Skip certificate verification for local smoke tests only. |
 | `--metrics` | Emit key/value metrics where supported. |
+| `--json` | Emit JSON where supported. |
 
 Example:
 
@@ -94,8 +95,57 @@ kouten get --config=/etc/koutendb/client.json --ring=docs/japan
 | `metrics` | Emit server metrics. |
 | `rings` | Show ring summaries. |
 | `atlas` | Emit the galaxy/ring map. Works with `--data` or `--peers`. |
+| `drain` | Put cluster nodes into read-only maintenance mode. Requires admin auth. |
+| `snapshot` | Flush cluster nodes and report a snapshot barrier. Requires admin auth. |
+| `resume` | Leave drain mode only after every peer has the same topology and zero migration backlog. Requires admin auth. |
 | `shutdown` | Stop a server. |
 | `demo` | Run a small cluster demo. |
+
+For maintenance or backup windows, use `drain`, then `snapshot`, then run the
+backup or replacement operation, and finally `resume`:
+
+```sh
+kouten drain --peers=127.0.0.1:7301,127.0.0.1:7302 --user=admin --password-file=/run/secrets/kouten_admin
+kouten snapshot --peers=127.0.0.1:7301,127.0.0.1:7302 --user=admin --password-file=/run/secrets/kouten_admin
+kouten resume --peers=127.0.0.1:7301,127.0.0.1:7302 --user=admin --password-file=/run/secrets/kouten_admin
+```
+
+Drain mode rejects new write commands, including body-carrying frames, after
+consuming their remaining payload bytes. That keeps the TCP protocol boundary
+intact so the same connection can continue to serve reads and admin commands.
+`snapshot` is a flush/report barrier; use it after `drain` when a quiet point is
+required. `resume` first checks every configured peer. Unreachable peers, mixed
+placement epochs, and pending migration all fail closed without clearing the
+local drain marker.
+
+## Scale-In Commands
+
+Scale-in copies persistently drained old node directories into a fresh smaller
+cluster with a higher placement epoch. Run each source directory separately
+and keep the target outside application routing until all sources verify.
+
+| Command | Purpose |
+|---|---|
+| `scale-in-plan` | Validate the source/target boundary and report record, tombstone, metadata, and per-target counts without writing. |
+| `scale-in-migrate` | Transfer versioned records, tombstones, and database metadata with a durable resumable checkpoint. |
+| `scale-in-verify` | Independently compare target mutation state and metadata before activation. |
+| `scale-in-status` | Read a checkpoint without connecting to either cluster. |
+
+```sh
+kouten scale-in-plan --data=/var/lib/koutendb/old/node0 \
+  --peers=127.0.0.1:7401,127.0.0.1:7402 --json
+kouten scale-in-migrate --data=/var/lib/koutendb/old/node0 \
+  --peers=127.0.0.1:7401,127.0.0.1:7402 \
+  --checkpoint-every=1000
+kouten scale-in-verify --data=/var/lib/koutendb/old/node0 \
+  --peers=127.0.0.1:7401,127.0.0.1:7402 --json
+kouten scale-in-status \
+  --checkpoint=/var/lib/koutendb/old/node0/kouten.scale-in.2.json
+```
+
+Authentication and TLS flags are the same as other cluster commands. See
+[Physical Placement and Topology Remapping](topology-remapping.md) for the
+complete maintenance order, safety boundaries, and recovery behavior.
 
 ## Driver Commands
 
@@ -309,6 +359,7 @@ For scripts and reproducible examples, prefer the single-shot commands above.
 | `restore` | `--backup=DIR --data=DIR` | Restore backup. |
 | `backup-encrypted` | `--data=DIR --backup=DIR --passphrase=TEXT` | Create encrypted backup. |
 | `restore-encrypted` | `--backup=DIR --data=DIR --passphrase=TEXT` | Restore encrypted backup. |
+| `verify` | `--data=DIR` or `--backup=DIR`; optional `--segments`, `--max-wal-bytes=N`, `--max-segment-files=N`, `--max-items=N`, `--max-rings=N`, `--metrics`, `--json` | Open and inspect a persistent data directory or backup. Data-dir verification checks WAL replay, lock, metadata, locality, capacity thresholds, and rebuildable segment layout. Backup verification checks restore readability without writing into the live data directory. |
 | `dump` | `--data=DIR` | Export JSONL. |
 | `import-jsonl` | `--data=DIR --in=FILE`; optional `--batch-size=N` | Import JSONL with chunked commits. |
 | `describe-galaxy` | `--data=DIR --description=TEXT` | Set galaxy map description. |
@@ -356,4 +407,18 @@ Recovery commands accept `--mirror`, `--universe-config`, `--universe`,
 | `rag-bench` | Synthetic RAG-style working-set/token benchmark. |
 | `working-set-bench` | Working-set reduction benchmark. |
 | `memory-pressure-bench` | Candidate memory pressure benchmark. |
-| `doctor` | Check optional native dependencies such as FAISS bridge. |
+| `doctor` | Without `--data` / `--backup` / `--server-config`, report the dependency-free embedded setup. With `--data=DIR`, `--backup=DIR`, or `--server-config=FILE`, run operational verification. |
+
+## Operational Verification
+
+| Command | Purpose |
+|---|---|
+| `verify --data=DIR [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N]` | Open/replay a persistent data directory and check WAL, metadata, locality, optional capacity thresholds, and optional segment rebuild health. |
+| `verify --backup=DIR` | Verify backup readability before restore. |
+| `verify --server-config=FILE` | Validate a `koutend` server JSON config before startup. |
+| `doctor --server-config=FILE --json` | Emit the same server config checks as JSON. |
+
+Server config verification checks `id` / `peers`, persistence, auth
+combinations, secret file readability, role entries, ring-prefix authorization
+shape, TLS cert/key pairing, TLS file existence, and whether certificate
+verification has been explicitly disabled.

@@ -57,12 +57,71 @@ provides it.
 
 ## `koutend` Server Flags
 
+`koutend` can load these server defaults from JSON with `--config=FILE` or
+`KOUTEN_SERVER_CONFIG=FILE`. Command-line flags override the file.
+
+```json
+{
+  "id": 0,
+  "peers": ["127.0.0.1:7301", "127.0.0.1:7302", "127.0.0.1:7303"],
+  "dataDir": "/var/lib/koutendb/node0",
+  "slowTick": 0.05,
+  "placementEpoch": 1,
+  "virtualArcsPerNode": 64,
+  "startDrained": false,
+  "durability": "strong",
+  "galaxy": "app-main",
+  "user": "app",
+  "passwordFile": "/run/secrets/koutendb-password",
+  "secretKeyFile": "/run/secrets/koutendb-secret-key",
+  "allowRing": ["users", "orders"],
+  "roles": [
+    {
+      "user": "reader",
+      "passwordFile": "/run/secrets/koutendb-reader-password",
+      "role": "reader",
+      "prefixes": ["users"]
+    }
+  ],
+  "tlsCertFile": "/etc/koutendb/server.crt",
+  "tlsKeyFile": "/etc/koutendb/server.key",
+  "tlsCaFile": "/etc/koutendb/ca.crt",
+  "tlsServerName": "koutendb.internal"
+}
+```
+
+The config accepts camelCase names and flag-style aliases such as
+`placement-epoch`, `virtual-arcs-per-node`, `password-file`,
+`secret-key-file`, `tls-cert`, and `allow-ring`. Changing the peer count or
+virtual-arc density requires increasing `placementEpoch` on every node.
+Existing data directories must be persistently drained before that change.
+Pending cluster transactions, warp jobs, and Universe sync events must also be
+resolved before startup accepts the new topology.
+Write-quiesced rolling scale-out migration is supported. In-place node removal fails
+closed; use the explicit stop-the-world workflow documented in
+[Physical Placement and Topology Remapping](topology-remapping.md). `peers`
+may be a comma-separated string or an array. `allowRing` / `allow-ring` may be
+a comma-separated string or an array. `roles` may contain either
+`"user:password:role[:prefix1,prefix2]"` strings or objects with `user`,
+`password`, `role`, and optional `prefixes`.
+
+Validate a server config before startup:
+
+```sh
+kouten verify --server-config=/etc/koutendb/server.json
+kouten doctor --server-config=/etc/koutendb/server.json --json
+```
+
 | Flag | Meaning |
 |---|---|
+| `--config=FILE` | Load server defaults from JSON. `KOUTEN_SERVER_CONFIG` can point to the same file. |
 | `--id=N` | Node index in the peer list. |
 | `--peers=host:port,...` | Static cluster peer list. |
 | `--data=DIR` | Persistent data directory. |
 | `--slow-tick=SECONDS` | Background handoff / maintenance tick interval. |
+| `--placement-epoch=N` | Monotonic physical placement generation. Increase it when peer count or virtual-arc settings change. |
+| `--virtual-arcs-per-node=N` | Deterministic virtual arcs assigned to each node. Default `64`; changing it requires a placement epoch increase. |
+| `--start-drained` | Persist read-only maintenance drain before serving. Use it for a newly added node during rolling topology activation. |
 | `--durability=buffered|strong` | WAL durability policy. Applies to server writes and local management commands such as `compact`, `backup`, and `restore`. |
 | `--user=NAME` / `--password=TEXT` | Basic username/password gate. Prefer `--password-file` or `KOUTEN_PASSWORD` outside local smoke tests. |
 | `--password-file=FILE` | Read the server password from a file. Trailing whitespace is stripped. |
@@ -77,6 +136,13 @@ provides it.
 | `--galaxy=NAME` | Galaxy identity expected by clients. |
 | `--allow-ring=PREFIX[,PREFIX...]` | Ring-prefix authorization boundary. |
 | `--role=user:password:reader|writer|admin[:prefixes]` | Role and optional ring-prefix policy. |
+
+Physical ownership is stable inside one placement epoch and is independent of
+logical ring orbit periods. The placement tuple is persisted in the WAL.
+Startup rejects epoch rollback, same-epoch topology changes, and undrained
+changes to an existing topology. Empty multi-node stores above epoch `1` start
+drained automatically. See
+[Physical Placement and Topology Remapping](topology-remapping.md).
 
 ## Retrieval Tuning
 

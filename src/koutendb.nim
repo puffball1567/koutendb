@@ -21,18 +21,32 @@
 ## 永続化は open/サーバ起動時にディレクトリを渡すだけ:
 ## `koutendb.open(dataDir = "/var/lib/kouten")` / `koutend --data=DIR`
 
-import std/[algorithm, tables, hashes, json, times, strutils, os]
-import kouten/[core, store, select, wire, field, vector_backend, faiss_backend,
+import std/[algorithm, tables, hashes, json, times, strutils, os, net]
+import kouten/[core, store, select, wire, field, vector_backend,
               planner_backend, payload]
 
 export vector_backend
-export faiss_backend
 export planner_backend
 export payload
 export select
 
 type
   KoutenDurability* = StoreDurability
+
+  KoutenValidationError* = object of ValueError
+    ## Invalid user input that can be fixed before retrying.
+
+  KoutenGuardrailError* = object of ValueError
+    ## An opt-in production guardrail rejected an otherwise valid operation.
+
+  KoutenConflictError* = object of IOError
+    ## A retryable conflict, such as a busy cooperative coordinate lock.
+
+  KoutenOperationError* = object of IOError
+    ## Operational failure from remote cluster, durability, backup, or sync paths.
+
+  KoutenNotFoundError* = object of KeyError
+    ## Requested record or maintenance job does not exist.
 
   KoutenId* = object
     ## 不透明ID。put が返し、get/query/locate に渡す。中身に触る必要はない。
@@ -114,6 +128,14 @@ type
     historyKeep*: int
     delayMs*: int
 
+  KoutenGuardrails* = object
+    ## Opt-in write-path guardrails for production trials.
+    ## A zero value means "disabled" so existing workloads keep their behavior.
+    maxPayloadBytes*: int
+    maxVectorDim*: int
+    maxRingCount*: int
+    maxRecordsPerRing*: int
+
   SearchProfile* = object
     ## 人間向けの retrieval tuning profile。
     ## RDB の optimizer hint を、KoutenDB では自然な語彙で表す。
@@ -184,6 +206,7 @@ type
     timeOrbitProfiles: Table[uint64, TimeOrbitProfile]
     ringWriteAckModes: Table[uint64, WriteAckMode]
     ringApplyPolicies: Table[uint64, RingApplyPolicy]
+    guardrails: KoutenGuardrails
     ringChildren: Table[uint64, seq[uint64]]
     stellarMembers: Table[string, seq[string]]
     stellarByMember: Table[string, seq[string]]
@@ -195,6 +218,7 @@ type
     lastRingKey: uint64
     # embedded
     clock: float
+    dataDir: string
     st: Store
     vectorBackend: VectorBackend
     plannerBackend: PlannerBackend
@@ -218,6 +242,7 @@ type
     ## cluster は node0 landing zone への atomic intent commit。
     db: KoutenDb
     tx: StoreTxn
+    stagedRingWrites: Table[uint64, int]
     clusterTxId: uint64
     clusterOps: seq[TxWireOp]
     closed: bool
@@ -392,6 +417,31 @@ type
   BackupStats* = StoreBackupStats
   LocalityReport* = StoreLocalityReport
 
+  KoutenOperationalCheck* = object
+    name*: string
+    ok*: bool
+    message*: string
+
+  KoutenOperationalVerifyReport* = object
+    ok*: bool
+    dataDir*: string
+    persistent*: bool
+    diskBacked*: bool
+    walPath*: string
+    walExists*: bool
+    walBytes*: int64
+    items*: int
+    rings*: int
+    ringNames*: int
+    vectors*: int
+    galaxy*: string
+    segmentDir*: string
+    segmentDirExists*: bool
+    segmentFiles*: int
+    segmentPackRecords*: int
+    locality*: LocalityReport
+    checks*: seq[KoutenOperationalCheck]
+
   DumpStats* = object
     bytes*: BiggestInt
     records*: int
@@ -465,6 +515,48 @@ proc defaultSearchProfile*(): SearchProfile =
 
 proc defaultRingApplyPolicy*(): RingApplyPolicy =
   RingApplyPolicy(mode: ramLatestOnly, historyKeep: 1, delayMs: 0)
+
+proc defaultGuardrails*(): KoutenGuardrails =
+  KoutenGuardrails(maxPayloadBytes: 0, maxVectorDim: 0, maxRingCount: 0,
+                   maxRecordsPerRing: 0)
+
+proc appendAudit(dataDir, event: string; ok = true; ring = ""; id = "";
+                 message = ""; extra: JsonNode = nil) =
+  if dataDir.len == 0:
+    return
+  var node = %*{
+    "timestamp": epochTime(),
+    "event": event,
+    "ok": ok,
+    "ring": ring,
+    "id": id,
+    "message": message
+  }
+  if not extra.isNil:
+    node["extra"] = extra
+  let path = dataDir / "kouten.audit.jsonl"
+  var f = open(path, fmAppend)
+  try:
+    f.writeLine($node)
+  finally:
+    f.close()
+
+proc auditLogPath*(dataDir: string): string =
+  if dataDir.len == 0:
+    return ""
+  dataDir / "kouten.audit.jsonl"
+
+proc audit(db: KoutenDb, event: string; ok = true; ring = ""; id = "";
+           message = ""; extra: JsonNode = nil) =
+  if db.mode == mEmbedded:
+    appendAudit(db.dataDir, event, ok = ok, ring = ring, id = id,
+                message = message, extra = extra)
+
+proc auditLogPath*(db: KoutenDb): string =
+  if db.mode == mEmbedded:
+    auditLogPath(db.dataDir)
+  else:
+    ""
 
 proc tuningFromSearchProfile*(profile: SearchProfile): RetrievalTuning =
   case profile.amount
@@ -577,14 +669,14 @@ proc acquireLockKeys(db: KoutenDb, scope: KoutenLockScope, coordinate: string,
                      waitMs = 0): KoutenLockToken =
   doAssert db.mode == mEmbedded, "coordinate locks are embedded mode only in this release"
   if ttlSeconds <= 0:
-    raise newException(ValueError, "ttlSeconds must be positive")
+    raise newException(KoutenValidationError, "ttlSeconds must be positive")
   let deadline = epochTime() + float(max(waitMs, 0)) / 1000.0
   var uniqueKeys: seq[string] = @[]
   for key in keys:
     if key.len > 0 and key notin uniqueKeys:
       uniqueKeys.add key
   if uniqueKeys.len == 0:
-    raise newException(ValueError, "lock key set is empty")
+    raise newException(KoutenValidationError, "lock key set is empty")
 
   while true:
     let now = epochTime()
@@ -607,7 +699,7 @@ proc acquireLockKeys(db: KoutenDb, scope: KoutenLockScope, coordinate: string,
                             expiresAt: expiresAt,
                             keys: uniqueKeys)
     if waitMs <= 0 or epochTime() >= deadline:
-      raise newException(IOError, "coordinate lock is busy: " & busy)
+      raise newException(KoutenConflictError, "coordinate lock is busy: " & busy)
     sleep(10)
 
 proc acquireRingLock*(db: KoutenDb, ring: string, ttlSeconds = 30.0,
@@ -615,7 +707,7 @@ proc acquireRingLock*(db: KoutenDb, ring: string, ttlSeconds = 30.0,
   ## Acquire an opt-in cooperative lock for one ring coordinate.
   let coord = normalizedCoordinate(ring)
   if coord.len == 0:
-    raise newException(ValueError, "ring is required")
+    raise newException(KoutenValidationError, "ring is required")
   db.acquireLockKeys(rlsRing, coord, @[lockKey(rlsRing, coord)],
                      ttlSeconds, waitMs)
 
@@ -625,7 +717,7 @@ proc acquireStellarLock*(db: KoutenDb, stellar: string, ttlSeconds = 30.0,
   ## The member set is captured at acquisition time.
   let coord = normalizedCoordinate(stellar)
   if coord.len == 0:
-    raise newException(ValueError, "stellar is required")
+    raise newException(KoutenValidationError, "stellar is required")
   var keys = @[lockKey(rlsStellar, coord), lockKey(rlsRing, coord)]
   for member in db.stellarMembers.getOrDefault(coord, @[]):
     keys.add lockKey(rlsRing, member)
@@ -678,6 +770,7 @@ proc open*(nodes: int = 8, dataDir: string = "",
   let tbl = equalArcTable(1, uint16(nodes))
   result = KoutenDb(mode: mEmbedded,
                    tbl: tbl,
+                   dataDir: dataDir,
                    st: openStore(dataDir, durability = durability,
                                  diskBacked = diskBacked),
                    vectorBackend: newExactVectorBackend(),
@@ -782,19 +875,26 @@ proc connect*(peers: string, username: string = "", password: string = "",
   ## クラスタモードで開く。peers = "host:port,host:port,..."（koutend の並び順）。
   ## 時計は wall clock。API は open() と同じに使える。
   let ps = parsePeers(peers)
-  KoutenDb(mode: mCluster,
-          tbl: ArcTable(epoch: 1, nNodes: uint16(ps.len)),
-          client: newClusterClient(ps, username = username,
-                                   password = password,
-                                   authToken = authToken,
-                                   secretKey = secretKey,
-                                   galaxy = galaxy,
-                                   tls = tls,
-                                   tlsCaFile = tlsCaFile,
-                                   tlsServerName = tlsServerName,
-                                   tlsInsecureSkipVerify = tlsInsecureSkipVerify),
-          plannerBackend: newHeuristicPlannerBackend(),
-          galaxy: galaxy)
+  let client = newClusterClient(ps, username = username,
+                                password = password,
+                                authToken = authToken,
+                                secretKey = secretKey,
+                                galaxy = galaxy,
+                                tls = tls,
+                                tlsCaFile = tlsCaFile,
+                                tlsServerName = tlsServerName,
+                                tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  var tbl: ArcTable
+  try:
+    tbl = client.topologyReq(0)
+    if int(tbl.nNodes) != ps.len:
+      raise newException(IOError,
+        "server topology node count does not match configured peers")
+  except CatchableError:
+    client.close()
+    raise
+  KoutenDb(mode: mCluster, tbl: tbl, client: client,
+           plannerBackend: newHeuristicPlannerBackend(), galaxy: galaxy)
 
 proc openGalaxyRouter*(): GalaxyRouter =
   GalaxyRouter()
@@ -941,7 +1041,14 @@ proc compact*(db: KoutenDb): CompactStats =
   ## cluster 接続では各 koutend 側の管理操作として実行する。
   if db.mode != mEmbedded:
     raise newException(ValueError, "cluster connection cannot compact remote stores")
-  db.st.compact()
+  result = db.st.compact()
+  db.audit("compact", extra = %*{
+    "beforeBytes": result.beforeBytes,
+    "afterBytes": result.afterBytes,
+    "items": result.items,
+    "rings": result.ringMeta,
+    "ringNames": result.ringNames
+  })
 
 proc localityReport*(db: KoutenDb): LocalityReport =
   ## 組み込み Store の WAL 物理配置を調べる。
@@ -954,13 +1061,27 @@ proc backup*(db: KoutenDb, dstDir: string): BackupStats =
   ## 現在の embedded Store 状態を compact 済み WAL として dstDir に退避する。
   if db.mode != mEmbedded:
     raise newException(ValueError, "cluster connection cannot backup remote stores")
-  db.st.backup(dstDir)
+  result = db.st.backup(dstDir)
+  db.audit("backup", extra = %*{
+    "destination": dstDir,
+    "bytes": result.bytes,
+    "items": result.items,
+    "rings": result.ringMeta,
+    "ringNames": result.ringNames
+  })
 
 proc backupEncrypted*(db: KoutenDb, dstDir, passphrase: string): BackupStats =
   ## 現在の embedded Store 状態を encrypted compact snapshot として dstDir に退避する。
   if db.mode != mEmbedded:
     raise newException(ValueError, "cluster connection cannot backup remote stores")
-  db.st.backupEncrypted(dstDir, passphrase)
+  result = db.st.backupEncrypted(dstDir, passphrase)
+  db.audit("backup-encrypted", extra = %*{
+    "destination": dstDir,
+    "bytes": result.bytes,
+    "items": result.items,
+    "rings": result.ringMeta,
+    "ringNames": result.ringNames
+  })
 
 proc verifyBackup*(backupDir: string): BackupStats =
   ## backupDir の WAL snapshot を復元前に strict 検証する。
@@ -970,19 +1091,122 @@ proc verifyEncryptedBackup*(backupDir, passphrase: string): BackupStats =
   ## backupDir の encrypted backup を復号し、復元前に strict 検証する。
   store.verifyEncryptedBackup(backupDir, passphrase)
 
+proc addOperationalCheck(report: var KoutenOperationalVerifyReport;
+                         name: string; ok: bool; message: string) =
+  report.checks.add KoutenOperationalCheck(name: name, ok: ok,
+                                           message: message)
+  if not ok:
+    report.ok = false
+
+proc operationalVerify*(dataDir: string; diskBacked = true;
+                        verifySegments = false;
+                        maxWalBytes: int64 = -1;
+                        maxSegmentFiles = -1;
+                        maxItems = -1;
+                        maxRings = -1): KoutenOperationalVerifyReport =
+  ## Open and inspect a persistent embedded data directory for operational
+  ## readiness checks. Opening the store exercises WAL replay, recovery gates,
+  ## and the data-directory lock. Segment verification can rebuild the
+  ## rebuildable read layout; the WAL remains the source of truth.
+  if dataDir.len == 0:
+    raise newException(ValueError, "operationalVerify requires dataDir")
+
+  result.ok = true
+  result.dataDir = dataDir
+  result.walPath = dataDir / "kouten.log"
+  result.walExists = fileExists(result.walPath)
+  if result.walExists:
+    result.walBytes = getFileSize(result.walPath)
+  result.addOperationalCheck("data-dir", dirExists(dataDir), dataDir)
+  result.addOperationalCheck("wal-file", result.walExists, result.walPath)
+  if maxWalBytes >= 0:
+    result.addOperationalCheck("wal-bytes-limit",
+      result.walBytes <= maxWalBytes,
+      "bytes=" & $result.walBytes & " max=" & $maxWalBytes)
+
+  var db = open(dataDir = dataDir, diskBacked = diskBacked)
+  try:
+    result.persistent = true
+    result.diskBacked = db.st.diskBacked
+    result.items =
+      if db.st.diskBacked: db.st.itemOffsets.len
+      else: db.st.items.len
+    result.rings = db.st.ringMeta.len
+    result.ringNames = db.st.ringNames.len
+    result.vectors = db.st.vectorCount
+    result.galaxy = db.st.galaxy
+    result.segmentDir = dataDir / "segments"
+    result.segmentDirExists = dirExists(result.segmentDir)
+    if result.segmentDirExists:
+      for kind, _ in walkDir(result.segmentDir):
+        if kind == pcFile:
+          inc result.segmentFiles
+    result.locality = db.localityReport()
+    result.addOperationalCheck("open-replay-lock", true, "opened and replayed WAL")
+    result.addOperationalCheck("metadata", true,
+      "items=" & $result.items & " rings=" & $result.rings &
+      " ringNames=" & $result.ringNames)
+    if maxItems >= 0:
+      result.addOperationalCheck("items-limit",
+        result.items <= maxItems,
+        "items=" & $result.items & " max=" & $maxItems)
+    if maxRings >= 0:
+      result.addOperationalCheck("rings-limit",
+        result.rings <= maxRings,
+        "rings=" & $result.rings & " max=" & $maxRings)
+    result.addOperationalCheck("locality-report", true,
+      "ringRuns=" & $result.locality.ringRuns &
+      " localityScore=" & $result.locality.localityScore)
+    if verifySegments:
+      let packStats = db.st.rebuildRingSegments()
+      result.segmentPackRecords = packStats.records
+      result.segmentDirExists = dirExists(result.segmentDir)
+      result.segmentFiles = 0
+      if result.segmentDirExists:
+        for kind, _ in walkDir(result.segmentDir):
+          if kind == pcFile:
+            inc result.segmentFiles
+      result.addOperationalCheck("segments", true,
+        "rebuiltRecords=" & $packStats.records &
+        " files=" & $result.segmentFiles)
+    elif result.diskBacked:
+      result.addOperationalCheck("segments", result.segmentDirExists,
+        if result.segmentDirExists: "present files=" & $result.segmentFiles
+        else: "missing; run verify --segments to rebuild")
+    if maxSegmentFiles >= 0:
+      result.addOperationalCheck("segment-files-limit",
+        result.segmentFiles <= maxSegmentFiles,
+        "files=" & $result.segmentFiles & " max=" & $maxSegmentFiles)
+  finally:
+    db.close()
+
 proc restoreBackup*(backupDir, dataDir: string, overwrite = false,
                     durability: KoutenDurability = durBuffered): BackupStats =
   ## backupDir の WAL を dataDir へ復元する。dataDir が既存の場合は overwrite が必要。
-  store.restoreBackup(backupDir, dataDir, overwrite = overwrite,
-                      durability = durability)
+  result = store.restoreBackup(backupDir, dataDir, overwrite = overwrite,
+                               durability = durability)
+  appendAudit(dataDir, "restore", extra = %*{
+    "source": backupDir,
+    "bytes": result.bytes,
+    "items": result.items,
+    "rings": result.ringMeta,
+    "ringNames": result.ringNames
+  })
 
 proc restoreEncryptedBackup*(backupDir, dataDir, passphrase: string,
                              overwrite = false,
                              durability: KoutenDurability = durBuffered): BackupStats =
   ## backupDir の encrypted backup を dataDir へ復元する。
-  store.restoreEncryptedBackup(backupDir, dataDir, passphrase,
-                               overwrite = overwrite,
-                               durability = durability)
+  result = store.restoreEncryptedBackup(backupDir, dataDir, passphrase,
+                                        overwrite = overwrite,
+                                        durability = durability)
+  appendAudit(dataDir, "restore-encrypted", extra = %*{
+    "source": backupDir,
+    "bytes": result.bytes,
+    "items": result.items,
+    "rings": result.ringMeta,
+    "ringNames": result.ringNames
+  })
 
 proc writeDumpLine(outFile: File, node: JsonNode): BiggestInt =
   let line = $node
@@ -1226,22 +1450,6 @@ proc importJsonl*(db: KoutenDb, path: string, defaultRing = "imported",
 
 proc clampTopRings*(topRings: int): int
 
-proc configureVectorBackend*(db: KoutenDb, kind: VectorBackendKind) =
-  ## 組み込みモードの vector backend を選ぶ。
-  ## vbExact は依存なしの全走査。vbFaiss は production 想定の dynamic backend。
-  doAssert db.mode == mEmbedded, "configureVectorBackend は組み込みモード専用"
-  case kind
-  of vbExact:
-    db.vectorBackend = newExactVectorBackend()
-    if not db.st.diskBacked:
-      for _, p in db.st.items:
-        db.vectorBackend.upsert p
-  of vbFaiss:
-    db.vectorBackend = newFaissVectorBackend()
-    if not db.st.diskBacked:
-      for _, p in db.st.items:
-        db.vectorBackend.upsert p
-
 proc packDiskBackedSegments*(db: KoutenDb): SegmentPackStats {.discardable.} =
   ## Build ring-local physical segment files for disk-backed embedded reads.
   ## WAL remains the source of truth; segments are rebuildable read layout.
@@ -1389,15 +1597,30 @@ proc configureRingApplyPolicy*(db: KoutenDb, ring: string,
   ## universe sync / delayed apply の ring-local policy を設定する。
   ## データ構造は縛らず、同期・履歴・適用順の扱いだけを ring ごとに変える。
   if policy.historyKeep < 0:
-    raise newException(ValueError, "historyKeep must be >= 0")
+    raise newException(KoutenValidationError, "historyKeep must be >= 0")
   if policy.delayMs < 0:
-    raise newException(ValueError, "delayMs must be >= 0")
+    raise newException(KoutenValidationError, "delayMs must be >= 0")
   let key = db.ringKey(ring)
   db.ringApplyPolicies[key] = policy
 
 proc ringApplyPolicy*(db: KoutenDb, ring: string): RingApplyPolicy =
   let key = db.ringKeyForRead(ring)
   db.ringApplyPolicies.getOrDefault(key, defaultRingApplyPolicy())
+
+proc configureGuardrails*(db: KoutenDb, guardrails: KoutenGuardrails) =
+  ## Configure opt-in write-path limits. Zero fields are disabled.
+  if guardrails.maxPayloadBytes < 0:
+    raise newException(KoutenValidationError, "maxPayloadBytes must be >= 0")
+  if guardrails.maxVectorDim < 0:
+    raise newException(KoutenValidationError, "maxVectorDim must be >= 0")
+  if guardrails.maxRingCount < 0:
+    raise newException(KoutenValidationError, "maxRingCount must be >= 0")
+  if guardrails.maxRecordsPerRing < 0:
+    raise newException(KoutenValidationError, "maxRecordsPerRing must be >= 0")
+  db.guardrails = guardrails
+
+proc guardrails*(db: KoutenDb): KoutenGuardrails =
+  db.guardrails
 
 proc writeAckModeForRing(db: KoutenDb, ringKey: uint64): WriteAckMode =
   db.ringWriteAckModes.getOrDefault(ringKey, db.defaultWriteAckMode)
@@ -1438,10 +1661,58 @@ proc waitClusterTxApplied*(db: KoutenDb, txid: uint64, timeoutMs = 10_000,
     sleep(max(1, pollMs))
   false
 
+proc liveRecordsInEmbeddedRing(db: KoutenDb, ringKey: uint64): int =
+  if db.mode != mEmbedded:
+    return 0
+  for itemKey in db.st.itemsByRing.getOrDefault(ringKey, @[]):
+    if db.st.contains(itemKey[0], itemKey[1]):
+      inc result
+
+proc checkPayloadGuardrails(db: KoutenDb, encoded: EncodedPayload,
+                            vecLen: int) =
+  let g = db.guardrails
+  if g.maxPayloadBytes > 0 and encoded.data.len > g.maxPayloadBytes:
+    db.audit("guardrail-denied", ok = false,
+             message = "payload exceeds maxPayloadBytes",
+             extra = %*{"maxPayloadBytes": g.maxPayloadBytes,
+                        "payloadBytes": encoded.data.len})
+    raise newException(KoutenGuardrailError,
+      "payload exceeds maxPayloadBytes " & $g.maxPayloadBytes)
+  if g.maxVectorDim > 0 and vecLen > g.maxVectorDim:
+    db.audit("guardrail-denied", ok = false,
+             message = "vector dimension exceeds maxVectorDim",
+             extra = %*{"maxVectorDim": g.maxVectorDim,
+                        "vectorDim": vecLen})
+    raise newException(KoutenGuardrailError,
+      "vector dimension exceeds maxVectorDim " & $g.maxVectorDim)
+
+proc checkWriteGuardrails(db: KoutenDb, encoded: EncodedPayload,
+                          ring: string, vecLen: int) =
+  db.checkPayloadGuardrails(encoded, vecLen)
+  let g = db.guardrails
+  if g.maxRingCount > 0 and ring notin db.ringNames and
+      db.ringNames.len >= g.maxRingCount:
+    db.audit("guardrail-denied", ok = false, ring = ring,
+             message = "ring count exceeds maxRingCount",
+             extra = %*{"maxRingCount": g.maxRingCount,
+                        "ringCount": db.ringNames.len})
+    raise newException(KoutenGuardrailError,
+      "ring count exceeds maxRingCount " & $g.maxRingCount)
+  if g.maxRecordsPerRing > 0 and db.mode == mEmbedded and ring in db.ringNames:
+    let key = db.ringNames[ring]
+    if db.liveRecordsInEmbeddedRing(key) >= g.maxRecordsPerRing:
+      db.audit("guardrail-denied", ok = false, ring = ring,
+               message = "ring records exceed maxRecordsPerRing",
+               extra = %*{"maxRecordsPerRing": g.maxRecordsPerRing,
+                          "records": db.liveRecordsInEmbeddedRing(key)})
+      raise newException(KoutenGuardrailError,
+        "ring records exceed maxRecordsPerRing " & $g.maxRecordsPerRing)
+
 proc put*(db: KoutenDb, encoded: EncodedPayload, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
   ## 書き込み。環は初回利用時に自動作成。
   ## 返る ID を持っていれば、所在は誰にも問い合わせずいつでも計算できる。
+  db.checkWriteGuardrails(encoded, ring, vec.len)
   let key = db.ringKey(ring)
   let ri = db.rings[key]
   let normVec = vec.normalize()
@@ -1456,9 +1727,13 @@ proc put*(db: KoutenDb, encoded: EncodedPayload, ring: string = "default",
     db.st.upsert p
     if not db.st.diskBacked:
       db.vectorBackend.upsert p
+    db.audit("put", ring = ring, id = $result,
+             extra = %*{"payloadBytes": encoded.data.len,
+                        "vectorDim": vec.len,
+                        "codec": $encoded.codec})
   of mCluster:
-    # 書き込み先 = 環ヘッド角の所有ノード（決定論的 write leader, §7 の最小版）
-    let node = int(db.tbl.owner(ri.headAngle))
+    # Stable physical ring owner. Logical orbit timing is independent.
+    let node = int(db.tbl.placementOwner(key))
     let (seq, tWrite) = db.client.putReq(node, key, ri.period, ri.headAngle,
                                          encoded.data, normVec, encoded.codec)
     result = KoutenId(parent: key, epoch: db.tbl.epoch, seq: seq, tWrite: tWrite)
@@ -1514,6 +1789,7 @@ proc putSynced*(db: KoutenDb, encoded: EncodedPayload,
   ## embedded put と universe outbox 登録を同時に行う。
   ## 既存 put の意味は変えず、Universe 同期したい write path だけで使う。
   doAssert db.mode == mEmbedded, "putSynced は embedded mode 専用"
+  db.checkWriteGuardrails(encoded, ring, vec.len)
   let key = db.ringKey(ring, persist = false)
   let ri = db.rings[key]
   let normVec = vec.normalize()
@@ -1545,6 +1821,12 @@ proc putSynced*(db: KoutenDb, encoded: EncodedPayload,
     for idx in staged.removed:
       db.universeSyncEvents.delete(idx)
     db.universeSyncEvents.add staged.event
+    db.audit("put-synced", ring = ring, id = $result,
+             extra = %*{"payloadBytes": encoded.data.len,
+                        "vectorDim": vec.len,
+                        "codec": $encoded.codec,
+                        "sourceUniverse": sourceUniverse,
+                        "sourceGalaxy": sourceGalaxy})
   except CatchableError:
     if not committed:
       tx.rollback()
@@ -1579,11 +1861,23 @@ proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
   ## transaction 内の書き込み。commit まで DB 本体には見えない。
   doAssert not tx.closed, "transaction is closed"
+  tx.db.checkWriteGuardrails(encoded, ring, vec.len)
   let key = tx.db.ringKey(ring, persist = false)
   let ri = tx.db.rings[key]
   let normVec = vec.normalize()
   case tx.db.mode
   of mEmbedded:
+    let g = tx.db.guardrails
+    if g.maxRecordsPerRing > 0:
+      let staged = tx.stagedRingWrites.getOrDefault(key, 0)
+      if tx.db.liveRecordsInEmbeddedRing(key) + staged >= g.maxRecordsPerRing:
+        tx.db.audit("guardrail-denied", ok = false, ring = ring,
+                    message = "ring records exceed maxRecordsPerRing",
+                    extra = %*{"maxRecordsPerRing": g.maxRecordsPerRing,
+                               "records": tx.db.liveRecordsInEmbeddedRing(key),
+                               "stagedRecords": staged})
+        raise newException(ValueError,
+          "ring records exceed maxRecordsPerRing " & $g.maxRecordsPerRing)
     if tx.db.st.ringNames.getOrDefault(key, "") != ring:
       tx.tx.putRingName(key, ring)
     if key notin tx.db.st.ringMeta:
@@ -1593,6 +1887,7 @@ proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
     tx.tx.upsert Particle(parent: key, seq: seq, period: ri.period,
                           head: ri.headAngle, tWrite: tx.db.clock,
                           payload: encoded.data, codec: encoded.codec, vec: normVec)
+    tx.stagedRingWrites[key] = tx.stagedRingWrites.getOrDefault(key, 0) + 1
   of mCluster:
     let (seq, tWrite) = tx.db.client.txReserveReq(0, tx.clusterTxId, key,
                                                   ri.period, ri.headAngle)
@@ -1625,6 +1920,7 @@ proc update*(tx: KoutenTx, id: KoutenId, encoded: EncodedPayload,
              vec: seq[float32] = @[]) =
   ## transaction 内の置換更新。commit まで DB 本体には反映されない。
   doAssert not tx.closed, "transaction is closed"
+  tx.db.checkPayloadGuardrails(encoded, vec.len)
   let normVec = vec.normalize()
   case tx.db.mode
   of mEmbedded:
@@ -1742,7 +2038,7 @@ proc batchUpdateAtomic*(db: KoutenDb, ids: seq[KoutenId],
   ## Embedded all-or-nothing bulk replace. Every ID must exist before commit.
   doAssert db.mode == mEmbedded, "batchUpdateAtomic is embedded mode only"
   if ids.len != payloads.len:
-    raise newException(ValueError, "ids and payloads length mismatch")
+    raise newException(KoutenValidationError, "ids and payloads length mismatch")
   let tx = db.beginTransaction()
   try:
     for i, id in ids:
@@ -1759,7 +2055,7 @@ proc batchUpdateAtomic*(db: KoutenDb, ids: seq[KoutenId],
   ## Embedded all-or-nothing bulk JSON replace.
   doAssert db.mode == mEmbedded, "batchUpdateAtomic is embedded mode only"
   if ids.len != docs.len:
-    raise newException(ValueError, "ids and docs length mismatch")
+    raise newException(KoutenValidationError, "ids and docs length mismatch")
   let tx = db.beginTransaction()
   try:
     for i, id in ids:
@@ -1777,7 +2073,7 @@ proc batchDeleteAtomic*(db: KoutenDb, ids: seq[KoutenId]) =
   try:
     for id in ids:
       if not db.st.contains(id.parent, id.seq):
-        raise newException(KeyError, "id not found")
+        raise newException(KoutenNotFoundError, "id not found")
       tx.remove(id)
     tx.commit()
   except CatchableError:
@@ -1794,7 +2090,16 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
   ## レースを閉じる（移動は常に前方向なので、primary 再訪で必ず追いつく）。
   let ri = db.rings[id.parent]
   let n = int(db.tbl.nNodes)
-  let primary = int(db.tbl.node(db.orbitOf(id), epochTime()))
+  let physicalPrimary = int(db.tbl.placementOwner(id.parent))
+  # Keep point reads bounded and owner-routed. Mutation versions and durable
+  # tombstones protect destination writes, but a tail copy is still not an
+  # authoritative read source.
+  var candidates = @[physicalPrimary]
+  var redirectsLeft = 2
+  proc addTarget(node, at: int) =
+    if redirectsLeft > 0 and node >= 0 and node < n:
+      candidates.insert(node, at)
+      dec redirectsLeft
   proc landingRead(): tuple[hit: bool, deleted: bool, value: EncodedPayload] =
     let r = db.client.txGetIdReq(0, WireId(parent: id.parent, epoch: id.epoch,
       seq: id.seq, tWrite: id.tWrite, period: ri.period, head: ri.headAngle),
@@ -1812,9 +2117,13 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
     if pending.hit:
       return pending.value
     db.clearPendingLandingRead(id)
-  for node in [primary, (primary + n - 1) mod n, primary]:
+  var candidateIndex = 0
+  while candidateIndex < candidates.len:
+    let node = candidates[candidateIndex]
+    inc candidateIndex
     var r: tuple[found: bool, node: int, value: string, codec: PayloadCodec, forwarded: bool,
-                 newParent: uint64, newSeq: uint32, newTWrite: float]
+                 newParent: uint64, newSeq: uint32, newTWrite: float,
+                 targetNode: int]
     try:
       if selection.len == 0 and not needCodec:
         let raw = db.client.getValueReq(node, id.parent, id.seq, ri.period,
@@ -1822,15 +2131,16 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
         r = (found: raw.found, node: raw.node, value: raw.value,
              codec: pcRaw, forwarded: raw.forwarded,
              newParent: raw.newParent, newSeq: raw.newSeq,
-             newTWrite: raw.newTWrite)
+             newTWrite: raw.newTWrite, targetNode: raw.targetNode)
       else:
         r =
           if selection.len == 0:
-            db.client.getReq(node, id.parent, id.seq, ri.period, ri.headAngle, id.tWrite)
+            db.client.getReq(node, id.parent, id.seq, ri.period, ri.headAngle,
+                             id.tWrite)
           else:
             db.client.queryReq(node, id.parent, id.seq, ri.period, ri.headAngle,
                                id.tWrite, selection)
-    except IOError, OSError:
+    except IOError, OSError, TimeoutError:
       let pendingRetry = landingRead()
       if pendingRetry.deleted:
         raise newException(KeyError, "id は cluster tx landing intent で削除済み")
@@ -1840,6 +2150,11 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
     if r.found:
       return encodedPayload(r.value, r.codec)
     if r.forwarded:
+      if r.targetNode >= 0:
+        # Ownership changed after the client calculated physicalPrimary. Follow
+        # the server's current target without probing unrelated nodes.
+        addTarget(r.targetNode, candidateIndex)
+        continue
       if fwdDepth >= 1:
         raise newException(KeyError, "FWD chain が長すぎる")
       if r.newParent notin db.rings:
@@ -1880,10 +2195,9 @@ proc batchGet*(db: KoutenDb, ids: seq[KoutenId]): seq[string] =
       result.add db.get(id)
   of mCluster:
     var byNode = initTable[int, seq[tuple[idx: int, id: KoutenId]]]()
-    let t = epochTime()
     result = newSeq[string](ids.len)
     for i, id in ids:
-      let node = int(db.tbl.node(db.orbitOf(id), t))
+      let node = int(db.tbl.placementOwner(id.parent))
       byNode.mgetOrPut(node, @[]).add (idx: i, id: id)
     for node, entries in byNode:
       var req: seq[tuple[parent: uint64, seq: uint32, period: float,
@@ -1920,6 +2234,7 @@ proc remove*(db: KoutenDb, id: KoutenId) =
       raise newException(KeyError, "id が見つからない")
     db.st.remove(id.parent, id.seq)
     db.vectorBackend.remove(id.parent, id.seq)
+    db.audit("delete", id = $id)
   of mCluster:
     let ri = db.rings[id.parent]
     let txid = db.client.txBeginReq(0)
@@ -1941,6 +2256,7 @@ proc deleteById*(db: KoutenDb, id: KoutenId) =
 proc update*(db: KoutenDb, id: KoutenId, encoded: EncodedPayload,
              vec: seq[float32] = @[]) =
   ## payload を置換する。vec を省略した場合は既存 vec を保持する。
+  db.checkPayloadGuardrails(encoded, vec.len)
   case db.mode
   of mEmbedded:
     if not db.st.contains(id.parent, id.seq):
@@ -1954,6 +2270,10 @@ proc update*(db: KoutenDb, id: KoutenId, encoded: EncodedPayload,
     db.st.upsert p
     if not db.st.diskBacked:
       db.vectorBackend.upsert p
+    db.audit("update", id = $id,
+             extra = %*{"payloadBytes": encoded.data.len,
+                        "vectorDim": vec.len,
+                        "codec": $encoded.codec})
   of mCluster:
     let ri = db.rings[id.parent]
     let txid = db.client.txBeginReq(0)
@@ -3694,50 +4014,37 @@ proc retrieveWithStats*(db: KoutenDb, queryVec: seq[float32], ring: string = "",
     result.stats.fillReturnedPayloadStats(result.hits)
   of mCluster:
     var countedNodes = initTable[int, bool]()
+    var contactedNodes = initTable[int, bool]()
+    template mergeRetrieve(node: int, rr: RetrieveWireResult) =
+      contactedNodes[node] = true
+      if node notin countedNodes:
+        result.stats.totalVectors += rr.totalVectors
+        countedNodes[node] = true
+      result.stats.scanned += rr.scanned
+      result.stats.ringsTouched += rr.ringsTouched
+      for h in rr.hits:
+        result.hits.add KoutenHit(
+          id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
+                       seq: h.seq, tWrite: h.tWrite),
+          score: h.score, payload: h.payload, codec: h.codec)
     if ringKeys.len > 0:
       for ringKey in ringKeys:
-        for node in 0 ..< db.client.peers.len:
-          let rr = db.client.retrieveReq(node, true, ringKey, q, budget)
-          inc result.stats.fanoutNodes
-          if node notin countedNodes:
-            result.stats.totalVectors += rr.totalVectors
-            countedNodes[node] = true
-          result.stats.scanned += rr.scanned
-          result.stats.ringsTouched += rr.ringsTouched
-          for h in rr.hits:
-            result.hits.add KoutenHit(id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
-                                                 seq: h.seq, tWrite: h.tWrite),
-                                     score: h.score, payload: h.payload, codec: h.codec)
+        let node = int(db.tbl.placementOwner(ringKey))
+        let rr = db.client.retrieveReq(node, true, ringKey, q, budget)
+        mergeRetrieve(node, rr)
     elif result.plan.effectiveTopRings <= 0:
       for node in 0 ..< db.client.peers.len:
         let rr = db.client.retrieveReq(node, ring.len > 0, ringFilter, q, budget)
-        inc result.stats.fanoutNodes
-        if node notin countedNodes:
-          result.stats.totalVectors += rr.totalVectors
-          countedNodes[node] = true
-        result.stats.scanned += rr.scanned
-        result.stats.ringsTouched += rr.ringsTouched
-        for h in rr.hits:
-          result.hits.add KoutenHit(id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
-                                               seq: h.seq, tWrite: h.tWrite),
-                                   score: h.score, payload: h.payload, codec: h.codec)
+        mergeRetrieve(node, rr)
     else:
       var rings = db.ringSummaries(q)
       if rings.len > result.plan.effectiveTopRings:
         rings.setLen(result.plan.effectiveTopRings)
       for rs in rings:
-        for node in 0 ..< db.client.peers.len:
-          let rr = db.client.retrieveReq(node, true, rs.ringKey, q, budget)
-          inc result.stats.fanoutNodes
-          if node notin countedNodes:
-            result.stats.totalVectors += rr.totalVectors
-            countedNodes[node] = true
-          result.stats.scanned += rr.scanned
-          result.stats.ringsTouched += rr.ringsTouched
-          for h in rr.hits:
-            result.hits.add KoutenHit(id: KoutenId(parent: h.parent, epoch: db.tbl.epoch,
-                                                 seq: h.seq, tWrite: h.tWrite),
-                                     score: h.score, payload: h.payload, codec: h.codec)
+        let node = int(db.tbl.placementOwner(rs.ringKey))
+        let rr = db.client.retrieveReq(node, true, rs.ringKey, q, budget)
+        mergeRetrieve(node, rr)
+    result.stats.fanoutNodes = contactedNodes.len
   result.hits.sort(proc(a, b: KoutenHit): int = cmp(b.score, a.score))
   if result.hits.len > budget:
     result.hits.setLen(budget)
@@ -3750,7 +4057,7 @@ proc retrieveWithStats*(db: KoutenDb, queryVec: seq[float32], ring: string = "",
 proc retrieve*(db: KoutenDb, queryVec: seq[float32], ring: string = "",
                budget = 8, topRings = 0, focus = 0): seq[KoutenHit] =
   ## 埋め込み近傍を取得する。ring を指定すると、その環だけを探索する。
-  ## cluster v1 は全ノード fan-out でローカル候補を集めてマージする。
+  ## cluster は ring 所有ノードへ直接送り、global 探索だけ全ノードを使う。
   db.retrieveWithStats(queryVec, ring = ring, budget = budget,
                        topRings = topRings, focus = focus).hits
 
@@ -3794,7 +4101,7 @@ proc defaultRetrievalEnvelopeOptions*(db: KoutenDb, ring = ""): RetrievalEnvelop
   result.ring = ring
   result.backend =
     case db.mode
-    of mEmbedded: $db.vectorBackend.kind
+    of mEmbedded: "exact"
     of mCluster: "cluster"
   result.mode = "vector"
   result.sourceType = "document"
@@ -4070,6 +4377,46 @@ proc shutdownCluster*(db: KoutenDb): seq[string] =
   doAssert db.mode == mCluster, "shutdownCluster はクラスタモード専用"
   for i in countdown(db.client.peers.high, 0):
     result.add db.client.shutdownReq(i)
+
+proc drainCluster*(db: KoutenDb): seq[string] =
+  ## Rolling maintenance / backup 用に全ノードを書き込み拒否状態へ移す。
+  ## 読み取りは継続し、未読 payload はサーバ側で drain して wire 境界を守る。
+  doAssert db.mode == mCluster, "drainCluster はクラスタモード専用"
+  for i in 0 ..< db.client.peers.len:
+    result.add db.client.drainReq(i)
+
+proc resumeCluster*(db: KoutenDb): seq[string] =
+  ## drainCluster 後に全ノードの書き込み受け入れを再開する。
+  ## 先に全ノードが同じ topology で移送完了していることを検証する。
+  doAssert db.mode == mCluster, "resumeCluster はクラスタモード専用"
+  var expectedEpoch = 0'u32
+  var expectedNodes = 0'u16
+  var expectedVirtualArcs = 0
+  for i in 0 ..< db.client.peers.len:
+    let activation = db.client.activationReq(i)
+    if i == 0:
+      expectedEpoch = activation.epoch
+      expectedNodes = activation.nodes
+      expectedVirtualArcs = activation.virtualArcs
+    elif activation.epoch != expectedEpoch or
+        activation.nodes != expectedNodes or
+        activation.virtualArcs != expectedVirtualArcs:
+      raise newException(IOError,
+        "resumeCluster refused mixed placement topology at node " & $i)
+    if activation.state notin ["READY", "ACTIVE"] or
+        activation.migrationPending != 0:
+      raise newException(IOError,
+        "resumeCluster refused node " & $i & " state=" & activation.state &
+        " migrationPending=" & $activation.migrationPending)
+  for i in 0 ..< db.client.peers.len:
+    result.add db.client.resumeReq(i)
+
+proc snapshotCluster*(db: KoutenDb): seq[string] =
+  ## 全ノードを flush し、バックアップ前の軽量 barrier 情報を返す。
+  ## 一貫した静止点が必要な場合は drainCluster 後に呼ぶ。
+  doAssert db.mode == mCluster, "snapshotCluster はクラスタモード専用"
+  for i in 0 ..< db.client.peers.len:
+    result.add db.client.snapshotReq(i)
 
 # ---------------------------------------------------------------- C ABI 用の内部変換
 

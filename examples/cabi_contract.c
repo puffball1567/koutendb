@@ -190,6 +190,36 @@ int main(void) {
   err = kouten_last_error();
   if (!err || strstr(err, "length") == NULL) return fail("last_error should mention length");
 
+  if (kouten_put_vec(db, "docs/api", payload, strlen(payload), vec, (size_t)-1, &dummy) != KOUTEN_ERR)
+    return fail("oversized vector length should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "vec_len") == NULL) return fail("last_error should mention vec_len");
+
+  if (kouten_put_codec(db, "docs/api", payload, strlen(payload), 9999, &dummy) != KOUTEN_ERR)
+    return fail("invalid codec should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "codec") == NULL) return fail("last_error should mention codec");
+
+  if (kouten_get(db, id, NULL) != NULL)
+    return fail("NULL out_len should fail for get");
+  err = kouten_last_error();
+  if (!err || strstr(err, "out_len") == NULL) return fail("last_error should mention out_len");
+
+  if (kouten_get_codec(db, id, &read_len, NULL) != NULL)
+    return fail("NULL out_codec should fail for get_codec");
+  err = kouten_last_error();
+  if (!err || strstr(err, "out_codec") == NULL) return fail("last_error should mention out_codec");
+
+  if (kouten_batch_get(db, &id, (size_t)-1) != NULL)
+    return fail("oversized batch length should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "ids_len") == NULL) return fail("last_error should mention ids_len");
+
+  if (kouten_retrieve(db, vec, (size_t)-1, "docs/api", 1, 1, 50) != NULL)
+    return fail("oversized retrieve vector length should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "vec_len") == NULL) return fail("last_error should mention retrieve vec_len");
+
   kouten_close(db);
   if (kouten_get(db, id, &read_len) != NULL)
     return fail("closed handle should not read");
