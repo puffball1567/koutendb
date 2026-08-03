@@ -1,6 +1,6 @@
 # KoutenDB
 
-**v0.9.0 Technical Preview / research OSS.** KoutenDB is not yet presented as a
+**v0.10.0 Technical Preview / research OSS.** KoutenDB is not yet presented as a
 production replacement for Redis, PostgreSQL, MongoDB, Apache Arrow, or a
 dedicated vector database. The current release target is a measurable prototype
 of ring/galaxy-oriented storage, retrieval, persistence, drivers, and cluster
@@ -65,7 +65,7 @@ corpus size toward semantic working-set size.
 - Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
-- GitHub release draft: [docs/github-release-v0.9.0.md](docs/github-release-v0.9.0.md)
+- GitHub release draft: [docs/github-release-v0.10.0.md](docs/github-release-v0.10.0.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
 - Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
 - Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)

@@ -70,6 +70,43 @@ KOUTEN_SOAK_METRICS_EVERY=20
 KOUTEN_SOAK_BASE_PORT=18411
 ```
 
+## v0.10.0 Endurance Result
+
+The v0.10.0 release candidate completed one local three-node, disk-backed
+endurance run on 2026-07-31 through 2026-08-03. The exact executable set was
+built from commit `87c755c9130ec0bbf70a3903c75fd2bdae8b084b` and then isolated
+under the run work directory for the whole run.
+
+Configuration:
+
+- duration: 259,200 seconds (72 hours)
+- three local TCP nodes: ports 18411, 18412, and 18413
+- persistent storage enabled; buffered durability mode
+- 250 ms workload interval and 60 second progress reports
+- mixed TCP workload: writes, returned-ID point reads, projected queries,
+  bounded ring reads, ring-scoped vector retrieval, and metrics reads
+
+Final client counters:
+
+| Operation | Completed |
+|---|---:|
+| PUT | 969,281 |
+| returned-ID GET | 969,281 |
+| projection query | 969,281 |
+| bounded ring read | 969,281 |
+| ring-scoped retrieve | 96,928 |
+| metrics read | 48,464 |
+| client errors | 0 |
+
+The final snapshot completed, all three persistent data directories passed
+offline `kouten verify`, and the tracked handoff, migration, and universe-sync
+error/queue counters remained zero. Retrieval stayed ring-scoped; the final
+metrics reported zero global retrieval requests.
+
+This is a local endurance result, not a multi-machine, TLS/authenticated, or
+strong-durability certification. It is retained here so the release claim is
+auditable and the same runner can be reused with a different deployment mode.
+
 ## Scope
 
 This validates that core cluster operations can run continuously under a mixed
