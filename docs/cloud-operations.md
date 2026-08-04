@@ -7,6 +7,25 @@ protocol and CLI:
 kouten metrics --peers=127.0.0.1:7301,127.0.0.1:7302,127.0.0.1:7303
 ```
 
+Disk-backed embedded deployments expose their local read-layout diagnostics
+separately:
+
+```sh
+kouten segment-status --data=/var/lib/koutendb --metrics
+kouten verify --data=/var/lib/koutendb \
+  --max-wal-bytes=107374182400 \
+  --max-segment-bytes=53687091200 \
+  --max-dead-ratio=0.40 \
+  --max-segment-generation=1000 \
+  --metrics
+```
+
+`segment-status` is read-only. It reports active ring generations, physical
+and stale segment records, pack recommendations, segment/index bytes, and
+process-local segment hit/WAL fallback counters. `verify` exits non-zero when
+an explicitly configured capacity bound is exceeded, making it suitable for a
+scheduled health check.
+
 Recovery mirrors can be verified as a separate operational check:
 
 ```sh
@@ -215,6 +234,12 @@ Start with conservative alerts:
 - `errors` increases quickly compared with `requests`.
 - `authFailures` or `authzDenied` increase unexpectedly.
 - `walBytes` approaches the disk budget or grows much faster than `items`.
+- `segmentRecommendedRings` remains above the maintenance budget, or a ring's
+  `segmentRingStaleRatio` remains above its configured threshold.
+- `segmentWalFallbacks` increases after the initial startup baseline; inspect
+  segment/index health and run `verify --segments` if needed.
+- `verify --max-segment-bytes`, `--max-dead-ratio`, or
+  `--max-segment-generation` exits non-zero.
 - `recovery-verify --metrics` exits non-zero for any required mirror.
 - `recovery-status --metrics` exits non-zero or reports
   `recoveryUniverseHealthy 0`.

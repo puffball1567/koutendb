@@ -237,12 +237,41 @@ for i in $(seq 1 16); do
   bin/kouten put --ring=ops/packed \
     --payload="{\"i\":$i}" --codec=json >/dev/null
 done
+bin/kouten pack-ring --data="$KOUTEN_DATA" --ring=ops/packed |
+  grep -q "pack-ring OK"
+bin/kouten segment-status --data="$KOUTEN_DATA" --json |
+  grep -q '"recommendedRings"'
+bin/kouten segment-status --data="$KOUTEN_DATA" --metrics |
+  grep -q '^segmentTotalBytes '
+bin/kouten segment-status --data="$KOUTEN_DATA" --metrics |
+  grep -q '^segmentWalFallbacks '
+if bin/kouten segment-status --data="$KOUTEN_DATA" --stale-ratio=-0.01 >/dev/null 2>&1; then
+  echo "segment-status accepted a negative stale ratio" >&2
+  exit 1
+fi
+if bin/kouten segment-status --data="$KOUTEN_DATA" --min-stale-records=-1 >/dev/null 2>&1; then
+  echo "segment-status accepted negative stale records" >&2
+  exit 1
+fi
+if bin/kouten pack-recommended --data="$KOUTEN_DATA" --max-rings=-1 >/dev/null 2>&1; then
+  echo "pack-recommended accepted a negative ring limit" >&2
+  exit 1
+fi
+bin/kouten pack-recommended --data="$KOUTEN_DATA" \
+  --min-stale-records=1 --stale-ratio=1.0 |
+  grep -q "pack-recommended OK"
+bin/kouten get --ring=ops/packed --limit=16 |
+  grep -q '"i": 16'
 bin/kouten verify --data="$KOUTEN_DATA" |
   grep -q "verify status: ok"
 bin/kouten verify --data="$KOUTEN_DATA" --metrics |
   grep -q "verifyOk 1"
 bin/kouten verify --data="$KOUTEN_DATA" --json |
   grep -q '"kind": "data"'
+if bin/kouten verify --data="$KOUTEN_DATA" --max-segment-generation=0 >/dev/null 2>&1; then
+  echo "verify accepted a segment generation above configured limit" >&2
+  exit 1
+fi
 bin/kouten verify --data="$KOUTEN_DATA" --segments |
   grep -q "ok   segments:"
 if bin/kouten verify --data="$KOUTEN_DATA" --max-wal-bytes=1 >/dev/null 2>&1; then
@@ -259,6 +288,14 @@ if bin/kouten verify --data="$KOUTEN_DATA" --max-rings=1 >/dev/null 2>&1; then
 fi
 if bin/kouten verify --data="$KOUTEN_DATA" --segments --max-segment-files=0 >/dev/null 2>&1; then
   echo "verify accepted segment files above configured limit" >&2
+  exit 1
+fi
+if bin/kouten verify --data="$KOUTEN_DATA" --max-segment-bytes=1 >/dev/null 2>&1; then
+  echo "verify accepted segment bytes above configured limit" >&2
+  exit 1
+fi
+if bin/kouten verify --data="$KOUTEN_DATA" --max-dead-ratio=1.01 >/dev/null 2>&1; then
+  echo "verify accepted an invalid dead-record ratio" >&2
   exit 1
 fi
 bin/kouten backup --data="$KOUTEN_DATA" --backup="$WORK/verify-backup" >/dev/null

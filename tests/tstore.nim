@@ -1,6 +1,6 @@
 ## kouten/store の永続化テスト
 
-import std/[algorithm, os, osproc, strutils, tables, tempfiles, unittest]
+import std/[algorithm, os, osproc, random, sequtils, strutils, tables, tempfiles, unittest]
 import ../src/kouten/store
 
 if paramCount() == 2 and paramStr(1) == "--lock-child":
@@ -18,6 +18,11 @@ proc ringSignature(st: Store, ring: uint64): seq[string] =
     if k in st.items:
       let p = st.items[k]
       result.add p.payload & "|" & $p.codec & "|" & $p.seq & "|" & $p.tWrite
+  result.sort()
+
+proc diskRingSignature(st: Store, ring: uint64): seq[string] =
+  for p in st.particlesByRing(ring):
+    result.add $p.seq & "|" & p.payload & "|" & $p.version
   result.sort()
 
 proc mutationVersion(n: int64, origin = 1'u32): MutationVersion =
@@ -1072,7 +1077,7 @@ suite "store persistence":
     var reopened = openStore(dir, diskBacked = true)
     check reopened.items.len == 0
     check reopened.itemOffsets.len == 18
-    check reopened.itemSegmentOffsets.len == 16
+    check reopened.itemSegmentOffsets.len == 18
     check reopened.getParticle(7'u64, 0'u32).payload == "current"
     check reopened.getParticle(9'u64, 0'u32).payload == "transaction"
     let after = reopened.localityReport()
@@ -1083,6 +1088,371 @@ suite "store persistence":
     check after.ringRuns == 3
     check after.fragmentedRings == 0
     check after.localityScore == 1.0
+    reopened.close()
+    removeDir(dir)
+
+  test "disk-backed reopen reuses validated ring segments without a WAL rebuild":
+    let dir = createTempDir("kouten-store", "segment-index-reuse")
+    let ring = 61'u64
+    let segment = dir / "segments" / (toHex(ring, 16) & ".seg")
+    let index = dir / "segments" / (toHex(ring, 16) & ".idx")
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 4'u32:
+      st.upsert Particle(parent: ring, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "segment-" & $i)
+    st.sync()
+    let beforeSegment = readFile(segment)
+    let beforeIndex = readFile(index)
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.itemSegmentOffsets.len == 4
+    check reopened.getParticle(ring, 3'u32).payload == "segment-3"
+    reopened.close()
+    check readFile(segment) == beforeSegment
+    check readFile(index) == beforeIndex
+    removeDir(dir)
+
+  test "checksummed segments remain compatible with a legacy unframed record":
+    let dir = createTempDir("kouten-store", "segment-legacy-frame")
+    let ring = 611'u64
+    let segment = dir / "segments" / (toHex(ring, 16) & ".seg")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: ring, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "legacy-compatible")
+    st.sync()
+    st.close()
+
+    let framed = readFile(segment)
+    check framed.startsWith("@ ")
+    let headerEnd = framed.find('\n')
+    check headerEnd > 0
+    writeFile(segment, framed[headerEnd + 1 .. ^1])
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(ring, 0'u32).payload == "legacy-compatible"
+    check reopened.segmentReport().segmentHits == 1
+    reopened.close()
+    removeDir(dir)
+
+  test "damaged ring segment falls back to its authoritative WAL record":
+    let dir = createTempDir("kouten-store", "segment-wal-fallback")
+    let ring = 62'u64
+    let segment = dir / "segments" / (toHex(ring, 16) & ".seg")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: ring, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "durable-payload")
+    st.sync()
+    st.close()
+    writeFile(segment, "X")
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(ring, 0'u32).payload == "durable-payload"
+    check reopened.itemSegmentOffsets.len == 0
+    let fallbackReport = reopened.segmentReport()
+    check fallbackReport.walFallbacks == 1
+    reopened.close()
+    removeDir(dir)
+
+  test "mid-segment corruption discards partial output and replays the whole ring from WAL":
+    let dir = createTempDir("kouten-store", "segment-full-scan-fallback")
+    let ring = 620'u64
+    let segment = dir / "segments" / (toHex(ring, 16) & ".seg")
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 5'u32:
+      st.upsert Particle(parent: ring, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "payload-" & $i)
+    st.sync()
+    st.close()
+
+    let original = readFile(segment)
+    check original.contains("payload-2")
+    writeFile(segment, original.replace("payload-2", "payload-X"))
+
+    var reopened = openStore(dir, diskBacked = true)
+    var seen: seq[string] = @[]
+    for p in reopened.particlesByRing(ring):
+      seen.add $p.seq & ":" & p.payload
+    check seen == @["0:payload-0", "1:payload-1", "2:payload-2",
+                    "3:payload-3", "4:payload-4"]
+    let report = reopened.segmentReport()
+    check report.segmentHits == 0
+    check report.walFallbacks == 1
+    reopened.close()
+    removeDir(dir)
+
+  test "malformed segment index is rebuilt from WAL without data loss":
+    let dir = createTempDir("kouten-store", "segment-index-recover")
+    let ring = 63'u64
+    let index = dir / "segments" / (toHex(ring, 16) & ".idx")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: ring, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "recover-index")
+    st.sync()
+    st.close()
+    writeFile(index, "broken index\n")
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(ring, 0'u32).payload == "recover-index"
+    check reopened.itemSegmentOffsets.len == 1
+    check readFile(index).startsWith("P ")
+    reopened.close()
+    removeDir(dir)
+
+  test "valid-looking index offset for the wrong record falls back to WAL":
+    let dir = createTempDir("kouten-store", "segment-index-mismatch")
+    let ring = 630'u64
+    let index = dir / "segments" / (toHex(ring, 16) & ".idx")
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 3'u32:
+      st.upsert Particle(parent: ring, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "indexed-" & $i)
+    st.sync()
+    st.close()
+
+    var rows = readFile(index).splitLines()
+    let second = rows[1].splitWhitespace()
+    var first = rows[0].splitWhitespace()
+    check first.len == 5
+    check second.len == 5
+    first[4] = second[4]
+    rows[0] = first.join(" ")
+    writeFile(index, rows.join("\n") & "\n")
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.itemSegmentOffsets.len == 3
+    check reopened.getParticle(ring, 0'u32).payload == "indexed-0"
+    check reopened.itemSegmentOffsets.len == 2
+    let report = reopened.segmentReport()
+    check report.walFallbacks == 1
+    reopened.close()
+    removeDir(dir)
+
+  test "bounded ring windows handle limits direction deletes and post-pack writes":
+    let dir = createTempDir("kouten-store", "segment-window-boundaries")
+    let ring = 631'u64
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 6'u32:
+      st.upsert Particle(parent: ring, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "base-" & $i)
+    discard st.packRingSegment(ring)
+    st.upsert Particle(parent: ring, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 100.0, payload: "updated-0")
+    discard st.remove(ring, 1'u32)
+    st.upsert Particle(parent: ring, seq: 6'u32, period: 60.0, head: 0.0,
+                       tWrite: 101.0, payload: "new-6")
+
+    check st.particlesByRingWindow(ring, 0).len == 0
+    let forward = st.particlesByRingWindow(ring, 2)
+    check forward.mapIt(it.seq) == @[0'u32, 2'u32]
+    check forward[0].payload == "updated-0"
+    let reverse = st.particlesByRingWindow(ring, 2, reverse = true)
+    check reverse.mapIt(it.seq) == @[6'u32, 5'u32]
+    check reverse[0].payload == "new-6"
+    check st.particlesByRingWindow(ring, 100).mapIt(it.seq) ==
+      @[0'u32, 2'u32, 3'u32, 4'u32, 5'u32, 6'u32]
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.particlesByRingWindow(ring, 2).mapIt(it.seq) ==
+      @[0'u32, 2'u32]
+    check reopened.particlesByRingWindow(ring, 2, reverse = true).mapIt(it.seq) ==
+      @[6'u32, 5'u32]
+    reopened.close()
+    removeDir(dir)
+
+  test "disk-backed compact refreshes WAL offsets and ring segments in-process":
+    let dir = createTempDir("kouten-store", "disk-compact-offsets")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: 64'u64, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "old")
+    st.upsert Particle(parent: 64'u64, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 2.0, payload: "current")
+    st.upsert Particle(parent: 65'u64, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 3.0, payload: "removed")
+    discard st.remove(65'u64, 0'u32)
+    discard st.compact()
+    check st.getParticle(64'u64, 0'u32).payload == "current"
+    check not st.contains(65'u64, 0'u32)
+    st.upsert Particle(parent: 64'u64, seq: 1'u32, period: 60.0, head: 0.0,
+                       tWrite: 4.0, payload: "after-compact")
+    check st.getParticle(64'u64, 1'u32).payload == "after-compact"
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(64'u64, 0'u32).payload == "current"
+    check reopened.getParticle(64'u64, 1'u32).payload == "after-compact"
+    check not reopened.contains(65'u64, 0'u32)
+    reopened.close()
+    removeDir(dir)
+
+  test "disk-backed backup and restore preserve segment-resident records":
+    let dir = createTempDir("kouten-store", "disk-backup-src")
+    let backupDir = createTempDir("kouten-store", "disk-backup")
+    let restoredDir = createTempDir("kouten-store", "disk-backup-restore")
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: 66'u64, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "first")
+    st.upsert Particle(parent: 66'u64, seq: 1'u32, period: 60.0, head: 0.0,
+                       tWrite: 2.0, payload: "second")
+    let stats = st.backup(backupDir)
+    check stats.items == 2
+    st.close()
+
+    removeDir(restoredDir)
+    discard restoreBackup(backupDir, restoredDir)
+    var restored = openStore(restoredDir, diskBacked = true)
+    check restored.getParticle(66'u64, 0'u32).payload == "first"
+    check restored.getParticle(66'u64, 1'u32).payload == "second"
+    restored.close()
+    removeDir(dir)
+    removeDir(backupDir)
+    removeDir(restoredDir)
+
+  test "uncommitted disk-backed transaction never reaches a ring segment":
+    let dir = createTempDir("kouten-store", "disk-segment-transaction")
+    var st = openStore(dir, diskBacked = true)
+    let tx = st.beginTxn()
+    tx.upsert Particle(parent: 67'u64, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "uncommitted")
+    tx.rollback()
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check not reopened.contains(67'u64, 0'u32)
+    check reopened.itemSegmentOffsets.len == 0
+    reopened.close()
+    removeDir(dir)
+
+  test "ring pack switches only its manifest generation":
+    let dir = createTempDir("kouten-store", "ring-pack-generation")
+    let packedRing = 68'u64
+    let untouchedRing = 69'u64
+    let manifest = dir / "segments" / "manifest"
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 3'u32:
+      st.upsert Particle(parent: packedRing, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "packed-" & $i)
+      st.upsert Particle(parent: untouchedRing, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "untouched-" & $i)
+    let packed = st.packRingSegment(packedRing)
+    check packed.records == 3
+    check packed.rings == 1
+    check fileExists(manifest)
+    check st.getParticle(packedRing, 2'u32).payload == "packed-2"
+    check st.getParticle(untouchedRing, 2'u32).payload == "untouched-2"
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(packedRing, 0'u32).payload == "packed-0"
+    check reopened.getParticle(untouchedRing, 0'u32).payload == "untouched-0"
+    reopened.close()
+    removeDir(dir)
+
+  test "segment diagnostics recommend stale rings and reset after pack":
+    let dir = createTempDir("kouten-store", "segment-diagnostics")
+    let ring = 71'u64
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 4'u32:
+      st.upsert Particle(parent: ring, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "base-" & $i)
+    for i in 0'u32 ..< 8'u32:
+      let seq = i mod 4
+      st.upsert Particle(parent: ring, seq: seq, period: 60.0, head: 0.0,
+                         tWrite: 100.0 + float(i), payload: "update-" & $i)
+
+    let before = st.segmentReport(staleRatioThreshold = 0.5,
+                                  minStaleRecords = 4)
+    check before.rings.len == 1
+    check before.rings[0].liveRecords == 4
+    check before.rings[0].coveredRecords == 4
+    check before.rings[0].segmentRecords == 12
+    check before.rings[0].staleRecords == 8
+    check before.rings[0].staleRatio > 0.66
+    check before.rings[0].packRecommended
+    check before.recommendedRings == 1
+    let exactBoundary = st.segmentReport(
+      staleRatioThreshold = before.rings[0].staleRatio,
+      minStaleRecords = before.rings[0].staleRecords)
+    check exactBoundary.rings[0].packRecommended
+    check not st.segmentReport(
+      staleRatioThreshold = before.rings[0].staleRatio,
+      minStaleRecords = before.rings[0].staleRecords + 1).rings[0].packRecommended
+    expect ValueError:
+      discard st.segmentReport(staleRatioThreshold = -0.01)
+    expect ValueError:
+      discard st.segmentReport(staleRatioThreshold = 1.01)
+    expect ValueError:
+      discard st.segmentReport(minStaleRecords = -1)
+
+    discard st.packRingSegment(ring)
+    let after = st.segmentReport(staleRatioThreshold = 0.5,
+                                 minStaleRecords = 4)
+    check after.rings[0].generation == 1
+    check after.rings[0].segmentRecords == 4
+    check after.rings[0].staleRecords == 0
+    check not after.rings[0].packRecommended
+    check after.recommendedRings == 0
+    st.close()
+    removeDir(dir)
+
+  test "corrupt segment manifest rebuilds the cache from WAL":
+    let dir = createTempDir("kouten-store", "segment-manifest-recover")
+    let ring = 70'u64
+    let manifest = dir / "segments" / "manifest"
+    var st = openStore(dir, diskBacked = true)
+    st.upsert Particle(parent: ring, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "manifest-recovery")
+    discard st.packRingSegment(ring)
+    st.close()
+    writeFile(manifest, "not a segment manifest\n")
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(ring, 0'u32).payload == "manifest-recovery"
+    check reopened.itemSegmentOffsets.len == 1
+    reopened.close()
+    removeDir(dir)
+
+  test "disk-backed random update delete backfill matrix preserves ring results across pack":
+    let dir = createTempDir("kouten-store", "segment-random-matrix")
+    const Rings = 5
+    const PerRing = 40
+    var st = openStore(dir, diskBacked = true)
+    randomize(42)
+    for seq in 0'u32 ..< PerRing.uint32:
+      var order = toSeq(0 ..< Rings)
+      shuffle(order)
+      for r in order:
+        let ring = uint64(80 + r)
+        st.upsert Particle(parent: ring, seq: seq, period: 60.0,
+                           head: float(r), tWrite: float(seq),
+                           payload: "base-" & $r & "-" & $seq)
+    for i in 0 ..< 120:
+      let r = rand(Rings - 1)
+      let seq = uint32(rand(PerRing - 1))
+      let ring = uint64(80 + r)
+      st.upsert Particle(parent: ring, seq: seq, period: 60.0,
+                         head: float(r), tWrite: 1_000.0 + float(i),
+                         payload: "update-" & $r & "-" & $seq & "-" & $i)
+    for _ in 0 ..< 30:
+      let r = rand(Rings - 1)
+      discard st.remove(uint64(80 + r), uint32(rand(PerRing - 1)))
+    for i in 0'u32 ..< 50'u32:
+      let r = int(i mod Rings.uint32)
+      st.upsert Particle(parent: uint64(80 + r), seq: 100'u32 + i,
+                         period: 60.0, head: float(r),
+                         tWrite: 2_000.0 + float(i),
+                         payload: "backfill-" & $r & "-" & $i)
+    var before: seq[seq[string]] = @[]
+    for r in 0 ..< Rings:
+      before.add st.diskRingSignature(uint64(80 + r))
+      discard st.packRingSegment(uint64(80 + r))
+      check st.diskRingSignature(uint64(80 + r)) == before[^1]
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    for r in 0 ..< Rings:
+      check reopened.diskRingSignature(uint64(80 + r)) == before[r]
     reopened.close()
     removeDir(dir)
 

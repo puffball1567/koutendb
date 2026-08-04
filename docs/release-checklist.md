@@ -137,13 +137,16 @@ Before tagging:
 
 1. Run core tests.
 2. Run `scripts/test_all_smoke.sh`.
-3. Run Docker Compose demo checks from `examples/compose/README.md`.
-4. Run selected Docker-backed driver smoke tests when Docker capacity allows.
-5. Run `nimble check`.
-6. Run `scripts/cluster_wire_driver_smoke.sh`.
-7. Run `scripts/demo_smoke.sh`.
-8. Review benchmark wording.
-9. Review license and third-party notices.
-10. Remove generated binaries and temporary artifacts.
-11. Confirm README and status docs describe the release as a technical preview.
-12. Prepare the `nim-lang/packages` PR after the release tag exists.
+3. Confirm `scripts/disk_backed_recovery_smoke.sh` completes all configured
+   `SIGKILL` rounds with paired records after forced process termination, pack,
+   compact, and backup/restore.
+4. Run Docker Compose demo checks from `examples/compose/README.md`.
+5. Run selected Docker-backed driver smoke tests when Docker capacity allows.
+6. Run `nimble check`.
+7. Run `scripts/cluster_wire_driver_smoke.sh`.
+8. Run `scripts/demo_smoke.sh`.
+9. Review benchmark wording.
+10. Review license and third-party notices.
+11. Remove generated binaries and temporary artifacts.
+12. Confirm README and status docs describe the current release accurately.
+13. Prepare the `nim-lang/packages` PR after the release tag exists.

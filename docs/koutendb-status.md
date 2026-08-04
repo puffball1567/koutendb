@@ -5,7 +5,9 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
-Current next-release planning: [v0.10-roadmap.md](./v0.10-roadmap.md)
+Current release evidence: [v0.11.0 release notes](./github-release-v0.11.0.md)
+
+Historical planning reference: [v0.10 roadmap](./v0.10-roadmap.md)
 
 Translations:
 

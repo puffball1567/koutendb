@@ -354,12 +354,15 @@ For scripts and reproducible examples, prefer the single-shot commands above.
 | Command | Required flags | Purpose |
 |---|---|---|
 | `compact` | `--data=DIR` | Compact WAL. |
+| `pack-ring` | `--data=DIR --ring=RING` | Merge one disk-backed ring into a new local segment generation. |
+| `segment-status` | `--data=DIR`; optional `--stale-ratio=F`, `--min-stale-records=N`, `--metrics`, `--json` | Inspect ring-local generations, stale ratios, bytes, and pack recommendations without rewriting data. |
+| `pack-recommended` | `--data=DIR`; optional `--stale-ratio=F`, `--min-stale-records=N`, `--max-rings=N` | Explicitly pack only rings selected by the current diagnostic. |
 | `locality` | `--data=DIR`; optional `--metrics` | Inspect physical WAL locality by ring. |
 | `backup` | `--data=DIR --backup=DIR` | Create backup. |
 | `restore` | `--backup=DIR --data=DIR` | Restore backup. |
 | `backup-encrypted` | `--data=DIR --backup=DIR --passphrase=TEXT` | Create encrypted backup. |
 | `restore-encrypted` | `--backup=DIR --data=DIR --passphrase=TEXT` | Restore encrypted backup. |
-| `verify` | `--data=DIR` or `--backup=DIR`; optional `--segments`, `--max-wal-bytes=N`, `--max-segment-files=N`, `--max-items=N`, `--max-rings=N`, `--metrics`, `--json` | Open and inspect a persistent data directory or backup. Data-dir verification checks WAL replay, lock, metadata, locality, capacity thresholds, and rebuildable segment layout. Backup verification checks restore readability without writing into the live data directory. |
+| `verify` | `--data=DIR` or `--backup=DIR`; optional `--segments`, `--max-wal-bytes=N`, `--max-segment-bytes=N`, `--max-dead-records=N`, `--max-dead-ratio=F`, `--max-segment-generation=N`, `--max-segment-files=N`, `--max-items=N`, `--max-rings=N`, `--metrics`, `--json` | Open and inspect a persistent data directory or backup. Data-dir verification checks WAL replay, lock, metadata, locality, capacity thresholds, and rebuildable segment layout. Backup verification checks restore readability without writing into the live data directory. |
 | `dump` | `--data=DIR` | Export JSONL. |
 | `import-jsonl` | `--data=DIR --in=FILE`; optional `--batch-size=N` | Import JSONL with chunked commits. |
 | `describe-galaxy` | `--data=DIR --description=TEXT` | Set galaxy map description. |
@@ -414,6 +417,9 @@ Recovery commands accept `--mirror`, `--universe-config`, `--universe`,
 | Command | Purpose |
 |---|---|
 | `verify --data=DIR [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N]` | Open/replay a persistent data directory and check WAL, metadata, locality, optional capacity thresholds, and optional segment rebuild health. |
+| `pack-ring --data=DIR --ring=RING [--durability=buffered|strong]` | Build a new complete disk-backed segment generation for one ring and atomically activate it through the segment manifest. |
+| `segment-status --data=DIR [--metrics|--json]` | Report active generation, live/covered/stale records, bytes, runtime segment hits/WAL fallbacks, and the current pack recommendation for every ring. |
+| `pack-recommended --data=DIR [--max-rings=N]` | Apply the same recommendation thresholds explicitly; no background pack is started automatically. |
 | `verify --backup=DIR` | Verify backup readability before restore. |
 | `verify --server-config=FILE` | Validate a `koutend` server JSON config before startup. |
 | `doctor --server-config=FILE --json` | Emit the same server config checks as JSON. |
