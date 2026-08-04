@@ -63,6 +63,29 @@ type
     records*: int
     rings*: int
     bytes*: int64
+    removedFiles*: int
+
+  StoreSegmentRingReport* = object
+    ring*: uint64
+    generation*: uint64
+    liveRecords*: int
+    coveredRecords*: int
+    segmentRecords*: int
+    staleRecords*: int
+    staleRatio*: float
+    segmentBytes*: int64
+    indexBytes*: int64
+    packRecommended*: bool
+
+  StoreSegmentReport* = object
+    diskBacked*: bool
+    segmentHits*: uint64
+    walFallbacks*: uint64
+    rings*: seq[StoreSegmentRingReport]
+    recommendedRings*: int
+    totalSegmentBytes*: int64
+    totalIndexBytes*: int64
+    maxGeneration*: uint64
 
   Particle* = object
     parent*: uint64
@@ -244,8 +267,16 @@ type
     logFile: File
     logPath: string
     segmentDir: string
+    segmentGenerations: Table[uint64, uint64]
+    segmentRecordCounts: Table[uint64, int]
     segmentFiles: Table[uint64, File]
+    segmentIndexFiles: Table[uint64, File]
     segmentReadStreams: Table[uint64, FileStream]
+    segmentReadHits: uint64
+    segmentWalFallbacks: uint64
+    when defined(koutenTestFailpoints):
+      segmentPackFailAfterSegmentReplace: bool
+      segmentPackFailBeforeManifest: bool
     lockFd: cint
     persistent: bool
     diskBacked*: bool
@@ -303,16 +334,55 @@ proc normalizeMutationVersion(s: Store, version: MutationVersion,
   result.validateMutationVersion()
   s.observeMutationVersion(result)
 
-proc crc32(data: string): uint32 =
-  var crc = 0xFFFFFFFF'u32
-  for ch in data:
-    crc = crc xor uint32(ord(ch))
+func buildCrc32Tables(): array[8, array[256, uint32]] =
+  for i in 0 ..< result[0].len:
+    var crc = i.uint32
     for _ in 0 ..< 8:
       if (crc and 1'u32) != 0'u32:
         crc = (crc shr 1) xor 0xEDB88320'u32
       else:
         crc = crc shr 1
+    result[0][i] = crc
+  for table in 1 ..< result.len:
+    for i in 0 ..< result[table].len:
+      let previous = result[table - 1][i]
+      result[table][i] =
+        (previous shr 8) xor result[0][int(previous and 0xFF'u32)]
+
+const Crc32Tables = buildCrc32Tables()
+
+func crc32(data: string): uint32 =
+  var crc = 0xFFFFFFFF'u32
+  var i = 0
+  while i + 8 <= data.len:
+    let firstWord =
+      uint32(ord(data[i])) or
+      (uint32(ord(data[i + 1])) shl 8) or
+      (uint32(ord(data[i + 2])) shl 16) or
+      (uint32(ord(data[i + 3])) shl 24)
+    let first = crc xor firstWord
+    let second =
+      uint32(ord(data[i + 4])) or
+      (uint32(ord(data[i + 5])) shl 8) or
+      (uint32(ord(data[i + 6])) shl 16) or
+      (uint32(ord(data[i + 7])) shl 24)
+    crc = Crc32Tables[7][int(first and 0xFF'u32)] xor
+          Crc32Tables[6][int((first shr 8) and 0xFF'u32)] xor
+          Crc32Tables[5][int((first shr 16) and 0xFF'u32)] xor
+          Crc32Tables[4][int(first shr 24)] xor
+          Crc32Tables[3][int(second and 0xFF'u32)] xor
+          Crc32Tables[2][int((second shr 8) and 0xFF'u32)] xor
+          Crc32Tables[1][int((second shr 16) and 0xFF'u32)] xor
+          Crc32Tables[0][int(second shr 24)]
+    inc i, 8
+  while i < data.len:
+    let idx = int((crc xor uint32(ord(data[i]))) and 0xFF'u32)
+    crc = (crc shr 8) xor Crc32Tables[0][idx]
+    inc i
   result = not crc
+
+static:
+  doAssert crc32("123456789") == 0xCBF43926'u32
 
 proc walRecord(body: string): string =
   WalRecordTag & " " & $body.len & " " & $crc32(body) & "\n" & body
@@ -575,11 +645,82 @@ proc writeTombstoneRecord(file: File, tag: string, txid: uint64,
                           tombstone: Tombstone) =
   file.writeWalLine(tombstoneRecordBody(tag, txid, tombstone))
 
-proc segmentFileName(ring: uint64): string =
-  toHex(ring, 16) & ".seg"
+proc segmentFileName(ring, generation: uint64): string =
+  let base = toHex(ring, 16)
+  if generation == 0: base & ".seg" else: base & ".g" & $generation & ".seg"
+
+proc segmentIndexFileName(ring, generation: uint64): string =
+  let base = toHex(ring, 16)
+  if generation == 0: base & ".idx" else: base & ".g" & $generation & ".idx"
 
 proc segmentPath(s: Store, ring: uint64): string =
-  s.segmentDir / segmentFileName(ring)
+  s.segmentDir / segmentFileName(ring, s.segmentGenerations.getOrDefault(ring, 0))
+
+proc segmentIndexPath(s: Store, ring: uint64): string =
+  s.segmentDir / segmentIndexFileName(ring, s.segmentGenerations.getOrDefault(ring, 0))
+
+proc segmentPath(s: Store, ring, generation: uint64): string =
+  s.segmentDir / segmentFileName(ring, generation)
+
+proc segmentIndexPath(s: Store, ring, generation: uint64): string =
+  s.segmentDir / segmentIndexFileName(ring, generation)
+
+proc segmentManifestPath(s: Store): string =
+  s.segmentDir / "manifest"
+
+proc syncDir(path: string)
+proc replaceFileAtomic(src, dst: string)
+proc syncFile(file: File)
+
+proc loadSegmentManifest(s: Store): bool =
+  ## No manifest denotes the legacy generation-0 layout.  A malformed
+  ## manifest is not trusted and causes a cache rebuild from the WAL.
+  s.segmentGenerations.clear()
+  let path = s.segmentManifestPath()
+  if not fileExists(path):
+    return true
+  try:
+    let rows = readFile(path).splitLines()
+    if rows.len == 0 or rows[0] != "!KOUTENDB-SEGMENTS 1":
+      return false
+    for i in 1 ..< rows.len:
+      let line = rows[i].strip()
+      if line.len == 0:
+        continue
+      let parts = line.splitWhitespace()
+      if parts.len != 2:
+        return false
+      let ring = parseBiggestUInt(parts[0]).uint64
+      let generation = parseBiggestUInt(parts[1]).uint64
+      if generation == 0:
+        return false
+      s.segmentGenerations[ring] = generation
+    result = true
+  except CatchableError:
+    s.segmentGenerations.clear()
+    result = false
+
+proc writeSegmentManifest(s: Store) =
+  if s.segmentDir.len == 0:
+    raise newException(IOError, "ring segment directory is not configured")
+  createDir(s.segmentDir)
+  let path = s.segmentManifestPath()
+  let tmp = path & ".tmp"
+  var rings: seq[uint64] = @[]
+  for ring in s.segmentGenerations.keys:
+    if s.segmentGenerations[ring] > 0:
+      rings.add ring
+  rings.sort()
+  var file = open(tmp, fmWrite)
+  try:
+    file.write("!KOUTENDB-SEGMENTS 1\n")
+    for ring in rings:
+      file.write($ring & " " & $s.segmentGenerations[ring] & "\n")
+    file.syncFile()
+  finally:
+    file.close()
+  replaceFileAtomic(tmp, path)
+  syncDir(s.segmentDir)
 
 proc segmentFileForAppend(s: Store, ring: uint64): File =
   if s.segmentDir.len == 0:
@@ -589,11 +730,25 @@ proc segmentFileForAppend(s: Store, ring: uint64): File =
     s.segmentFiles[ring] = open(s.segmentPath(ring), fmAppend)
   s.segmentFiles[ring]
 
+proc segmentIndexFileForAppend(s: Store, ring: uint64): File =
+  if s.segmentDir.len == 0:
+    raise newException(IOError, "ring segment directory is not configured")
+  createDir(s.segmentDir)
+  if ring notin s.segmentIndexFiles:
+    s.segmentIndexFiles[ring] = open(s.segmentIndexPath(ring), fmAppend)
+  s.segmentIndexFiles[ring]
+
 proc closeSegmentFiles(s: Store) =
   for _, file in s.segmentFiles.mpairs:
     file.flushFile()
     file.close()
   s.segmentFiles.clear()
+
+proc closeSegmentIndexFiles(s: Store) =
+  for _, file in s.segmentIndexFiles.mpairs:
+    file.flushFile()
+    file.close()
+  s.segmentIndexFiles.clear()
 
 proc closeSegmentReadStreams(s: Store) =
   for _, stream in s.segmentReadStreams.mpairs:
@@ -605,13 +760,43 @@ proc flushSegmentFiles(s: Store) =
   for _, file in s.segmentFiles.mpairs:
     file.flushFile()
 
+proc flushSegmentIndexFiles(s: Store) =
+  for _, file in s.segmentIndexFiles.mpairs:
+    file.flushFile()
+
 proc writeSegmentBody(s: Store, ring: uint64, body: string): int64 =
   if not s.diskBacked or not s.persistent:
     return -1'i64
   var file = s.segmentFileForAppend(ring)
   result = file.getFilePos()
-  file.write(body)
+  file.write(walRecord(body))
   s.segmentFiles[ring] = file
+
+proc appendSegmentIndex(s: Store, p: Particle, walOffset, segmentOffset: int64) =
+  ## The index is a rebuildable cache.  WAL remains authoritative, therefore a
+  ## partial or missing index entry only falls back to WAL on the next open.
+  var file = s.segmentIndexFileForAppend(p.parent)
+  file.write("P " & $p.parent & " " & $p.seq & " " & $walOffset & " " &
+             $segmentOffset & "\n")
+  s.segmentIndexFiles[p.parent] = file
+  s.segmentRecordCounts[p.parent] =
+    s.segmentRecordCounts.getOrDefault(p.parent, 0) + 1
+
+proc cacheParticleInSegment(s: Store, p: Particle, walOffset: int64,
+                            body: string) =
+  ## Segment persistence is deliberately best-effort: the WAL write has
+  ## already committed the logical mutation.  If this cache update fails, the
+  ## next read and restart use the WAL rather than reporting a false failure.
+  if not s.diskBacked or not s.persistent or s.segmentDir.len == 0 or
+      walOffset < 0:
+    return
+  let k = key(p.parent, p.seq)
+  try:
+    let segmentOffset = s.writeSegmentBody(p.parent, body)
+    s.appendSegmentIndex(p, walOffset, segmentOffset)
+    s.itemSegmentOffsets[k] = segmentOffset
+  except CatchableError:
+    s.itemSegmentOffsets.del k
 
 proc clusterTxOpBody(txid: uint64, op: ClusterTxOp): string =
   let kind = if op.kind == ctxDelete: "D" else: "P"
@@ -715,7 +900,6 @@ proc readParticleBodyAtStream(fs: Stream, offset: int64): string =
 
 const
   SegmentPackFlushBytes = 4 * 1024 * 1024
-  SegmentPackMinRecords = 16
 
 type
   SegmentPackWriter = object
@@ -729,11 +913,11 @@ proc flushPackWriter(writer: var SegmentPackWriter) =
     writer.pos += writer.buffer.len.int64
     writer.buffer.setLen(0)
 
-proc appendPackBody(s: Store,
-                    writers: var seq[SegmentPackWriter],
-                    writerIndexes: var Table[uint64, int],
-                    ring: uint64,
-                    body: string): int64 =
+proc appendPackRecord(s: Store,
+                      writers: var seq[SegmentPackWriter],
+                      writerIndexes: var Table[uint64, int],
+                      ring: uint64,
+                      record: string): int64 =
   if ring notin writerIndexes:
     writerIndexes[ring] = writers.len
     writers.add SegmentPackWriter(file: open(s.segmentPath(ring), fmWrite),
@@ -741,7 +925,7 @@ proc appendPackBody(s: Store,
                                   buffer: "")
   let idx = writerIndexes[ring]
   result = writers[idx].pos + writers[idx].buffer.len.int64
-  writers[idx].buffer.add(body)
+  writers[idx].buffer.add(record)
   if writers[idx].buffer.len >= SegmentPackFlushBytes:
     writers[idx].flushPackWriter()
 
@@ -771,6 +955,78 @@ proc readParticleAt*(s: Store, offset: int64): Particle =
   finally:
     fs.close()
 
+proc openSegmentReadStream(s: Store, ring: uint64): FileStream
+
+proc loadRingSegmentIndexes(s: Store): bool =
+  ## Restore the rebuildable segment cache without replaying every live WAL
+  ## payload into new segment files.  Index entries are accepted only when
+  ## their WAL offset still identifies the current live revision.
+  if s.segmentDir.len == 0 or not dirExists(s.segmentDir):
+    return false
+  var loaded = initTable[(uint64, uint32), tuple[walOffset, segmentOffset: int64]]()
+  var sawIndex = false
+  s.segmentRecordCounts.clear()
+  try:
+    for path in walkFiles(s.segmentDir / "*.idx"):
+      sawIndex = true
+      for rawLine in lines(path):
+        let line = rawLine.strip()
+        if line.len == 0:
+          continue
+        let parts = line.splitWhitespace()
+        if parts.len == 3 and parts[0] == "D":
+          let parent = parseBiggestUInt(parts[1]).uint64
+          if path == s.segmentIndexPath(parent):
+            loaded.del key(parent, parseUInt(parts[2]).uint32)
+        elif parts.len == 5 and parts[0] == "P":
+          let parent = parseBiggestUInt(parts[1]).uint64
+          let seq = parseUInt(parts[2]).uint32
+          let walOffset = parseBiggestInt(parts[3]).int64
+          let segmentOffset = parseBiggestInt(parts[4]).int64
+          if walOffset < 0 or segmentOffset < 0:
+            return false
+          if path == s.segmentIndexPath(parent):
+            s.segmentRecordCounts[parent] =
+              s.segmentRecordCounts.getOrDefault(parent, 0) + 1
+            loaded[key(parent, seq)] = (walOffset, segmentOffset)
+        else:
+          return false
+    if not sawIndex:
+      return false
+    for k, entry in loaded:
+      if s.itemOffsets.getOrDefault(k, -1'i64) != entry.walOffset:
+        continue
+      if not fileExists(s.segmentPath(k[0])) or
+          entry.segmentOffset >= getFileSize(s.segmentPath(k[0])):
+        return false
+      s.itemSegmentOffsets[k] = entry.segmentOffset
+    result = true
+  except CatchableError:
+    s.itemSegmentOffsets.clear()
+    s.segmentRecordCounts.clear()
+    result = false
+
+proc segmentParticleOrWal(s: Store, parent: uint64, seq: uint32,
+                          segmentOffset, walOffset: int64): Particle =
+  ## A segment is an optimization only.  A damaged or interrupted cache write
+  ## must never make the durable WAL record unreadable.
+  try:
+    let fs = s.openSegmentReadStream(parent)
+    try:
+      let p = fs.readParticleAtStream(segmentOffset)
+      let k = key(parent, seq)
+      if p.parent != parent or p.seq != seq or
+          p.version != s.itemVersions.getOrDefault(k):
+        raise newException(IOError, "ring segment index does not match live revision")
+      inc s.segmentReadHits
+      return p
+    finally:
+      fs.close()
+  except CatchableError:
+    s.itemSegmentOffsets.del key(parent, seq)
+    inc s.segmentWalFallbacks
+    return s.readParticleAt(walOffset)
+
 proc openSegmentReadStream(s: Store, ring: uint64): FileStream =
   if s.segmentDir.len == 0:
     raise newException(IOError, "ring segment directory is not configured")
@@ -778,17 +1034,6 @@ proc openSegmentReadStream(s: Store, ring: uint64): FileStream =
   result = newFileStream(s.segmentPath(ring), fmRead)
   if result.isNil:
     raise newException(IOError, "cannot open ring segment for read")
-
-proc cachedSegmentReadStream(s: Store, ring: uint64): FileStream =
-  if s.segmentDir.len == 0:
-    raise newException(IOError, "ring segment directory is not configured")
-  s.flushSegmentFiles()
-  if ring notin s.segmentReadStreams or s.segmentReadStreams[ring].isNil:
-    let stream = newFileStream(s.segmentPath(ring), fmRead)
-    if stream.isNil:
-      raise newException(IOError, "cannot open ring segment for read")
-    s.segmentReadStreams[ring] = stream
-  s.segmentReadStreams[ring]
 
 proc readParticleRecordAtCurrent(fs: Stream, line: string): Particle =
   var parts = line.split(' ')
@@ -812,7 +1057,8 @@ proc readParticleRecordAtCurrent(fs: Stream, line: string): Particle =
 
 iterator particlesByRing*(s: Store, ring: uint64): Particle =
   if s.diskBacked:
-    var walStream: FileStream = nil
+    var fromSegment: seq[Particle] = @[]
+    var segmentUsable = false
     if s.segmentDir.len > 0 and fileExists(s.segmentPath(ring)):
       let segmentStream = s.openSegmentReadStream(ring)
       try:
@@ -821,19 +1067,25 @@ iterator particlesByRing*(s: Store, ring: uint64): Particle =
           let recordStart = segmentStream.getPosition() - line.len - 1
           let p = segmentStream.readParticleRecordAtCurrent(line)
           let k = key(p.parent, p.seq)
-          if k in s.itemSegmentOffsets and s.itemSegmentOffsets[k] == recordStart:
-            yield p
+          if p.parent == ring and k in s.itemSegmentOffsets and
+              s.itemSegmentOffsets[k] == recordStart and
+              p.version == s.itemVersions.getOrDefault(k):
+            fromSegment.add p
+        segmentUsable = true
+      except CatchableError:
+        # Discard partial cache output.  The WAL remains the only source used
+        # for this read if a segment cannot be fully verified.
+        fromSegment.setLen(0)
+        inc s.segmentWalFallbacks
       finally:
         segmentStream.close()
-    try:
-      for k in s.itemsByRing.getOrDefault(ring, @[]):
-        if k notin s.itemSegmentOffsets and k in s.itemOffsets:
-          if walStream == nil:
-            walStream = s.openWalReadStream()
-          yield walStream.readParticleAtStream(s.itemOffsets[k])
-    finally:
-      if walStream != nil:
-        walStream.close()
+    if segmentUsable:
+      s.segmentReadHits += fromSegment.len.uint64
+      for p in fromSegment:
+        yield p
+    for k in s.itemsByRing.getOrDefault(ring, @[]):
+      if k in s.itemOffsets and (not segmentUsable or k notin s.itemSegmentOffsets):
+        yield s.readParticleAt(s.itemOffsets[k])
   else:
     for k in s.itemsByRing.getOrDefault(ring, @[]):
       if k in s.items:
@@ -871,25 +1123,52 @@ proc particlesByRingWindow*(s: Store, ring: uint64, limit: int,
   if selected.len == 0:
     return
   if s.diskBacked:
+    var segmentStream: FileStream = nil
     var walStream: FileStream = nil
     try:
       for k in selected:
         if k in s.items:
           result.add s.items[k]
         elif k in s.itemSegmentOffsets:
-          let segmentStream = s.cachedSegmentReadStream(ring)
-          result.add segmentStream.readParticleAtStream(s.itemSegmentOffsets[k])
+          try:
+            if segmentStream == nil:
+              segmentStream = s.openSegmentReadStream(ring)
+            let p = segmentStream.readParticleAtStream(s.itemSegmentOffsets[k])
+            if p.parent != k[0] or p.seq != k[1] or
+                p.version != s.itemVersions.getOrDefault(k):
+              raise newException(IOError,
+                "ring segment index does not match live revision")
+            result.add p
+            inc s.segmentReadHits
+          except CatchableError:
+            # A derived segment failure is isolated to this record. Continue
+            # the bounded read from the authoritative WAL without reopening a
+            # stream for every item.
+            s.itemSegmentOffsets.del k
+            inc s.segmentWalFallbacks
+            if k notin s.itemOffsets:
+              raise
+            if walStream == nil:
+              walStream = s.openWalReadStream()
+            result.add walStream.readParticleAtStream(s.itemOffsets[k])
         elif k in s.itemOffsets:
           if walStream == nil:
             walStream = s.openWalReadStream()
           result.add walStream.readParticleAtStream(s.itemOffsets[k])
     finally:
+      if segmentStream != nil:
+        segmentStream.close()
       if walStream != nil:
         walStream.close()
   else:
     for k in selected:
       if k in s.items:
         result.add s.items[k]
+
+proc ringLiveCount*(s: Store, ring: uint64): int =
+  ## itemsByRing is updated together with live state on upsert/delete replay,
+  ## so this does not touch payload files.
+  s.itemsByRing.getOrDefault(ring, @[]).len
 
 iterator allParticles*(s: Store): Particle =
   for ring in s.itemsByRing.keys:
@@ -901,11 +1180,8 @@ proc getParticle*(s: Store, parent: uint64, seq: uint32): Particle =
   if k in s.items:
     return s.items[k]
   if k in s.itemSegmentOffsets:
-    let fs = s.openSegmentReadStream(parent)
-    try:
-      return fs.readParticleAtStream(s.itemSegmentOffsets[k])
-    finally:
-      fs.close()
+    return s.segmentParticleOrWal(parent, seq, s.itemSegmentOffsets[k],
+                                   s.itemOffsets.getOrDefault(k, -1'i64))
   if k in s.itemOffsets:
     return s.readParticleAt(s.itemOffsets[k])
   raise newException(KeyError, "particle not found")
@@ -913,46 +1189,218 @@ proc getParticle*(s: Store, parent: uint64, seq: uint32): Particle =
 proc rebuildRingSegmentsFromOffsets(s: Store, wal: FileStream): SegmentPackStats =
   type SegmentSource = tuple[offset: int64, k: (uint64, uint32)]
   var live: seq[SegmentSource] = @[]
-  var ringCounts = initTable[uint64, int]()
   var packedRings = initTable[uint64, bool]()
   var writers: seq[SegmentPackWriter] = @[]
   var writerIndexes = initTable[uint64, int]()
-  for k in s.itemOffsets.keys:
-    inc ringCounts.mgetOrPut(k[0], 0)
   for k, offset in s.itemOffsets:
-    if ringCounts.getOrDefault(k[0], 0) >= SegmentPackMinRecords:
-      live.add (offset: offset, k: k)
+    live.add (offset: offset, k: k)
   live.sort do (a, b: SegmentSource) -> int:
     cmp(a.offset, b.offset)
   try:
     for entry in live:
       let body = wal.readParticleBodyAtStream(entry.offset)
+      let framed = walRecord(body)
       let k = entry.k
-      s.itemSegmentOffsets[k] = s.appendPackBody(writers, writerIndexes, k[0], body)
+      s.itemSegmentOffsets[k] =
+        s.appendPackRecord(writers, writerIndexes, k[0], framed)
       inc result.records
-      result.bytes += body.len.int64
+      result.bytes += framed.len.int64
       packedRings[k[0]] = true
   finally:
     writers.closePackWriters()
   result.rings = packedRings.len
+
+proc rebuildSegmentIndexes(s: Store) =
+  ## Rewrite the cache index only after every replacement segment is closed.
+  ## A missing index is safe: openStore rebuilds it from the durable WAL.
+  var files = initTable[uint64, File]()
+  try:
+    for k, segmentOffset in s.itemSegmentOffsets:
+      if k notin s.itemOffsets:
+        continue
+      if k[0] notin files:
+        files[k[0]] = open(s.segmentIndexPath(k[0]), fmWrite)
+      var file = files[k[0]]
+      file.write("P " & $k[0] & " " & $k[1] & " " & $s.itemOffsets[k] &
+                 " " & $segmentOffset & "\n")
+      files[k[0]] = file
+  finally:
+    for _, file in files.mpairs:
+      file.flushFile()
+      file.close()
 
 proc rebuildRingSegments*(s: Store): SegmentPackStats {.discardable.} =
   if not s.diskBacked or not s.persistent or s.segmentDir.len == 0:
     return
   s.flushDiskBackedLog()
   s.closeSegmentFiles()
+  s.closeSegmentIndexFiles()
   s.closeSegmentReadStreams()
   if dirExists(s.segmentDir):
     removeDir(s.segmentDir)
   createDir(s.segmentDir)
+  s.segmentGenerations.clear()
+  s.segmentRecordCounts.clear()
   s.itemSegmentOffsets.clear()
   let wal = newFileStream(s.logPath, fmRead)
   if wal.isNil:
     raise newException(IOError, "cannot open WAL for segment rebuild")
   try:
     result = s.rebuildRingSegmentsFromOffsets(wal)
+    for ring, keys in s.itemsByRing:
+      var live = 0
+      for k in keys:
+        if k in s.itemSegmentOffsets:
+          inc live
+      if live > 0:
+        s.segmentRecordCounts[ring] = live
+    s.rebuildSegmentIndexes()
   finally:
     wal.close()
+
+proc closeRingSegmentHandles(s: Store, ring: uint64) =
+  if ring in s.segmentFiles:
+    s.segmentFiles[ring].flushFile()
+    s.segmentFiles[ring].close()
+    s.segmentFiles.del ring
+  if ring in s.segmentIndexFiles:
+    s.segmentIndexFiles[ring].flushFile()
+    s.segmentIndexFiles[ring].close()
+    s.segmentIndexFiles.del ring
+  if ring in s.segmentReadStreams:
+    if s.segmentReadStreams[ring] != nil:
+      s.segmentReadStreams[ring].close()
+    s.segmentReadStreams.del ring
+
+proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} =
+  ## Merge only one ring into a new complete segment generation.  The
+  ## manifest is switched last, making an interrupted pack select either the
+  ## old complete generation or the new complete generation, never a mix.
+  if not s.diskBacked or not s.persistent or s.segmentDir.len == 0:
+    return
+  s.flushDiskBackedLog()
+  let oldGeneration = s.segmentGenerations.getOrDefault(ring, 0'u64)
+  if oldGeneration == uint64.high:
+    raise newException(IOError, "segment generation exhausted")
+  let newGeneration = oldGeneration + 1
+  let newSegment = s.segmentPath(ring, newGeneration)
+  let newIndex = s.segmentIndexPath(ring, newGeneration)
+  let tmpSegment = newSegment & ".tmp"
+  let tmpIndex = newIndex & ".tmp"
+  var keys = s.itemsByRing.getOrDefault(ring, @[])
+  keys.sort(proc(a, b: (uint64, uint32)): int = cmp(a[1], b[1]))
+  var offsets = initTable[(uint64, uint32), int64]()
+  var segment = open(tmpSegment, fmWrite)
+  var index = open(tmpIndex, fmWrite)
+  var wal: FileStream = nil
+  try:
+    if keys.len > 0:
+      wal = s.openWalReadStream()
+    for k in keys:
+      if k notin s.itemOffsets:
+        continue
+      let body = wal.readParticleBodyAtStream(s.itemOffsets[k])
+      let framed = walRecord(body)
+      let segmentOffset = segment.getFilePos()
+      segment.write(framed)
+      index.write("P " & $k[0] & " " & $k[1] & " " & $s.itemOffsets[k] &
+                  " " & $segmentOffset & "\n")
+      offsets[k] = segmentOffset
+      inc result.records
+      result.bytes += framed.len.int64
+    segment.syncFile()
+    index.syncFile()
+  except CatchableError:
+    segment.close()
+    index.close()
+    if wal != nil: wal.close()
+    if fileExists(tmpSegment): removeFile(tmpSegment)
+    if fileExists(tmpIndex): removeFile(tmpIndex)
+    raise
+  segment.close()
+  index.close()
+  if wal != nil: wal.close()
+  replaceFileAtomic(tmpSegment, newSegment)
+  when defined(koutenTestFailpoints):
+    if s.segmentPackFailAfterSegmentReplace:
+      raise newException(IOError,
+        "test segment pack failure after segment replacement")
+  replaceFileAtomic(tmpIndex, newIndex)
+  when defined(koutenTestFailpoints):
+    if s.segmentPackFailBeforeManifest:
+      raise newException(IOError, "test segment pack failure before manifest")
+  s.closeRingSegmentHandles(ring)
+  s.segmentGenerations[ring] = newGeneration
+  try:
+    s.writeSegmentManifest()
+  except CatchableError:
+    s.segmentGenerations[ring] = oldGeneration
+    raise
+  for k in s.itemsByRing.getOrDefault(ring, @[]):
+    s.itemSegmentOffsets.del k
+  for k, offset in offsets:
+    s.itemSegmentOffsets[k] = offset
+  s.segmentRecordCounts[ring] = result.records
+  result.rings = if result.records > 0: 1 else: 0
+  let activeSegment = s.segmentPath(ring, newGeneration)
+  let activeIndex = s.segmentIndexPath(ring, newGeneration)
+  let ringPrefix = toHex(ring, 16)
+  for path in walkFiles(s.segmentDir / (ringPrefix & "*")):
+    if path != activeSegment and path != activeIndex and
+        (path.endsWith(".seg") or path.endsWith(".idx") or
+         path.endsWith(".tmp")):
+      removeFile(path)
+      inc result.removedFiles
+  syncDir(s.segmentDir)
+
+when defined(koutenTestFailpoints):
+  proc failSegmentPackAfterSegmentReplaceForTest*(s: Store; enabled: bool) =
+    s.segmentPackFailAfterSegmentReplace = enabled
+
+  proc failSegmentPackBeforeManifestForTest*(s: Store; enabled: bool) =
+    s.segmentPackFailBeforeManifest = enabled
+
+proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
+                    minStaleRecords = 256): StoreSegmentReport =
+  ## Report the derived ring-local read layout. Recommendations are diagnostic
+  ## only; KoutenDB never starts background packing from this function.
+  if staleRatioThreshold < 0 or staleRatioThreshold > 1:
+    raise newException(ValueError, "staleRatioThreshold must be between 0 and 1")
+  if minStaleRecords < 0:
+    raise newException(ValueError, "minStaleRecords must be >= 0")
+  result.diskBacked = s.diskBacked
+  result.segmentHits = s.segmentReadHits
+  result.walFallbacks = s.segmentWalFallbacks
+  var rings: seq[uint64] = @[]
+  for ring in s.itemsByRing.keys:
+    rings.add ring
+  rings.sort()
+  for ring in rings:
+    let live = s.ringLiveCount(ring)
+    var covered = 0
+    for k in s.itemsByRing.getOrDefault(ring, @[]):
+      if k in s.itemSegmentOffsets:
+        inc covered
+    let records = s.segmentRecordCounts.getOrDefault(ring, covered)
+    let stale = max(0, records - live)
+    let ratio = if records == 0: 0.0 else: float(stale) / float(records)
+    let segmentPath = s.segmentPath(ring)
+    let indexPath = s.segmentIndexPath(ring)
+    let segmentBytes = if fileExists(segmentPath): getFileSize(segmentPath) else: 0'i64
+    let indexBytes = if fileExists(indexPath): getFileSize(indexPath) else: 0'i64
+    let recommended = stale >= minStaleRecords and ratio >= staleRatioThreshold
+    let generation = s.segmentGenerations.getOrDefault(ring, 0'u64)
+    result.rings.add StoreSegmentRingReport(
+      ring: ring, generation: generation, liveRecords: live,
+      coveredRecords: covered, segmentRecords: records,
+      staleRecords: stale, staleRatio: ratio,
+      segmentBytes: segmentBytes, indexBytes: indexBytes,
+      packRecommended: recommended)
+    if recommended:
+      inc result.recommendedRings
+    result.totalSegmentBytes += segmentBytes
+    result.totalIndexBytes += indexBytes
+    result.maxGeneration = max(result.maxGeneration, generation)
 
 proc readClusterTxOp(fs: Stream, parts: seq[string], firstData: int): ClusterTxOp =
   var data = firstData
@@ -1422,6 +1870,45 @@ proc recoverCompaction(path: string) =
   if fileExists(path) and fileExists(bak):
     removeFile(bak)
 
+proc clearReplayState(s: Store) =
+  ## WAL compaction changes record offsets.  Keep runtime configuration and
+  ## file handles, but discard every value reconstructed from the WAL before
+  ## replaying the new compacted generation.
+  s.items.clear()
+  s.itemVersions.clear()
+  s.tombstones.clear()
+  s.itemsByRing.clear()
+  s.itemOffsets.clear()
+  s.itemSegmentOffsets.clear()
+  s.itemHasVector.clear()
+  s.vectorCount = 0
+  s.vectorCountByRing.clear()
+  s.forwarders.clear()
+  s.seqs.clear()
+  s.ringMeta.clear()
+  s.ringNames.clear()
+  s.ringDescriptions.clear()
+  s.ringPayloadProfiles.clear()
+  s.ringTimeOrbitProfiles.clear()
+  s.stellarMaps.clear()
+  s.galaxy = ""
+  s.galaxyDescription = ""
+  s.placementEpoch = 0
+  s.placementNodes = 0
+  s.placementVirtualArcs = 0
+  s.maintenanceDrained = false
+  s.clusterTx.clear()
+  s.appliedClusterTx.clear()
+  s.warpJobs.clear()
+  s.universeSyncEvents.clear()
+  s.appliedUniverseSyncEvents.clear()
+  s.appliedUniverseSyncOrder.setLen(0)
+  s.nextUniverseSyncId = 0
+  s.maxTWrite = 0
+  s.mutationClockPhysical = 0
+  s.mutationClockLogical = 0
+  s.nextTxId = 1
+
 proc flushMaybe(s: Store, force = false)
 
 proc markWriteFailed(s: Store, message: string) =
@@ -1458,8 +1945,12 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
       result.replay(path)
       result.logPath = path
       result.persistent = true
-      if diskBacked and not newLog:
-        result.rebuildRingSegments()
+      if diskBacked and not newLog and result.itemOffsets.len > 0:
+        # Existing v0.10 stores have no sidecar index, so they take one
+        # migration rebuild.  Subsequent opens reuse validated ring segments.
+        if not result.loadSegmentManifest() or
+            not result.loadRingSegmentIndexes():
+          result.rebuildRingSegments()
       result.logFile = open(path, fmAppend)
       if newLog:
         result.logFile.write(WalMagicLine & "\n")
@@ -1572,7 +2063,10 @@ proc flushMaybe(s: Store, force: bool) =
       raise
 
 proc sync*(s: Store) =
-  if s.persistent: s.flushMaybe(force = true)
+  if s.persistent:
+    s.flushMaybe(force = true)
+    s.flushSegmentFiles()
+    s.flushSegmentIndexFiles()
 
 proc logSize*(s: Store): BiggestInt =
   if s.persistent and s.logPath.len > 0 and fileExists(s.logPath):
@@ -1585,6 +2079,7 @@ proc isPersistent*(s: Store): bool =
 
 proc close*(s: Store) =
   s.closeSegmentFiles()
+  s.closeSegmentIndexFiles()
   s.closeSegmentReadStreams()
   if s.persistent:
     if not s.writeFailed:
@@ -1675,12 +2170,17 @@ proc writeSnapshotFile(s: Store, path: string) =
     var itemKeys: seq[(uint64, uint32)] = @[]
     for k in s.items.keys:
       itemKeys.add k
+    # Disk-backed stores keep live particles in WAL/segments rather than the
+    # in-memory item table.  A snapshot must therefore include both sources.
+    for k in s.itemOffsets.keys:
+      if k notin s.items:
+        itemKeys.add k
     itemKeys.sort(proc(a, b: (uint64, uint32)): int =
       result = cmp(a[0], b[0])
       if result == 0:
         result = cmp(a[1], b[1]))
     for k in itemKeys:
-      let p = s.items[k]
+      let p = if k in s.items: s.items[k] else: s.getParticle(k[0], k[1])
       file.writeParticleRecord("", 0, p)
     var tombstoneKeys: seq[(uint64, uint32)] = @[]
     for k in s.tombstones.keys:
@@ -1751,7 +2251,7 @@ proc writeSnapshotFile(s: Store, path: string) =
 
 proc snapshotStats(s: Store, path: string, source = ""): StoreBackupStats =
   StoreBackupStats(bytes: (if fileExists(path): getFileSize(path) else: 0),
-                   items: s.items.len,
+                   items: (if s.diskBacked: s.itemOffsets.len else: s.items.len),
                    tombstones: s.tombstones.len,
                    forwarders: s.forwarders.len,
                    ringMeta: s.ringMeta.len,
@@ -1926,6 +2426,12 @@ proc compact*(s: Store): StoreCompactStats =
   s.persistent = true
   s.dirty = 0
   s.lastFlush = getMonoTime()
+  # The compacted WAL has new byte offsets, so rebuild the in-memory offset
+  # table and its derived ring-local read cache before serving another read.
+  s.clearReplayState()
+  s.replay(path)
+  if s.diskBacked:
+    discard s.rebuildRingSegments()
   if fileExists(bak):
     removeFile(bak)
     syncDir(parentDir(path))
@@ -2271,6 +2777,9 @@ proc upsert*(s: Store, p: Particle, origin = 0'u32,
     s.flushMaybe()
   s.applyOp(TxOp(kind: txUpsert, p: effective, walOffset: walOffset,
                  segmentOffset: -1'i64, segmentBody: ""))
+  if s.diskBacked and s.persistent:
+    s.cacheParticleInSegment(effective, walOffset,
+      particleRecordBody("", 0, effective))
   true
 
 proc putForwarder*(s: Store, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
@@ -2472,6 +2981,8 @@ proc rollback*(tx: StoreTxn) =
   tx.ops.setLen(0)
   tx.closed = true
 
+proc packCommittedSegments*(tx: StoreTxn)
+
 proc commit*(tx: StoreTxn) =
   doAssert not tx.closed, "transaction is closed"
   let s = tx.store
@@ -2510,6 +3021,7 @@ proc commit*(tx: StoreTxn) =
   s.applyOps(tx.ops)
   tx.committed = true
   tx.closed = true
+  tx.packCommittedSegments()
 
 proc packCommittedSegments*(tx: StoreTxn) =
   ## Add committed transaction payloads to ring-local segment files.
@@ -2518,24 +3030,13 @@ proc packCommittedSegments*(tx: StoreTxn) =
   let s = tx.store
   if not s.diskBacked or not s.persistent or s.segmentDir.len == 0:
     return
-  var buffers = initTable[uint64, string]()
-  var baseOffsets = initTable[uint64, int64]()
   for op in tx.ops:
     if op.kind == txUpsert:
       let p = op.p
-      if p.parent notin baseOffsets:
-        var file = s.segmentFileForAppend(p.parent)
-        baseOffsets[p.parent] = file.getFilePos()
-        s.segmentFiles[p.parent] = file
       let body =
         if op.segmentBody.len > 0: op.segmentBody
         else: particleRecordBody("", 0, p)
-      let offset = baseOffsets[p.parent] +
-                   buffers.getOrDefault(p.parent, "").len.int64
-      buffers.mgetOrPut(p.parent, "").add body
-      s.itemSegmentOffsets[key(p.parent, p.seq)] = offset
-  for ring, body in buffers:
-    discard s.writeSegmentBody(ring, body)
+      s.cacheParticleInSegment(p, op.walOffset, body)
 
 proc putClusterTxIntent*(s: Store, intent: ClusterTxIntent) =
   s.ensureWritable()

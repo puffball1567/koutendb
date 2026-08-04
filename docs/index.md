@@ -5,7 +5,7 @@ title: KoutenDB Documentation
 
 # KoutenDB Documentation
 
-KoutenDB is a ring-oriented NoSQL database prototype. It stores data with a
+KoutenDB is a pre-v1 ring-oriented NoSQL database. It stores data with a
 coordinate-like `ring` and uses that placement at read time to reduce the amount
 of data that must be searched, transferred, held in memory, and passed to
 downstream AI/RAG or application logic.
@@ -58,4 +58,4 @@ downstream AI/RAG or application logic.
 ## Release
 
 - [Release Checklist](release-checklist.md)
-- [GitHub Release Draft](github-release-v0.10.1.md)
+- [v0.11.0 Release Notes](github-release-v0.11.0.md)

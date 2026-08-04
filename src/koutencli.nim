@@ -428,6 +428,10 @@ proc printOperationalReport(report: KoutenOperationalVerifyReport;
     echo &"verifySegmentDirExists {int(report.segmentDirExists)}"
     echo &"verifySegmentFiles {report.segmentFiles}"
     echo &"verifySegmentPackRecords {report.segmentPackRecords}"
+    echo &"verifySegmentBytes {report.segmentStatus.totalSegmentBytes}"
+    echo &"verifySegmentIndexBytes {report.segmentStatus.totalIndexBytes}"
+    echo &"verifySegmentRecommendedRings {report.segmentStatus.recommendedRings}"
+    echo &"verifySegmentMaxGeneration {report.segmentStatus.maxGeneration}"
     echo &"verifyLocalityRingRuns {report.locality.ringRuns}"
     echo &"verifyLocalityScore {report.locality.localityScore:.6f}"
     for check in report.checks:
@@ -464,7 +468,11 @@ proc printOperationalReport(report: KoutenOperationalVerifyReport;
         "path": report.segmentDir,
         "exists": report.segmentDirExists,
         "files": report.segmentFiles,
-        "rebuiltRecords": report.segmentPackRecords
+        "rebuiltRecords": report.segmentPackRecords,
+        "bytes": report.segmentStatus.totalSegmentBytes,
+        "indexBytes": report.segmentStatus.totalIndexBytes,
+        "recommendedRings": report.segmentStatus.recommendedRings,
+        "maxGeneration": $report.segmentStatus.maxGeneration
       },
       "locality": {
         "persistent": report.locality.persistent,
@@ -489,7 +497,7 @@ proc printOperationalReport(report: KoutenOperationalVerifyReport;
   echo &"data: {report.dataDir}"
   echo &"wal: exists={report.walExists} bytes={report.walBytes} path={report.walPath}"
   echo &"store: items={report.items} rings={report.rings} ringNames={report.ringNames} vectors={report.vectors} galaxy={galaxyName}"
-  echo &"segments: diskBacked={report.diskBacked} exists={report.segmentDirExists} files={report.segmentFiles} rebuiltRecords={report.segmentPackRecords}"
+  echo &"segments: diskBacked={report.diskBacked} exists={report.segmentDirExists} files={report.segmentFiles} rebuiltRecords={report.segmentPackRecords} bytes={report.segmentStatus.totalSegmentBytes} indexBytes={report.segmentStatus.totalIndexBytes} recommended={report.segmentStatus.recommendedRings} maxGeneration={report.segmentStatus.maxGeneration}"
   echo &"locality: ringRuns={report.locality.ringRuns} fragmentedRings={report.locality.fragmentedRings} score={report.locality.localityScore:.6f}"
   for check in report.checks:
     let prefix = if check.ok: "ok  " else: "fail"
@@ -711,7 +719,13 @@ proc runOperationalVerify(dataDir, backupDir, serverConfigPath,
                           maxWalBytes: int64 = -1;
                           maxSegmentFiles = -1;
                           maxItems = -1;
-                          maxRings = -1) =
+                          maxRings = -1;
+                          maxSegmentBytes: int64 = -1;
+                          maxDeadRecords = -1;
+                          maxDeadRatio = -1.0;
+                          maxSegmentGeneration: int64 = -1;
+                          staleRatio = 0.25;
+                          minStaleRecords = 256) =
   if serverConfigPath.len > 0:
     printServerConfigReport(serverConfigPath, metricsFormat, jsonFormat)
     return
@@ -731,7 +745,13 @@ proc runOperationalVerify(dataDir, backupDir, serverConfigPath,
                                  maxWalBytes = maxWalBytes,
                                  maxSegmentFiles = maxSegmentFiles,
                                  maxItems = maxItems,
-                                 maxRings = maxRings)
+                                 maxRings = maxRings,
+                                 maxSegmentBytes = maxSegmentBytes,
+                                 maxDeadRecords = maxDeadRecords,
+                                 maxDeadRatio = maxDeadRatio,
+                                 maxSegmentGeneration = maxSegmentGeneration,
+                                 staleRatioThreshold = staleRatio,
+                                 minStaleRecords = minStaleRecords)
   printOperationalReport(report, metricsFormat, jsonFormat)
   if not report.ok:
     quit(1)
@@ -741,15 +761,25 @@ proc runDoctor(dataDir, backupDir, serverConfigPath, passphrase: string;
                maxWalBytes: int64 = -1;
                maxSegmentFiles = -1;
                maxItems = -1;
-               maxRings = -1) =
+               maxRings = -1;
+               maxSegmentBytes: int64 = -1;
+               maxDeadRecords = -1;
+               maxDeadRatio = -1.0;
+               maxSegmentGeneration: int64 = -1;
+               staleRatio = 0.25;
+               minStaleRecords = 256) =
   if dataDir.len > 0 or serverConfigPath.len > 0:
     runOperationalVerify(dataDir, backupDir, serverConfigPath, passphrase,
                          verifySegments, metricsFormat, jsonFormat,
-                         maxWalBytes, maxSegmentFiles, maxItems, maxRings)
+                         maxWalBytes, maxSegmentFiles, maxItems, maxRings,
+                         maxSegmentBytes, maxDeadRecords, maxDeadRatio,
+                         maxSegmentGeneration, staleRatio, minStaleRecords)
   elif backupDir.len > 0:
     runOperationalVerify(dataDir, backupDir, serverConfigPath, passphrase,
                          verifySegments, metricsFormat, jsonFormat,
-                         maxWalBytes, maxSegmentFiles, maxItems, maxRings)
+                         maxWalBytes, maxSegmentFiles, maxItems, maxRings,
+                         maxSegmentBytes, maxDeadRecords, maxDeadRatio,
+                         maxSegmentGeneration, staleRatio, minStaleRecords)
   else:
     runDoctorSetup()
 
@@ -2035,10 +2065,81 @@ proc runMemoryPressureBench(n, ringCount, queries, budget, payloadBytes: int) =
 proc runCompact(dataDir: string, durability: KoutenDurability) =
   if dataDir.len == 0:
     raise newException(ValueError, "compact requires --data=DIR")
-  var db = open(dataDir = dataDir, durability = durability)
+  var db = open(dataDir = dataDir, durability = durability, diskBacked = true)
   let stats = db.compact()
   db.close()
   echo &"compact OK before={stats.beforeBytes} after={stats.afterBytes} items={stats.items} tombstones={stats.tombstones} rings={stats.ringMeta} names={stats.ringNames} clusterTx={stats.clusterTx}"
+
+proc runPackRing(dataDir, ring: string, durability: KoutenDurability) =
+  if dataDir.len == 0 or ring.len == 0:
+    raise newException(ValueError, "pack-ring requires --data=DIR --ring=RING")
+  var db = open(dataDir = dataDir, durability = durability, diskBacked = true)
+  let stats = db.packDiskBackedRing(ring)
+  db.close()
+  echo &"pack-ring OK ring={ring} records={stats.records} rings={stats.rings} bytes={stats.bytes} removedFiles={stats.removedFiles}"
+
+proc runSegmentStatus(dataDir: string; staleRatio: float;
+                      minStaleRecords: int; metricsFormat, jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError, "segment-status requires --data=DIR")
+  var db = open(dataDir = dataDir, diskBacked = true)
+  let report = db.segmentStatus(staleRatio, minStaleRecords)
+  db.close()
+  if metricsFormat:
+    echo &"segmentRecommendedRings {report.recommendedRings}"
+    echo &"segmentTotalBytes {report.totalSegmentBytes}"
+    echo &"segmentIndexTotalBytes {report.totalIndexBytes}"
+    echo &"segmentMaxGeneration {report.maxGeneration}"
+    echo &"segmentReadHits {report.segmentHits}"
+    echo &"segmentWalFallbacks {report.walFallbacks}"
+    for ring in report.rings:
+      echo &"segmentRingLiveRecords{{ringKey=\"{ring.ringKey}\"}} {ring.liveRecords}"
+      echo &"segmentRingStaleRecords{{ringKey=\"{ring.ringKey}\"}} {ring.staleRecords}"
+      echo &"segmentRingStaleRatio{{ringKey=\"{ring.ringKey}\"}} {ring.staleRatio:.6f}"
+      echo &"segmentRingPackRecommended{{ringKey=\"{ring.ringKey}\"}} {int(ring.packRecommended)}"
+    return
+  if jsonFormat:
+    var rings = newJArray()
+    for ring in report.rings:
+      rings.add %*{
+        "ring": ring.ring,
+        "ringKey": $ring.ringKey,
+        "generation": $ring.generation,
+        "liveRecords": ring.liveRecords,
+        "coveredRecords": ring.coveredRecords,
+        "segmentRecords": ring.segmentRecords,
+        "staleRecords": ring.staleRecords,
+        "staleRatio": ring.staleRatio,
+        "segmentBytes": ring.segmentBytes,
+        "indexBytes": ring.indexBytes,
+        "packRecommended": ring.packRecommended
+      }
+    echo pretty(%*{
+      "diskBacked": report.diskBacked,
+      "recommendedRings": report.recommendedRings,
+      "totalSegmentBytes": report.totalSegmentBytes,
+      "totalIndexBytes": report.totalIndexBytes,
+      "maxGeneration": $report.maxGeneration,
+      "segmentHits": $report.segmentHits,
+      "walFallbacks": $report.walFallbacks,
+      "rings": rings
+    })
+    return
+  echo &"segment-status OK recommended={report.recommendedRings} segmentBytes={report.totalSegmentBytes} indexBytes={report.totalIndexBytes} maxGeneration={report.maxGeneration}"
+  for ring in report.rings:
+    echo &"ring={ring.ring} generation={ring.generation} live={ring.liveRecords} covered={ring.coveredRecords} records={ring.segmentRecords} stale={ring.staleRecords} staleRatio={ring.staleRatio:.6f} bytes={ring.segmentBytes + ring.indexBytes} packRecommended={ring.packRecommended}"
+
+proc runPackRecommended(dataDir: string; durability: KoutenDurability;
+                        staleRatio: float; minStaleRecords, maxRings: int;
+                        maxRingsSet: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError, "pack-recommended requires --data=DIR")
+  let effectiveMaxRings = if maxRingsSet: maxRings else: 0
+  var db = open(dataDir = dataDir, durability = durability, diskBacked = true)
+  let stats = db.packRecommendedDiskBackedRings(staleRatio, minStaleRecords,
+                                                effectiveMaxRings)
+  db.close()
+  echo &"pack-recommended OK records={stats.records} rings={stats.rings} bytes={stats.bytes} removedFiles={stats.removedFiles}"
 
 proc runLocality(dataDir: string, metricsFormat: bool) =
   if dataDir.len == 0:
@@ -2995,10 +3096,13 @@ proc printHelp() =
   echo "  kouten health|metrics|rings|drain|resume|snapshot --peers=host:port,..."
   echo "  kouten driver list|info|install [LANG] [--manifest-path=FILE] [--execute]"
   echo "  kouten compact --data=DIR"
+  echo "  kouten pack-ring --data=DIR --ring=RING [--durability=buffered|strong]"
+  echo "  kouten segment-status --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--metrics|--json]"
+  echo "  kouten pack-recommended --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=N]"
   echo "  kouten locality --data=DIR [--metrics]"
   echo "  kouten backup --data=DIR --backup=DIR [--durability=buffered|strong]"
   echo "  kouten restore --backup=DIR --data=DIR [--overwrite] [--durability=buffered|strong]"
-  echo "  kouten verify [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
+  echo "  kouten verify [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-bytes=N] [--max-dead-records=N] [--max-dead-ratio=F] [--max-segment-generation=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
   echo "  kouten dump --data=DIR [--out=FILE] [--no-vectors]"
   echo "  kouten import-jsonl --data=DIR --in=FILE [--ring-field=FIELD] [--default-ring=RING] [--batch-size=N]"
   echo "  kouten scale-in-plan --data=OLD_DIR --peers=TARGET_PEERS [--json]"
@@ -3008,7 +3112,7 @@ proc printHelp() =
   echo "  kouten universe-sync --data=SOURCE_DIR [--target-data=TARGET_DIR | --peers=host:port,...] [--prune-acked]"
   echo "  kouten universe-status [--data=DIR | --peers=host:port,...] [--metrics]"
   echo "  kouten recovery-status [--mirror=DIR...] [--universe-config=FILE] [--required-healthy=N] [--metrics]"
-  echo "  kouten doctor [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
+  echo "  kouten doctor [--data=DIR | --backup=DIR | --server-config=FILE] [--segments] [--max-wal-bytes=N] [--max-segment-bytes=N] [--max-dead-records=N] [--max-dead-ratio=F] [--max-segment-generation=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N] [--metrics] [--json]"
   echo ""
   echo "ID formats:"
   echo "  parent:seq"
@@ -3066,9 +3170,16 @@ proc main() =
   var readonly = false
   var verifySegments = false
   var maxWalBytes: int64 = -1
+  var maxSegmentBytes: int64 = -1
   var maxSegmentFiles = -1
+  var maxDeadRecords = -1
+  var maxDeadRatio = -1.0
+  var maxSegmentGeneration: int64 = -1
+  var staleRatio = 0.25
+  var minStaleRecords = 256
   var maxItems = -1
   var maxRings = -1
+  var maxRingsSet = false
   var username = ""
   var password = ""
   var passwordFile = ""
@@ -3257,9 +3368,18 @@ proc main() =
       of "readonly": readonly = true
       of "segments": verifySegments = true
       of "max-wal-bytes": maxWalBytes = parseBiggestInt(val).int64
+      of "max-segment-bytes": maxSegmentBytes = parseBiggestInt(val).int64
       of "max-segment-files": maxSegmentFiles = parseInt(val)
+      of "max-dead-records": maxDeadRecords = parseInt(val)
+      of "max-dead-ratio": maxDeadRatio = parseFloat(val)
+      of "max-segment-generation":
+        maxSegmentGeneration = parseBiggestInt(val).int64
+      of "stale-ratio": staleRatio = parseFloat(val)
+      of "min-stale-records": minStaleRecords = parseInt(val)
       of "max-items": maxItems = parseInt(val)
-      of "max-rings": maxRings = parseInt(val)
+      of "max-rings":
+        maxRings = parseInt(val)
+        maxRingsSet = true
       of "execute": executeDriverInstall = true
       of "metrics": metricsFormat = true
       of "json": jsonFormat = true
@@ -3424,12 +3544,21 @@ proc main() =
   of "doctor": runDoctor(dataDir, backupDir, serverConfigPath,
                          backupPassphrase, verifySegments, metricsFormat,
                          jsonFormat, maxWalBytes, maxSegmentFiles,
-                         maxItems, maxRings)
+                         maxItems, maxRings, maxSegmentBytes,
+                         maxDeadRecords, maxDeadRatio, maxSegmentGeneration,
+                         staleRatio, minStaleRecords)
   of "driver":
     let driverArgs = if positionals.len > 1: positionals[1 .. ^1] else: @[]
     runDriver(driverArgs, driverManifestPath, driverProjectDir,
               executeDriverInstall)
   of "compact": runCompact(dataDir, durability)
+  of "pack-ring": runPackRing(dataDir, ringName, durability)
+  of "segment-status": runSegmentStatus(dataDir, staleRatio,
+                                          minStaleRecords, metricsFormat,
+                                          jsonFormat)
+  of "pack-recommended": runPackRecommended(dataDir, durability, staleRatio,
+                                              minStaleRecords, maxRings,
+                                              maxRingsSet)
   of "locality": runLocality(dataDir, metricsFormat)
   of "backup": runBackup(dataDir, backupDir, durability)
   of "restore": runRestore(backupDir, dataDir, overwrite, durability)
@@ -3437,7 +3566,10 @@ proc main() =
                                     backupPassphrase, verifySegments,
                                     metricsFormat, jsonFormat,
                                     maxWalBytes, maxSegmentFiles,
-                                    maxItems, maxRings)
+                                    maxItems, maxRings, maxSegmentBytes,
+                                    maxDeadRecords, maxDeadRatio,
+                                    maxSegmentGeneration, staleRatio,
+                                    minStaleRecords)
   of "backup-encrypted": runBackupEncrypted(dataDir, backupDir, backupPassphrase,
                                             durability)
   of "restore-encrypted": runRestoreEncrypted(backupDir, dataDir,
