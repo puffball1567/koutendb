@@ -1,55 +1,87 @@
-# KoutenDB
+# KoutenDB: A Locality-First Database for RAG, AI Retrieval, and Related Data
 
-**v0.10.0 Technical Preview / research OSS.** KoutenDB is not yet presented as a
-production replacement for Redis, PostgreSQL, MongoDB, Apache Arrow, or a
-dedicated vector database. The current release target is a measurable prototype
-of ring/galaxy-oriented storage, retrieval, persistence, drivers, and cluster
-smoke behavior.
+**KoutenDB is a locality-first document and vector database.** It lets an
+application place related data into explicit `ring` coordinates, then retrieves
+the bounded nearby working set before vector ranking, filtering, reranking, or
+LLM context construction.
 
-The name `Kouten` comes from the Japanese word "kouten" (公転), meaning orbital
-revolution: one body moving around another. That is a good fit for this database
-because KoutenDB treats placement, rings, orbits, and locality as part of the
-retrieval model instead of only as storage internals. The project was previously
-published under older names; the active name, package name, CLI name, and
-repository name are now KoutenDB / `koutendb` / `kouten`.
+The result is a database designed to reduce the records, bytes, candidate
+memory, and tokens a request must process. KoutenDB is useful for RAG and AI
+retrieval, but it is equally suited to tenant-scoped web systems, user detail
+pages, product data, application state, and any service where related data is
+known before a read begins.
 
-KoutenDB's practical goal is simple: reduce the amount of data a system has to
-read, transfer, hold in memory, and pass to downstream AI/RAG or application
-logic. In one sentence:
+## Reduce RAG Search Space, Candidate Memory, and Token Use
 
-> KoutenDB stores data with a coordinate-like `ring`, then uses that placement at
-> read time to reduce the amount of data that must be searched, transferred, and
-> passed to downstream systems.
+KoutenDB's core claim is direct: **do not rank, transfer, or send unrelated data
+downstream when the application already knows the relevant locality.** A `ring`
+is a first-stage retrieval boundary, not merely a collection name or a filter
+applied after a broad search.
 
-The celestial mechanics vocabulary, especially orbits, encounters, rings, and
-accretion, is an algorithmic design source rather than the value proposition.
-The value proposition is smaller working sets, fewer transferred bytes, fewer
-retrieval tokens, and lower infrastructure pressure when data can be placed by
-meaningful locality.
+Included, reproducible benchmarks show the effect of selecting the correct ring
+before exact retrieval:
 
-It is not an AI-only database. The same model is intended to work as a general
-NoSQL/document store for web systems: users, tenants, regions, products,
-categories, dates, and application state can all become rings or ring
-hierarchies. The core idea is that locality, authorization boundaries, dump
-units, migration units, and retrieval scope should be visible to the database
-instead of being reconstructed after every query.
+| Workload | Result |
+|---|---|
+| 100-ring working-set benchmark | scanned records/query `10,000 -> 100` (99% reduction) |
+| 100-ring memory-pressure benchmark | candidate memory/query `93.079 MiB -> 0.931 MiB` (99% reduction) |
+| synthetic RAG benchmark | recall `1.000`, scanned/query `8,000 -> 1,000`, estimated tokens/query `3,955 -> 657` |
+| generated AI/RAG JSONL case study | recall `1.000`, scanned/query `400 -> 40`, estimated tokens/query `615.2 -> 231.6` |
+
+KoutenDB does not try to scan an entire corpus faster. It is built to make total
+corpus size matter less when the request can name a meaningful scope such as a
+tenant, repository, product, language, version, region, user, or document
+family.
+
+## Retrieve Related Data Without Join Shaping
+
+Related records can be stored as nearby subrings and read as one bounded bundle.
+This lets an endpoint state the shape it needs directly: one profile, a few
+addresses, recent orders, and recent notifications, each with its own limit and
+sort direction.
+
+```sh
+kouten get --ring=users/<id> \
+  --subring=profile,addresses,career,preferences,orders,notifications \
+  --subring-limit=profile:1,addresses:3,career:2,preferences:1,orders:10,notifications:5 \
+  --subring-rsort=orders:time,notifications:time
+```
+
+In the included 1,050,000-record related-data benchmark, this KoutenDB subring
+bundle read measured `196.859 us`. The same logical result measured `515 us`
+through six indexed PostgreSQL queries and `236 us` through a PostgreSQL JSON
+aggregate query. The detailed workload, data shape, and reproduction helper are
+documented in [Benchmark Comparison](docs/benchmark-comparison.md).
+
+## Verified Persistent Cluster Operation
+
+KoutenDB v0.10.0 completed a **72-hour local three-node persistent cluster
+run** with **4,022,516 mixed client operations**, **zero client errors**, and
+successful offline verification of all three data directories after shutdown.
+
+The run completed 969,281 each of PUTs, returned-ID GETs, projection queries,
+and bounded ring reads, plus 96,928 ring-scoped retrievals. Handoff, migration,
+and universe-sync error/queue counters remained zero, and retrieval did not fall
+back to a global cluster scan. See [72-Hour Soak Testing](docs/soak-testing.md)
+for the exact configuration and final counters.
+
+## How Locality-First Retrieval Works
+
+An application, import rule, or operator assigns a record to a meaningful
+`ring`. That placement becomes part of the read plan. A retrieval can therefore
+start from the known local scope, then apply exact vector ranking, structured
+filters, projections, limits, and sorting only to eligible nearby data.
+
+This differs from treating placement as an internal storage detail. In KoutenDB,
+locality can also align authorization boundaries, dump units, migration units,
+and application routing. The name comes from the Japanese word "kouten" (公転),
+meaning orbital revolution: placement, rings, and orbit-inspired coordinates are
+part of the data model rather than an afterthought.
 
 Writes are intentionally light. A human, application, or import rule places data
-into a ring. Reads use the ring, hierarchy, centroid, coherence, mass, retrieval
-profile, and projection to keep the candidate set small.
-
-KoutenDB is NoSQL, but it is not a MongoDB-compatible or ad-hoc aggregation
-database. The main difference is that a `ring` is not just a collection name; it
-is part of the read path. KoutenDB expects applications, routes, tenants, import
-rules, or operators to place data into meaningful rings so later reads can avoid
-unrelated working sets. See [How KoutenDB Differs From Typical NoSQL](docs/nosql-positioning.md).
-
-KoutenDB's main bet is not "scan the entire corpus faster." It is "avoid reading
-unneeded data in the first place." Training data, document corpora, and
-application histories tend to grow. Systems that keep scanning wider datasets
-eventually run into physical limits: memory bandwidth, semiconductor supply,
-energy, cooling, cloud cost, and latency. KoutenDB tries to move cost from total
-corpus size toward semantic working-set size.
+into a ring. Reads use ring hierarchy, nearby subrings, retrieval profiles, and
+projections to keep the candidate set small. See [How KoutenDB Differs From
+Typical NoSQL](docs/nosql-positioning.md) for the full model.
 
 ## Documents
 
@@ -65,7 +97,7 @@ corpus size toward semantic working-set size.
 - Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
-- GitHub release draft: [docs/github-release-v0.10.0.md](docs/github-release-v0.10.0.md)
+- GitHub release draft: [docs/github-release-v0.10.1.md](docs/github-release-v0.10.1.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
 - Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
 - Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)
@@ -90,10 +122,9 @@ corpus size toward semantic working-set size.
 
 ## Installation
 
-KoutenDB v0.7.x is a technical preview. The Nim package is available through
-Nimble. Rust, JavaScript / TypeScript, PHP, and Python drivers are published as
-language packages, while the remaining non-Nim language drivers are still
-repository-local foundations.
+KoutenDB is available through Nimble. Rust, JavaScript / TypeScript, PHP, and
+Python drivers are published as language packages, while the remaining non-Nim
+language drivers are still repository-local foundations.
 
 Prerequisites:
 
@@ -311,7 +342,7 @@ their state is persisted in the WAL. Rich scheduling, backoff policy, audit
 history, and flow orchestration are intended to live in adapters such as the
 future `koutendb-flow` integration.
 
-## Retrieval, Memory, and Token Reduction
+## Detailed Retrieval, Memory, Token, and Latency Benchmarks
 
 KoutenDB's strongest benchmark story is working-set reduction. Local reads are
 also in the same broad latency class as existing databases, but the larger claim
@@ -630,6 +661,20 @@ examples/              C demo, cluster demo, benchmark scripts
 examples/compose/      Docker Compose topology demos
 tests/                 unit and smoke tests
 ```
+
+## Operational Scope
+
+KoutenDB v0.10.1 is a public pre-v1 release with persistent storage, recovery,
+transactions, topology controls, TLS-capable transport, a C ABI, published
+drivers, operational verification, and documented local endurance evidence.
+
+It is designed for teams that can express a meaningful locality boundary and
+want to evaluate a smaller-working-set retrieval architecture. Multi-machine
+and multi-region endurance testing, strong-durability endurance testing, and
+broader external production reports remain active validation tracks. See
+[Operational Trials](docs/operational-trials.md),
+[Soak Testing](docs/soak-testing.md), and
+[Feature Status](docs/koutendb-status.md) for the current evidence and roadmap.
 
 ## License
 
