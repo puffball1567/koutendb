@@ -417,6 +417,29 @@ type
   BackupStats* = StoreBackupStats
   LocalityReport* = StoreLocalityReport
 
+  KoutenSegmentRingStatus* = object
+    ring*: string
+    ringKey*: uint64
+    generation*: uint64
+    liveRecords*: int
+    coveredRecords*: int
+    segmentRecords*: int
+    staleRecords*: int
+    staleRatio*: float
+    segmentBytes*: int64
+    indexBytes*: int64
+    packRecommended*: bool
+
+  KoutenSegmentStatus* = object
+    diskBacked*: bool
+    segmentHits*: uint64
+    walFallbacks*: uint64
+    rings*: seq[KoutenSegmentRingStatus]
+    recommendedRings*: int
+    totalSegmentBytes*: int64
+    totalIndexBytes*: int64
+    maxGeneration*: uint64
+
   KoutenOperationalCheck* = object
     name*: string
     ok*: bool
@@ -439,6 +462,7 @@ type
     segmentDirExists*: bool
     segmentFiles*: int
     segmentPackRecords*: int
+    segmentStatus*: KoutenSegmentStatus
     locality*: LocalityReport
     checks*: seq[KoutenOperationalCheck]
 
@@ -1057,6 +1081,29 @@ proc localityReport*(db: KoutenDb): LocalityReport =
     raise newException(ValueError, "cluster connection cannot inspect local WAL locality")
   db.st.localityReport()
 
+proc segmentStatus*(db: KoutenDb; staleRatioThreshold = 0.25;
+                    minStaleRecords = 256): KoutenSegmentStatus =
+  ## Inspect the ring-local derived read layout without modifying it.
+  if db.mode != mEmbedded:
+    raise newException(ValueError,
+      "cluster connection cannot inspect local segment layout")
+  let report = db.st.segmentReport(staleRatioThreshold, minStaleRecords)
+  result.diskBacked = report.diskBacked
+  result.segmentHits = report.segmentHits
+  result.walFallbacks = report.walFallbacks
+  result.recommendedRings = report.recommendedRings
+  result.totalSegmentBytes = report.totalSegmentBytes
+  result.totalIndexBytes = report.totalIndexBytes
+  result.maxGeneration = report.maxGeneration
+  for ring in report.rings:
+    result.rings.add KoutenSegmentRingStatus(
+      ring: db.ringNameOf(ring.ring), ringKey: ring.ring,
+      generation: ring.generation, liveRecords: ring.liveRecords,
+      coveredRecords: ring.coveredRecords,
+      segmentRecords: ring.segmentRecords, staleRecords: ring.staleRecords,
+      staleRatio: ring.staleRatio, segmentBytes: ring.segmentBytes,
+      indexBytes: ring.indexBytes, packRecommended: ring.packRecommended)
+
 proc backup*(db: KoutenDb, dstDir: string): BackupStats =
   ## 現在の embedded Store 状態を compact 済み WAL として dstDir に退避する。
   if db.mode != mEmbedded:
@@ -1103,7 +1150,13 @@ proc operationalVerify*(dataDir: string; diskBacked = true;
                         maxWalBytes: int64 = -1;
                         maxSegmentFiles = -1;
                         maxItems = -1;
-                        maxRings = -1): KoutenOperationalVerifyReport =
+                        maxRings = -1;
+                        maxSegmentBytes: int64 = -1;
+                        maxDeadRecords = -1;
+                        maxDeadRatio = -1.0;
+                        maxSegmentGeneration: int64 = -1;
+                        staleRatioThreshold = 0.25;
+                        minStaleRecords = 256): KoutenOperationalVerifyReport =
   ## Open and inspect a persistent embedded data directory for operational
   ## readiness checks. Opening the store exercises WAL replay, recovery gates,
   ## and the data-directory lock. Segment verification can rebuild the
@@ -1138,8 +1191,8 @@ proc operationalVerify*(dataDir: string; diskBacked = true;
     result.segmentDir = dataDir / "segments"
     result.segmentDirExists = dirExists(result.segmentDir)
     if result.segmentDirExists:
-      for kind, _ in walkDir(result.segmentDir):
-        if kind == pcFile:
+      for kind, path in walkDir(result.segmentDir):
+        if kind == pcFile and path.endsWith(".seg"):
           inc result.segmentFiles
     result.locality = db.localityReport()
     result.addOperationalCheck("open-replay-lock", true, "opened and replayed WAL")
@@ -1163,8 +1216,8 @@ proc operationalVerify*(dataDir: string; diskBacked = true;
       result.segmentDirExists = dirExists(result.segmentDir)
       result.segmentFiles = 0
       if result.segmentDirExists:
-        for kind, _ in walkDir(result.segmentDir):
-          if kind == pcFile:
+        for kind, path in walkDir(result.segmentDir):
+          if kind == pcFile and path.endsWith(".seg"):
             inc result.segmentFiles
       result.addOperationalCheck("segments", true,
         "rebuiltRecords=" & $packStats.records &
@@ -1173,10 +1226,38 @@ proc operationalVerify*(dataDir: string; diskBacked = true;
       result.addOperationalCheck("segments", result.segmentDirExists,
         if result.segmentDirExists: "present files=" & $result.segmentFiles
         else: "missing; run verify --segments to rebuild")
+    result.segmentStatus = db.segmentStatus(staleRatioThreshold,
+                                            minStaleRecords)
     if maxSegmentFiles >= 0:
       result.addOperationalCheck("segment-files-limit",
         result.segmentFiles <= maxSegmentFiles,
         "files=" & $result.segmentFiles & " max=" & $maxSegmentFiles)
+    if maxSegmentBytes >= 0:
+      let totalBytes = result.segmentStatus.totalSegmentBytes +
+                       result.segmentStatus.totalIndexBytes
+      result.addOperationalCheck("segment-bytes-limit",
+        totalBytes <= maxSegmentBytes,
+        "bytes=" & $totalBytes & " max=" & $maxSegmentBytes)
+    if maxDeadRecords >= 0:
+      result.addOperationalCheck("dead-records-limit",
+        result.locality.deadParticleRecords <= maxDeadRecords,
+        "records=" & $result.locality.deadParticleRecords &
+        " max=" & $maxDeadRecords)
+    if maxDeadRatio >= 0:
+      if maxDeadRatio > 1:
+        raise newException(ValueError, "maxDeadRatio must be between 0 and 1")
+      let deadRatio =
+        if result.locality.totalParticleRecords == 0: 0.0
+        else: float(result.locality.deadParticleRecords) /
+              float(result.locality.totalParticleRecords)
+      result.addOperationalCheck("dead-record-ratio-limit",
+        deadRatio <= maxDeadRatio,
+        "ratio=" & $deadRatio & " max=" & $maxDeadRatio)
+    if maxSegmentGeneration >= 0:
+      result.addOperationalCheck("segment-generation-limit",
+        result.segmentStatus.maxGeneration <= maxSegmentGeneration.uint64,
+        "generation=" & $result.segmentStatus.maxGeneration &
+        " max=" & $maxSegmentGeneration)
   finally:
     db.close()
 
@@ -1356,8 +1437,9 @@ proc importJsonl*(db: KoutenDb, path: string, defaultRing = "imported",
       tx = db.st.beginTxn()
       return
     tx.commit()
-    if packSegments and db.st.diskBacked:
-      tx.packCommittedSegments()
+    # Disk-backed transactions update the ring-local segment cache during
+    # commit.  The retained option is accepted for source compatibility.
+    discard packSegments
     if not db.st.diskBacked:
       for p in staged:
         db.vectorBackend.upsert p
@@ -1456,6 +1538,41 @@ proc packDiskBackedSegments*(db: KoutenDb): SegmentPackStats {.discardable.} =
   doAssert db.mode == mEmbedded, "packDiskBackedSegments は組み込みモード専用"
   if db.st.diskBacked:
     result = db.st.rebuildRingSegments()
+
+proc packDiskBackedRing*(db: KoutenDb, ring: string): SegmentPackStats {.discardable.} =
+  ## Merge one ring into a new complete segment generation without rewriting
+  ## unrelated rings.
+  doAssert db.mode == mEmbedded, "packDiskBackedRing は組み込みモード専用"
+  if db.st.diskBacked:
+    result = db.st.packRingSegment(db.ringKey(ring, persist = false))
+
+proc packRecommendedDiskBackedRings*(db: KoutenDb;
+                                     staleRatioThreshold = 0.25;
+                                     minStaleRecords = 256;
+                                     maxRings = 0): SegmentPackStats {.discardable.} =
+  ## Pack only rings selected by the current segment diagnostic. maxRings=0
+  ## means no count limit. Invocation is explicit so applications can schedule
+  ## the I/O during their own maintenance window.
+  if db.mode != mEmbedded:
+    raise newException(ValueError,
+      "cluster connection cannot pack local segment layout")
+  if not db.st.diskBacked:
+    return
+  if maxRings < 0:
+    raise newException(ValueError, "maxRings must be >= 0")
+  let report = db.st.segmentReport(staleRatioThreshold, minStaleRecords)
+  var packed = 0
+  for ring in report.rings:
+    if not ring.packRecommended:
+      continue
+    if maxRings > 0 and packed >= maxRings:
+      break
+    let stats = db.st.packRingSegment(ring.ring)
+    result.records += stats.records
+    result.rings += stats.rings
+    result.bytes += stats.bytes
+    result.removedFiles += stats.removedFiles
+    inc packed
 
 proc configurePlannerBackend*(db: KoutenDb, kind: PlannerBackendKind) =
   ## retrieval planner backend を選ぶ。
@@ -2556,12 +2673,28 @@ proc readRingPrepared(db: KoutenDb, ring: string, opts: KoutenReadOptions;
   if db.canUseRingWindowFastPath(ring, opts):
     let key = db.ringNames[ring]
     let reverse = opts.sortDirection == rsDesc
-    let particles = db.st.particlesByRingWindow(key, take, reverse)
-    for p in particles:
-      let item = KoutenRecord(
-        id: KoutenId(parent: p.parent, epoch: db.tbl.epoch, seq: p.seq,
-                    tWrite: p.tWrite),
-        payload: p.payload, codec: p.codec)
+    var matched: seq[KoutenRecord] = @[]
+    let liveCount = db.st.ringLiveCount(key)
+    if take >= liveCount:
+      # A complete ring read can consume the segment sequentially. This is the
+      # physical-locality path made cheaper by an explicit ring pack.
+      for p in db.st.particlesByRing(key):
+        matched.add KoutenRecord(
+          id: KoutenId(parent: p.parent, epoch: db.tbl.epoch, seq: p.seq,
+                       tWrite: p.tWrite),
+          payload: p.payload, codec: p.codec)
+    else:
+      # Bounded reads keep payload I/O bounded and reuse one segment stream.
+      let particles = db.st.particlesByRingWindow(key, take, reverse)
+      for p in particles:
+        matched.add KoutenRecord(
+          id: KoutenId(parent: p.parent, epoch: db.tbl.epoch, seq: p.seq,
+                       tWrite: p.tWrite),
+          payload: p.payload, codec: p.codec)
+    matched.sort(proc(a, b: KoutenRecord): int = compareReadRecords(a, b, opts))
+    if matched.len > take:
+      matched.setLen(take)
+    for item in matched:
       result.items.add projectReadRecord(item, preparedSelection, hasSelection)
     result.count = result.items.len
     return

@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.11.0 - 2026-08-04
+
+### Added
+
+- Added persistent ring-local segment and sidecar-index generations for
+  disk-backed reads, with bounded point, ring, and stellar read paths.
+- Added explicit `pack-ring`, `segment-status`, and `pack-recommended`
+  maintenance commands plus machine-readable segment metrics.
+- Added segment capacity guardrails for bytes, stale records and ratios,
+  generation counts, and file counts.
+- Added a three-round process-level `SIGKILL` recovery matrix covering strong
+  durability, paired transactions, restart, pack, compact, backup, and restore.
+- Added deterministic pack failpoints and tests around segment replacement and
+  manifest activation boundaries.
+
+### Changed
+
+- Made physical locality a persistent read-layout property: WAL remains the
+  source of truth while validated ring-local segments serve eligible reads.
+- Wrapped new segment records in length-and-CRC32 envelopes while retaining
+  read compatibility with legacy unframed generation-zero segments.
+- Optimized CRC32 with slicing-by-eight tables and a compile-time standard
+  vector check.
+- Made pack selection explicit and operator-controlled instead of starting
+  unpredictable background maintenance.
+
+### Fixed / Hardened
+
+- Detects same-length segment payload corruption and falls back to the complete
+  authoritative WAL ring without returning partial or duplicated output.
+- Rejects valid-looking index offsets that resolve to the wrong record identity.
+- Preserves the previous complete generation when packing is interrupted before
+  manifest activation, and cleans inactive generations after successful pack.
+- Distinguishes an omitted `--max-rings` option from an explicitly invalid
+  negative value.
+- Prevents TLS smoke tests from accidentally connecting to an occupied plain
+  listener by selecting a verified free three-port block and reporting node
+  startup logs on failure.
+
 ## v0.10.1 - 2026-08-04
 
 ### Changed

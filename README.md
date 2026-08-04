@@ -97,7 +97,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
-- GitHub release draft: [docs/github-release-v0.10.1.md](docs/github-release-v0.10.1.md)
+- GitHub release notes: [docs/github-release-v0.11.0.md](docs/github-release-v0.11.0.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
 - Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
 - Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)
@@ -664,9 +664,10 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.10.1 is a public pre-v1 release with persistent storage, recovery,
+KoutenDB v0.11.0 is a public pre-v1 release with persistent storage, recovery,
 transactions, topology controls, TLS-capable transport, a C ABI, published
-drivers, operational verification, and documented local endurance evidence.
+drivers, ring-local physical segments, operational verification, and documented
+local endurance and forced-crash recovery evidence.
 
 It is designed for teams that can express a meaningful locality boundary and
 want to evaluate a smaller-working-set retrieval architecture. Multi-machine

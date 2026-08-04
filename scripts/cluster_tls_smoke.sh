@@ -5,7 +5,39 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 DATA="${TMPDIR:-/tmp}/koutendb-cluster-tls-smoke-$$"
-PORT="${KOUTEN_TLS_SMOKE_PORT:-$((17651 + ($$ % 1000)))}"
+
+port_block_available() {
+  local base="$1"
+  local offset
+  for offset in 0 1 2; do
+    if nc -z 127.0.0.1 "$((base + offset))" >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+if [[ -n "${KOUTEN_TLS_SMOKE_PORT:-}" ]]; then
+  PORT="$KOUTEN_TLS_SMOKE_PORT"
+  if ! port_block_available "$PORT"; then
+    echo "[cluster-tls] requested port block ${PORT}-$((PORT + 2)) is already in use" >&2
+    exit 1
+  fi
+else
+  PORT=""
+  for attempt in $(seq 0 99); do
+    candidate=$((30000 + (($$ + attempt * 3) % 30000)))
+    if port_block_available "$candidate"; then
+      PORT="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$PORT" ]]; then
+    echo "[cluster-tls] could not find three consecutive free ports" >&2
+    exit 1
+  fi
+fi
+
 PEERS="localhost:${PORT},localhost:$((PORT + 1)),localhost:$((PORT + 2))"
 CERT="$DATA/server.crt"
 KEY="$DATA/server.key"
@@ -76,10 +108,24 @@ for _ in $(seq 1 60); do
   sleep 0.1
 done
 
+for id in 0 1 2; do
+  if ! kill -0 "${PIDS[$id]}" >/dev/null 2>&1; then
+    echo "[cluster-tls] node$id exited before becoming healthy" >&2
+    cat "$DATA/node$id.log" >&2
+    exit 1
+  fi
+done
+
 echo "[cluster-tls] health over TLS"
-src/koutencli health --peers="$PEERS" --user=alice --password=secret \
-  --secret-key=shared-secret --tls --tls-ca="$CA_CERT" \
-  --tls-server-name=localhost
+if ! src/koutencli health --peers="$PEERS" --user=alice --password=secret \
+    --secret-key=shared-secret --tls --tls-ca="$CA_CERT" \
+    --tls-server-name=localhost; then
+  for id in 0 1 2; do
+    echo "[cluster-tls] node$id log:" >&2
+    cat "$DATA/node$id.log" >&2
+  done
+  exit 1
+fi
 
 echo "[cluster-tls] put JSON over TLS"
 PUT_OUTPUT="$(src/koutencli put --peers="$PEERS" --user=alice --password=secret \

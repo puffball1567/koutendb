@@ -1560,7 +1560,7 @@ suite "永続化":
     finally:
       removeDir(root)
 
-  test "disk-backed segment pack skips tiny rings and keeps WAL-offset reads":
+  test "disk-backed segment pack keeps every ring on the local read path":
     let root = createTempDir("koutendb", "disk-backed-segment-threshold")
     let dir = root / "db"
     try:
@@ -1570,8 +1570,8 @@ suite "永続化":
         discard db.put(%*{"title": "large", "n": i}, ring = "docs/large")
 
       let packed = db.packDiskBackedSegments()
-      check packed.records == 16
-      check packed.rings == 1
+      check packed.records == 17
+      check packed.rings == 2
       check db.readRing("users/user-00000001").items.len == 1
       check db.get(tiny).contains("tiny")
       check db.readRing("docs/large", KoutenReadOptions(
@@ -1602,6 +1602,52 @@ suite "永続化":
     finally:
       removeDir(root)
 
+  test "disk-backed public ring windows preserve bounded and complete read semantics":
+    let root = createTempDir("koutendb", "disk-backed-public-window")
+    let dir = root / "db"
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      var ids: seq[KoutenId] = @[]
+      for i in 0 ..< 8:
+        ids.add db.put(%*{"n": i, "keep": true}, ring = "docs/window")
+      discard db.packDiskBackedRing("docs/window")
+
+      var asc = defaultReadOptions()
+      asc.limit = 3
+      asc.sortField = "id"
+      asc.sortDirection = rsAsc
+      check db.readRing("docs/window", asc).items.mapIt(it.id.toRaw.seq) ==
+        @[ids[0].toRaw.seq, ids[1].toRaw.seq, ids[2].toRaw.seq]
+
+      var desc = asc
+      desc.sortDirection = rsDesc
+      check db.readRing("docs/window", desc).items.mapIt(it.id.toRaw.seq) ==
+        @[ids[7].toRaw.seq, ids[6].toRaw.seq, ids[5].toRaw.seq]
+
+      db.update(ids[0], %*{"n": 100, "keep": true})
+      db.remove(ids[1])
+      var complete = defaultReadOptions()
+      complete.limit = 100
+      complete.sortField = "id"
+      complete.sortDirection = rsAsc
+      complete.selection = "{ n }"
+      let page = db.readRing("docs/window", complete)
+      check page.items.len == 7
+      check page.items[0].id.toRaw.seq == ids[0].toRaw.seq
+      check parseJson(page.items[0].payload) == %*{"n": 100}
+      check page.items.allIt(it.id.toRaw.seq != ids[1].toRaw.seq)
+      check db.segmentStatus().segmentHits > 0
+      db.close()
+
+      var reopened = open(dataDir = dir, diskBacked = true)
+      let reopenedPage = reopened.readRing("docs/window", complete)
+      check reopenedPage.items.mapIt(it.id.toRaw.seq) ==
+        page.items.mapIt(it.id.toRaw.seq)
+      check reopenedPage.items.mapIt(it.payload) == page.items.mapIt(it.payload)
+      reopened.close()
+    finally:
+      removeDir(root)
+
   test "operationalVerify opens WAL and reports segment/locality health":
     let root = createTempDir("koutendb", "operational-verify")
     let dir = root / "db"
@@ -1628,6 +1674,8 @@ suite "永続化":
       check report.locality.ringRuns == 3
       check report.locality.localityScore == 1.0
       check report.segmentDirExists
+      check report.segmentStatus.rings.len == 3
+      check report.segmentStatus.totalSegmentBytes > 0
       check report.checks.len >= 4
       check report.checks.anyIt(it.name == "open-replay-lock" and it.ok)
       check report.checks.anyIt(it.name == "segments" and it.ok)
@@ -1648,6 +1696,86 @@ suite "永続化":
                                              maxSegmentFiles = 0)
       check not cappedSegments.ok
       check cappedSegments.checks.anyIt(it.name == "segment-files-limit" and not it.ok)
+
+      let cappedSegmentBytes = operationalVerify(dir, maxSegmentBytes = 1)
+      check not cappedSegmentBytes.ok
+      check cappedSegmentBytes.checks.anyIt(
+        it.name == "segment-bytes-limit" and not it.ok)
+
+      let cappedGeneration = operationalVerify(dir,
+                                                maxSegmentGeneration = 0)
+      check cappedGeneration.ok
+    finally:
+      removeDir(root)
+
+  test "segment status and recommended packing are explicit and ring-local":
+    let root = createTempDir("koutendb", "segment-recommended-pack")
+    let dir = root / "db"
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      let hot = db.put(%*{"value": 0}, ring = "ops/hot")
+      let warm = db.put(%*{"value": 0}, ring = "ops/warm")
+      discard db.put(%*{"value": 0}, ring = "ops/cold")
+      for i in 1 .. 8:
+        db.update(hot, %*{"value": i})
+        db.update(warm, %*{"value": i})
+      let before = db.segmentStatus(staleRatioThreshold = 0.5,
+                                    minStaleRecords = 4)
+      check before.recommendedRings == 2
+      check before.rings.anyIt(it.ring == "ops/hot" and it.packRecommended)
+      check before.rings.anyIt(it.ring == "ops/warm" and it.packRecommended)
+      check before.rings.anyIt(it.ring == "ops/cold" and not it.packRecommended)
+      expect ValueError:
+        discard db.packRecommendedDiskBackedRings(maxRings = -1)
+
+      let packed = db.packRecommendedDiskBackedRings(
+        staleRatioThreshold = 0.5, minStaleRecords = 4, maxRings = 1)
+      check packed.rings == 1
+      check packed.records == 1
+      let limited = db.segmentStatus(staleRatioThreshold = 0.5,
+                                     minStaleRecords = 4)
+      check limited.recommendedRings == 1
+      check limited.rings.countIt(it.packRecommended) == 1
+      check limited.rings.anyIt(it.ring == "ops/cold" and it.generation == 0)
+
+      let remainder = db.packRecommendedDiskBackedRings(
+        staleRatioThreshold = 0.5, minStaleRecords = 4)
+      check remainder.rings == 1
+      check remainder.records == 1
+      let after = db.segmentStatus(staleRatioThreshold = 0.5,
+                                   minStaleRecords = 4)
+      check after.recommendedRings == 0
+      check after.rings.anyIt(it.ring == "ops/hot" and it.generation == 1)
+      check after.rings.anyIt(it.ring == "ops/warm" and it.generation == 1)
+      check after.rings.anyIt(it.ring == "ops/cold" and it.generation == 0)
+      check db.get(hot).contains("\"value\":8")
+      check db.get(warm).contains("\"value\":8")
+      check db.segmentStatus().segmentHits > 0
+      db.close()
+
+      let deadCapped = operationalVerify(dir, maxDeadRecords = 0)
+      check not deadCapped.ok
+      check deadCapped.checks.anyIt(
+        it.name == "dead-records-limit" and not it.ok)
+      let ratioCapped = operationalVerify(dir, maxDeadRatio = 0.0)
+      check not ratioCapped.ok
+      check ratioCapped.checks.anyIt(
+        it.name == "dead-record-ratio-limit" and not it.ok)
+      let generationCapped = operationalVerify(dir,
+                                                maxSegmentGeneration = 0)
+      check not generationCapped.ok
+      check generationCapped.checks.anyIt(
+        it.name == "segment-generation-limit" and not it.ok)
+      let uncapped = operationalVerify(dir)
+      let exact = operationalVerify(
+        dir,
+        maxSegmentBytes = uncapped.segmentStatus.totalSegmentBytes +
+          uncapped.segmentStatus.totalIndexBytes,
+        maxDeadRecords = uncapped.locality.deadParticleRecords,
+        maxDeadRatio = float(uncapped.locality.deadParticleRecords) /
+          float(uncapped.locality.totalParticleRecords),
+        maxSegmentGeneration = uncapped.segmentStatus.maxGeneration.int64)
+      check exact.ok
     finally:
       removeDir(root)
 

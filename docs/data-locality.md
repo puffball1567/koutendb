@@ -99,8 +99,27 @@ makes compaction locality-aware for the primary ring layout:
 - ring metadata and durable queues are written in deterministic order;
 - the append-only operational WAL remains simple between compactions.
 
-This is the first step toward answering locality questions with measurements
-rather than only design language.
+Disk-backed stores also maintain a ring-local segment read cache. A committed
+write remains durable in the WAL first, then appends its payload and a
+WAL-offset sidecar index to that ring's segment. On restart, KoutenDB validates
+the sidecar against the live WAL offsets and reuses the segment rather than
+rewriting every segment from the WAL. A damaged segment or index never becomes
+the source of truth: the read falls back to the WAL, and an invalid index is
+rebuilt from it.
+
+New segment records use the same length-and-checksum envelope as current WAL
+records. This detects payload corruption even when the record identity and
+version fields remain syntactically valid. Legacy unframed segments remain
+readable and are upgraded by an explicit pack or rebuild.
+
+An explicit per-ring pack writes a new complete segment generation and index,
+then atomically switches a manifest. Interrupted packing therefore keeps the
+previous complete generation active; unrelated rings are not rewritten. The
+older global segment rebuild remains available as a recovery and verification
+operation.
+
+This turns locality into a persistent read-layout property, not only a WAL
+report, while keeping WAL recovery authoritative.
 
 ## Locality Report
 
@@ -201,15 +220,83 @@ the invariant line:
   physical runs;
 - `beforeLatencyUs` / `afterLatencyUs`: repeated read micro-samples.
 
+For disk-backed segment generations, run:
+
+```bash
+nim c -d:release -r examples/segment_layout_bench.nim
+```
+
+The benchmark builds the same interleaved-update dataset in two fresh data
+directories, packs only one copy, and compares point reads, full ring reads,
+and stellar reads. It also asserts that each result shape is identical before
+and after packing.
+
+The default case uses three related rings, `1,000` live records per ring,
+`10,000` interleaved updates, and `20` repeated samples. On the local Linux
+development machine used for this change, one repeated run measured:
+
+| Path | Before pack | After pack |
+| --- | ---: | ---: |
+| Point get | 12.51 us | 11.34 us |
+| Direct ring segment scan | 34.07 ms | 3.50 ms |
+| Public `readRing` | 33.87 ms | 3.21 ms |
+| Public `readStellar` | 40.17 ms | 10.68 ms |
+
+The point, ring, and stellar result shapes were identical before and after
+packing. These measurements include validation of the checksummed segment
+record envelopes. Public full-ring reads use a sequential segment pass when the
+requested window covers the ring; bounded reads reuse one segment stream
+instead of opening the segment once per record.
+
+This is a local micro-measurement, not a universal latency claim. The benchmark
+reports physical scanning and public API shaping separately so regressions in
+either layer remain visible.
+
+## Pack Diagnostics
+
+Inspect the active segment generation without rewriting it:
+
+```bash
+kouten segment-status --data=/var/lib/koutendb --json
+```
+
+Each ring reports live, covered, physical, and stale record counts, stale ratio,
+segment/index bytes, active generation, and `packRecommended`. The default
+recommendation requires at least 256 stale records and a stale ratio of 0.25.
+Both thresholds are operator-controlled:
+
+```bash
+kouten segment-status --data=/var/lib/koutendb \
+  --min-stale-records=1000 --stale-ratio=0.40
+```
+
+KoutenDB does not start background packing from this diagnostic. Applications
+can schedule explicit maintenance during a suitable I/O window:
+
+```bash
+kouten pack-recommended --data=/var/lib/koutendb \
+  --min-stale-records=1000 --stale-ratio=0.40 --max-rings=8
+```
+
+Successful packing atomically activates the new manifest generation and removes
+inactive files for that ring. A pre-manifest interruption leaves the prior
+generation active.
+
 ## Current Scope
 
 This is not a full LSM-tree, B+ tree, or columnar layout. KoutenDB's current
 layout bet is simpler:
 
 1. Use rings to reduce the logical working set before retrieval.
-2. Keep normal writes append-only.
-3. Use compaction to restore physical ring grouping for live records.
-4. Measure the effect directly through locality metrics.
+2. Commit normal writes to an append-only WAL, then update only the matching
+   ring's derived read segment.
+3. Reuse validated segments after restart and fall back to WAL for any cache
+   mismatch or corruption.
+4. Pack one ring into a new complete generation when an operator chooses to
+   merge its accumulated updates; switch generations through a manifest.
+5. Use global compaction to rewrite the durable WAL snapshot and regenerate
+   its derived segments.
+6. Measure the effect directly through locality metrics and query invariants.
 
 Secondary access paths should avoid fighting this primary layout. In the current
 design, secondary mechanisms should remain hints, projections, or lookup maps
@@ -235,10 +322,13 @@ The next locality work should add benchmark cases for:
 - larger adversarial datasets for delete-heavy workloads;
 - larger adversarial datasets for backfill-heavy workloads;
 - larger adversarial datasets for hot/cold ring skew;
-- larger datasets where OS page cache and SSD read behavior become visible.
+- larger datasets where OS page cache and SSD read behavior become visible;
+- cold-cache and direct-I/O measurements on multiple SSD/filesystem types;
+- long-running measurements of automatic maintenance schedules chosen by
+  operators.
 
-The v0.6 locality-validation branch starts adding these cases to the runnable
-demo and store test matrix. The current invariant checks verify that compaction
-does not change the logical result set while locality metrics improve. Larger
-OS page-cache and SSD-sensitive benchmarks still need separate benchmark runs
-because tiny local unit tests cannot prove hardware-level locality behavior.
+The runnable demo and store test matrix cover these workload shapes at a bounded
+size. The current invariant checks verify that compaction does not change the
+logical result set while locality metrics improve. Larger OS page-cache and
+SSD-sensitive benchmarks still need separate benchmark runs because tiny local
+unit tests cannot prove hardware-level locality behavior.

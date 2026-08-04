@@ -59,6 +59,24 @@ docker compose -f examples/compose/operational-trial.compose.yml --profile tools
   'koutencli verify --data=/data/app-main --segments --json'
 ```
 
+Inspect pack pressure without modifying the data:
+
+```sh
+docker compose -f examples/compose/operational-trial.compose.yml --profile tools run --rm kouten-tools \
+  'koutencli segment-status --data=/data/app-main --json'
+```
+
+For a scheduled maintenance window, pack only rings selected by the same
+thresholds:
+
+```sh
+docker compose -f examples/compose/operational-trial.compose.yml --profile tools run --rm kouten-tools \
+  'koutencli pack-recommended --data=/data/app-main --max-rings=8'
+```
+
+The command is explicit. KoutenDB does not start unpredictable background
+packing from a read-only diagnostic.
+
 Create and verify a backup:
 
 ```sh
@@ -93,6 +111,8 @@ This trial proves the local operational loop:
 - direct data-dir verification exercises WAL replay and the data-dir lock;
 - segment layout can be rebuilt from the WAL source of truth;
 - backups can be created and verified before restore;
+- ring-local segment pressure can be measured and packed under an explicit
+  operator-controlled maintenance budget;
 - audit events are written to append-only JSONL for operational inspection,
   including server-side auth, authz, and broad retrieve guard events on
   persistent `koutend` nodes.

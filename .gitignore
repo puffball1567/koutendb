@@ -38,6 +38,7 @@ tests/tcluster_wire_fuzz
 tests/tcluster_retrieve_routing
 tests/thandoff_ordering
 tests/thandoff_reclamation
+tests/tsegment_failpoints
 third_party/faiss/build/
 third_party/faiss/cmake-build-*/
 third_party/faiss/**/*.o
