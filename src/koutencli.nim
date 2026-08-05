@@ -40,7 +40,7 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-rust",
       packageName: "koutendb",
       installHint: "cargo add koutendb",
-      notes: "Published on crates.io as koutendb v0.1.3. Wraps the KoutenDB C ABI."
+      notes: "Published on crates.io as koutendb v0.1.5. Wraps the KoutenDB C ABI."
     ),
     DriverInfo(
       name: "node",
@@ -2099,31 +2099,7 @@ proc runSegmentStatus(dataDir: string; staleRatio: float;
       echo &"segmentRingPackRecommended{{ringKey=\"{ring.ringKey}\"}} {int(ring.packRecommended)}"
     return
   if jsonFormat:
-    var rings = newJArray()
-    for ring in report.rings:
-      rings.add %*{
-        "ring": ring.ring,
-        "ringKey": $ring.ringKey,
-        "generation": $ring.generation,
-        "liveRecords": ring.liveRecords,
-        "coveredRecords": ring.coveredRecords,
-        "segmentRecords": ring.segmentRecords,
-        "staleRecords": ring.staleRecords,
-        "staleRatio": ring.staleRatio,
-        "segmentBytes": ring.segmentBytes,
-        "indexBytes": ring.indexBytes,
-        "packRecommended": ring.packRecommended
-      }
-    echo pretty(%*{
-      "diskBacked": report.diskBacked,
-      "recommendedRings": report.recommendedRings,
-      "totalSegmentBytes": report.totalSegmentBytes,
-      "totalIndexBytes": report.totalIndexBytes,
-      "maxGeneration": $report.maxGeneration,
-      "segmentHits": $report.segmentHits,
-      "walFallbacks": $report.walFallbacks,
-      "rings": rings
-    })
+    echo pretty(segmentStatusJson(report))
     return
   echo &"segment-status OK recommended={report.recommendedRings} segmentBytes={report.totalSegmentBytes} indexBytes={report.totalIndexBytes} maxGeneration={report.maxGeneration}"
   for ring in report.rings:
@@ -2140,6 +2116,62 @@ proc runPackRecommended(dataDir: string; durability: KoutenDurability;
                                                 effectiveMaxRings)
   db.close()
   echo &"pack-recommended OK records={stats.records} rings={stats.rings} bytes={stats.bytes} removedFiles={stats.removedFiles}"
+
+proc printSegmentMaintenance(result: KoutenSegmentMaintenanceResult;
+                             policy: KoutenSegmentMaintenancePolicy;
+                             jsonFormat: bool) =
+  if jsonFormat:
+    echo pretty(segmentMaintenanceJson(result, policy))
+    return
+  echo &"segment-maintenance {result.outcome} selected={result.selectedRings} packed={result.packedRings} records={result.recordsRewritten} bytes={result.bytesRewritten} elapsedMs={result.elapsedMs} stopReason={result.stopReason}"
+  for decision in result.decisions:
+    echo &"ring={decision.ring} selected={decision.selected} recommended={decision.recommended} reason={decision.reason} stale={decision.staleRecords} staleRatio={decision.staleRatio:.6f} estimatedBytes={decision.estimatedBytes} rewrittenBytes={decision.bytesRewritten} error={decision.error}"
+
+proc runSegmentMaintenance(dataDir: string; durability: KoutenDurability;
+                           staleRatio: float; minStaleRecords, maxRings: int;
+                           maxBytes, maxElapsedMs: int64; dryRun,
+                           jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError,
+      "segment maintenance requires --data=DIR")
+  let policy = KoutenSegmentMaintenancePolicy(
+    staleRatioThreshold: staleRatio,
+    minStaleRecords: minStaleRecords,
+    maxRings: maxRings,
+    maxBytes: maxBytes,
+    maxElapsedMs: maxElapsedMs)
+  var db = open(dataDir = dataDir, durability = durability, diskBacked = true)
+  var result: KoutenSegmentMaintenanceResult
+  try:
+    if not dryRun:
+      discard db.recoverInterruptedSegmentMaintenance()
+    result = db.runSegmentMaintenance(policy, dryRun = dryRun)
+  finally:
+    db.close()
+  printSegmentMaintenance(result, policy, jsonFormat)
+
+proc runSegmentMaintenanceStatus(dataDir: string; jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError, "maintenance-status requires --data=DIR")
+  var db = open(dataDir = dataDir, diskBacked = true)
+  var status: JsonNode
+  try:
+    discard db.recoverInterruptedSegmentMaintenance()
+    status = db.segmentMaintenanceStatus()
+  finally:
+    db.close()
+  if status.kind == JNull:
+    if jsonFormat: echo "null"
+    else: echo "maintenance-status no-record"
+  elif jsonFormat:
+    echo pretty(status)
+  else:
+    let outcome = status{"outcome"}.getStr()
+    let startedAt = status{"startedAt"}.getFloat()
+    let finishedAt = status{"finishedAt"}.getFloat()
+    let packedRings = status{"packedRings"}.getInt()
+    let stopReason = status{"stopReason"}.getStr()
+    echo &"maintenance-status {outcome} startedAt={startedAt} finishedAt={finishedAt} packed={packedRings} stopReason={stopReason}"
 
 proc runLocality(dataDir: string, metricsFormat: bool) =
   if dataDir.len == 0:
@@ -3099,6 +3131,9 @@ proc printHelp() =
   echo "  kouten pack-ring --data=DIR --ring=RING [--durability=buffered|strong]"
   echo "  kouten segment-status --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--metrics|--json]"
   echo "  kouten pack-recommended --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=N]"
+  echo "  kouten maintenance-plan --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]"
+  echo "  kouten maintenance-run --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]"
+  echo "  kouten maintenance-status --data=DIR [--json]"
   echo "  kouten locality --data=DIR [--metrics]"
   echo "  kouten backup --data=DIR --backup=DIR [--durability=buffered|strong]"
   echo "  kouten restore --backup=DIR --data=DIR [--overwrite] [--durability=buffered|strong]"
@@ -3180,6 +3215,8 @@ proc main() =
   var maxItems = -1
   var maxRings = -1
   var maxRingsSet = false
+  var maintenanceMaxBytes = 64'i64 * 1024 * 1024
+  var maintenanceMaxElapsedMs = 1000'i64
   var username = ""
   var password = ""
   var passwordFile = ""
@@ -3380,6 +3417,9 @@ proc main() =
       of "max-rings":
         maxRings = parseInt(val)
         maxRingsSet = true
+      of "max-bytes": maintenanceMaxBytes = parseBiggestInt(val).int64
+      of "max-elapsed-ms":
+        maintenanceMaxElapsedMs = parseBiggestInt(val).int64
       of "execute": executeDriverInstall = true
       of "metrics": metricsFormat = true
       of "json": jsonFormat = true
@@ -3559,6 +3599,18 @@ proc main() =
   of "pack-recommended": runPackRecommended(dataDir, durability, staleRatio,
                                               minStaleRecords, maxRings,
                                               maxRingsSet)
+  of "maintenance-plan":
+    runSegmentMaintenance(dataDir, durability, staleRatio, minStaleRecords,
+                          (if maxRingsSet: maxRings else: 1),
+                          maintenanceMaxBytes, maintenanceMaxElapsedMs,
+                          true, jsonFormat)
+  of "maintenance-run":
+    runSegmentMaintenance(dataDir, durability, staleRatio, minStaleRecords,
+                          (if maxRingsSet: maxRings else: 1),
+                          maintenanceMaxBytes, maintenanceMaxElapsedMs,
+                          false, jsonFormat)
+  of "maintenance-status":
+    runSegmentMaintenanceStatus(dataDir, jsonFormat)
   of "locality": runLocality(dataDir, metricsFormat)
   of "backup": runBackup(dataDir, backupDir, durability)
   of "restore": runRestore(backupDir, dataDir, overwrite, durability)

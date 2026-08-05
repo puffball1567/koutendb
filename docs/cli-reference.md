@@ -357,6 +357,9 @@ For scripts and reproducible examples, prefer the single-shot commands above.
 | `pack-ring` | `--data=DIR --ring=RING` | Merge one disk-backed ring into a new local segment generation. |
 | `segment-status` | `--data=DIR`; optional `--stale-ratio=F`, `--min-stale-records=N`, `--metrics`, `--json` | Inspect ring-local generations, stale ratios, bytes, and pack recommendations without rewriting data. |
 | `pack-recommended` | `--data=DIR`; optional `--stale-ratio=F`, `--min-stale-records=N`, `--max-rings=N` | Explicitly pack only rings selected by the current diagnostic. |
+| `maintenance-plan` | `--data=DIR`; bounded maintenance thresholds and budgets; optional `--json` | Dry-run the exact count/byte selection used by maintenance execution. |
+| `maintenance-run` | Same as `maintenance-plan` | Execute one bounded maintenance pass and durably record its outcome. |
+| `maintenance-status` | `--data=DIR`; optional `--json` | Read the last durable maintenance result and recover a stale `running` marker as `interrupted`. |
 | `locality` | `--data=DIR`; optional `--metrics` | Inspect physical WAL locality by ring. |
 | `backup` | `--data=DIR --backup=DIR` | Create backup. |
 | `restore` | `--backup=DIR --data=DIR` | Restore backup. |
@@ -419,7 +422,10 @@ Recovery commands accept `--mirror`, `--universe-config`, `--universe`,
 | `verify --data=DIR [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N]` | Open/replay a persistent data directory and check WAL, metadata, locality, optional capacity thresholds, and optional segment rebuild health. |
 | `pack-ring --data=DIR --ring=RING [--durability=buffered|strong]` | Build a new complete disk-backed segment generation for one ring and atomically activate it through the segment manifest. |
 | `segment-status --data=DIR [--metrics|--json]` | Report active generation, live/covered/stale records, bytes, runtime segment hits/WAL fallbacks, and the current pack recommendation for every ring. |
-| `pack-recommended --data=DIR [--max-rings=N]` | Apply the same recommendation thresholds explicitly; no background pack is started automatically. |
+| `pack-recommended --data=DIR [--max-rings=N]` | Apply the same recommendation thresholds explicitly. |
+| `maintenance-plan --data=DIR [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]` | Explain which rings one bounded run would select or skip. |
+| `maintenance-run --data=DIR [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]` | Execute the bounded plan. A limit interruption leaves the previous segment generation active. |
+| `maintenance-status --data=DIR [--json]` | Show the durable result, including stable per-ring reason codes. |
 | `verify --backup=DIR` | Verify backup readability before restore. |
 | `verify --server-config=FILE` | Validate a `koutend` server JSON config before startup. |
 | `doctor --server-config=FILE --json` | Emit the same server config checks as JSON. |

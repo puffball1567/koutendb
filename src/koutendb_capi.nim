@@ -106,6 +106,13 @@ proc copyStringToShared(s: string): pointer =
   if s.len > 0:
     copyMem(result, unsafeAddr s[0], s.len)
 
+proc copyJsonToShared(node: JsonNode; outLen: ptr csize_t): pointer =
+  if outLen == nil:
+    raise newException(ValueError, "out_len is nil")
+  let encoded = $node
+  outLen[] = csize_t(encoded.len)
+  copyStringToShared(encoded)
+
 proc toC(id: KoutenId): KoutenCId =
   let (p, e, s, t) = id.toRaw
   KoutenCId(parent: p, epoch: e, seq: s, t_write: t)
@@ -190,6 +197,28 @@ proc kouten_open_dir(nodes: cint, dir: cstring): pointer {.exportc, cdecl, dynli
     initRuntime()
     clearError()
     let db = koutendb.open(int(nodes), dataDir = cstringToString(dir, "dir"))
+    return registerHandle(db)
+  except CatchableError as e:
+    setError(e)
+    return nil
+
+proc kouten_open_dir_options(nodes: cint, dir: cstring,
+                             durabilityStrong, diskBacked: cint): pointer
+                             {.exportc, cdecl, dynlib.} =
+  ## Additive embedded-open path for production durability and ring-local
+  ## segment reads. Boolean options are strict to catch FFI declaration bugs.
+  try:
+    initRuntime()
+    clearError()
+    if durabilityStrong notin [cint(0), cint(1)]:
+      raise newException(ValueError, "durability_strong must be 0 or 1")
+    if diskBacked notin [cint(0), cint(1)]:
+      raise newException(ValueError, "disk_backed must be 0 or 1")
+    let db = koutendb.open(
+      int(nodes),
+      dataDir = cstringToString(dir, "dir", allowNil = false),
+      durability = if durabilityStrong == 0: durBuffered else: durStrong,
+      diskBacked = diskBacked != 0)
     return registerHandle(db)
   except CatchableError as e:
     setError(e)
@@ -412,6 +441,48 @@ proc kouten_get_codec(h: pointer, id: KoutenCId, outLen: ptr csize_t,
     setError(e)
     nil
 
+proc kouten_exists(h: pointer, id: KoutenCId): cint
+                  {.exportc, cdecl, dynlib.} =
+  ## Returns 1 when present, 0 when absent, and KOUTEN_ERR on API failure.
+  try:
+    clearError()
+    if ensureHandle(h).exists(fromC(id)): cint(1) else: cint(0)
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_update(h: pointer, id: KoutenCId, data: pointer,
+                   len: csize_t): cint {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).update(fromC(id), bytesFromC(data, len))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_update_codec(h: pointer, id: KoutenCId, data: pointer,
+                         len: csize_t, codec: cint): cint
+                         {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).update(fromC(id), encodedPayload(bytesFromC(data, len),
+      codecFromC(codec)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_remove(h: pointer, id: KoutenCId): cint
+                   {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).remove(fromC(id))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
 proc kouten_free(p: pointer) {.exportc, cdecl, dynlib.} =
   if p != nil:
     deallocShared(p)
@@ -616,6 +687,84 @@ proc kouten_atlas(h: pointer, queryVec: ptr cfloat, queryVecLen: csize_t,
   except CatchableError as e:
     setError(e)
     return nil
+
+proc maintenancePolicyFromC(staleRatio: cdouble, minStaleRecords,
+                            maxRings: cint, maxBytes,
+                            maxElapsedMs: int64):
+                            KoutenSegmentMaintenancePolicy =
+  result = KoutenSegmentMaintenancePolicy(
+    staleRatioThreshold: float(staleRatio),
+    minStaleRecords: int(minStaleRecords),
+    maxRings: int(maxRings),
+    maxBytes: maxBytes,
+    maxElapsedMs: maxElapsedMs)
+  validateSegmentMaintenancePolicy(result)
+
+proc kouten_segment_status_json(h: pointer, staleRatio: cdouble,
+                                minStaleRecords: cint,
+                                outLen: ptr csize_t): pointer
+                                {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let status = ensureHandle(h).segmentStatus(float(staleRatio),
+                                               int(minStaleRecords))
+    copyJsonToShared(segmentStatusJson(status), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_segment_maintenance_plan_json(
+    h: pointer, staleRatio: cdouble, minStaleRecords, maxRings: cint,
+    maxBytes, maxElapsedMs: int64, outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let policy = maintenancePolicyFromC(staleRatio, minStaleRecords,
+                                        maxRings, maxBytes, maxElapsedMs)
+    let maintenance = ensureHandle(h).planSegmentMaintenance(policy)
+    copyJsonToShared(segmentMaintenanceJson(maintenance, policy), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_segment_maintenance_run_json(
+    h: pointer, staleRatio: cdouble, minStaleRecords, maxRings: cint,
+    maxBytes, maxElapsedMs: int64, outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let policy = maintenancePolicyFromC(staleRatio, minStaleRecords,
+                                        maxRings, maxBytes, maxElapsedMs)
+    let maintenance = ensureHandle(h).runSegmentMaintenance(policy)
+    copyJsonToShared(segmentMaintenanceJson(maintenance, policy), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_segment_maintenance_status_json(h: pointer,
+                                            outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    copyJsonToShared(ensureHandle(h).segmentMaintenanceStatus(), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_segment_maintenance_recover(h: pointer,
+                                        outRecovered: ptr cint): cint
+    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outRecovered == nil:
+      raise newException(ValueError, "out_recovered is nil")
+    outRecovered[] =
+      if ensureHandle(h).recoverInterruptedSegmentMaintenance(): cint(1)
+      else: cint(0)
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
 
 proc kouten_locate(h: pointer, id: KoutenCId,
                   at: cdouble): cint {.exportc, cdecl, dynlib.} =

@@ -93,6 +93,13 @@ void   kouten_init(void);
 void  *kouten_open(int nodes);
 /* 永続化つきで開く。dir の追記ログに書き、再オープンで復元される。 */
 void  *kouten_open_dir(int nodes, const char *dir);
+/* Additive persistent-open variant. Strict boolean options accept only 0/1.
+ * disk_backed enables the ring-local segment read layout required by segment
+ * diagnostics and bounded maintenance. */
+void  *kouten_open_dir_options(int nodes,
+                               const char *dir,
+                               int durability_strong,
+                               int disk_backed);
 /* クラスタへ接続。peers = "host:port,host:port,..."（koutend の並び順） */
 void  *kouten_connect(const char *peers);
 /* 認証つきクラスタ接続。不要な引数は NULL または空文字でよい。 */
@@ -155,6 +162,13 @@ int    kouten_put_vec_codec(void *db, const char *ring,
 void  *kouten_get(void *db, kouten_id id, size_t *out_len);
 /* Returns payload bytes and persisted codec. Buffer ownership matches kouten_get. */
 void  *kouten_get_codec(void *db, kouten_id id, size_t *out_len, int *out_codec);
+/* Returns 1 when present, 0 when absent, and KOUTEN_ERR on API failure. */
+int    kouten_exists(void *db, kouten_id id);
+int    kouten_update(void *db, kouten_id id,
+                     const void *data, size_t len);
+int    kouten_update_codec(void *db, kouten_id id,
+                           const void *data, size_t len, int codec);
+int    kouten_remove(void *db, kouten_id id);
 void   kouten_free(void *p);
 /* 複数 ID のまとめ読み。戻り値は kouten_batch_get_free で解放。 */
 kouten_batch_result *kouten_batch_get(void *db, const kouten_id *ids, size_t ids_len);
@@ -201,6 +215,31 @@ void   kouten_retrieve_free(kouten_retrieve_result *r);
 /* Atlas JSON。LLM/agent が最初に読む galaxy/ring map。戻り値は kouten_free で解放。 */
 void  *kouten_atlas(void *db, const float *query_vec, size_t query_vec_len,
                    int max_centroid_dims, size_t *out_len);
+
+/* Disk-backed segment diagnostics and bounded maintenance. Returned JSON
+ * buffers follow the normal ownership rule and must be released with
+ * kouten_free. A zero maintenance budget means unlimited for explicit calls;
+ * callers that schedule these operations should pass positive bounds. */
+void  *kouten_segment_status_json(void *db,
+                                  double stale_ratio,
+                                  int min_stale_records,
+                                  size_t *out_len);
+void  *kouten_segment_maintenance_plan_json(void *db,
+                                            double stale_ratio,
+                                            int min_stale_records,
+                                            int max_rings,
+                                            int64_t max_bytes,
+                                            int64_t max_elapsed_ms,
+                                            size_t *out_len);
+void  *kouten_segment_maintenance_run_json(void *db,
+                                           double stale_ratio,
+                                           int min_stale_records,
+                                           int max_rings,
+                                           int64_t max_bytes,
+                                           int64_t max_elapsed_ms,
+                                           size_t *out_len);
+void  *kouten_segment_maintenance_status_json(void *db, size_t *out_len);
+int    kouten_segment_maintenance_recover(void *db, int *out_recovered);
 
 /* 所在。at < 0 で「現在」。未来時刻も渡せる（ephemeris）。失敗時 -1。 */
 int    kouten_locate(void *db, kouten_id id, double at);

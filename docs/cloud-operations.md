@@ -26,6 +26,19 @@ process-local segment hit/WAL fallback counters. `verify` exits non-zero when
 an explicitly configured capacity bound is exceeded, making it suitable for a
 scheduled health check.
 
+An opt-in disk-backed server also reports bounded maintenance counters through
+the existing `metrics` command: attempts, completed/partial/interrupted/failed
+runs, no-work runs, packed rings, rewritten bytes, and the last elapsed time.
+The durable per-ring reasons remain available locally:
+
+```sh
+kouten maintenance-status --data=/var/lib/koutendb --json
+```
+
+Automatic maintenance is disabled by default. Configure it only with positive
+ring, byte, and elapsed limits; see
+[Configuration Reference](config-reference.md).
+
 Recovery mirrors can be verified as a separate operational check:
 
 ```sh

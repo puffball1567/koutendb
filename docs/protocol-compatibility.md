@@ -14,6 +14,11 @@ Both are intentionally small. They are stable enough for local drivers and
 smoke tests, but KoutenDB does not yet claim long-term production compatibility
 across arbitrary mixed-version clusters.
 
+Additive C ABI functions may retain the current ABI version when existing
+struct layouts, calling conventions, and symbol behavior do not change. The
+v0.12 disk-backed open, CRUD completion, and bounded-maintenance JSON functions
+follow this rule, preserving ABI v2 for already-published wrappers.
+
 ## Wire Protocol
 
 The wire protocol is a KoutenDB-specific text-header protocol with length-prefixed

@@ -93,7 +93,7 @@ Translations:
 | C ABI | Done | ABI version / last error / put/get/retrieve/batch/atlas plus additive codec-aware put/get calls; C ABI vectors are host-native float arrays, while TCP wire vectors are canonical little-endian float32 |
 | JavaScript / TypeScript | Published | npm [`koutendb` v0.1.3](https://www.npmjs.com/package/koutendb); repository [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js); Node-API C ABI wrapper with TypeScript API |
 | Bun | Partial | The npm package uses Node-API and includes Bun compatibility verification, but Bun support remains experimental |
-| Rust | Published | crates.io [`koutendb` v0.1.3](https://crates.io/crates/koutendb); repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust); C ABI wrapper |
+| Rust | Published | crates.io [`koutendb` v0.1.5](https://crates.io/crates/koutendb); repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust); C ABI wrapper |
 | Python | Published | PyPI [`koutendb` v0.1.3](https://pypi.org/project/koutendb/); repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python); native TCP wire driver |
 | Go | Done | C ABI wrapper minimal |
 | PHP | Published | Packagist [`koutendb/koutendb` v0.1.2](https://packagist.org/packages/koutendb/koutendb); repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php); FFI / C ABI wrapper with Docker smoke |

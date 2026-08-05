@@ -15,6 +15,7 @@ full reference in [Topology Configuration](topology-config.md).
 | `nodes` | integer | `8` | Logical node count for embedded placement calculations. |
 | `dataDir` | string | `""` | Empty means memory-only. Non-empty enables WAL persistence. |
 | `durability` | enum | `durBuffered` | `durBuffered` batches flushes; `durStrong` adds flush/fsync boundaries. |
+| `diskBacked` | bool | `false` | Keep payloads in the WAL and use ring-local segment files as the derived read layout. |
 
 ## Cluster Connect
 
@@ -65,6 +66,15 @@ provides it.
   "id": 0,
   "peers": ["127.0.0.1:7301", "127.0.0.1:7302", "127.0.0.1:7303"],
   "dataDir": "/var/lib/koutendb/node0",
+  "diskBacked": true,
+  "autoPack": true,
+  "autoPackInterval": 300,
+  "autoPackWindow": "01:00-04:00",
+  "autoPackStaleRatio": 0.25,
+  "autoPackMinStaleRecords": 256,
+  "autoPackMaxRings": 1,
+  "autoPackMaxBytes": 67108864,
+  "autoPackMaxElapsedMs": 1000,
   "slowTick": 0.05,
   "placementEpoch": 1,
   "virtualArcsPerNode": 64,
@@ -118,7 +128,16 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--id=N` | Node index in the peer list. |
 | `--peers=host:port,...` | Static cluster peer list. |
 | `--data=DIR` | Persistent data directory. |
+| `--disk-backed` | Enable the ring-local segment read layout. Required by automatic packing. |
 | `--slow-tick=SECONDS` | Background handoff / maintenance tick interval. |
+| `--auto-pack` | Opt in to bounded automatic ring packing. Default is off. Requires `--data` and `--disk-backed`. |
+| `--auto-pack-interval=SECONDS` | Minimum interval between automatic maintenance attempts. Default `300`. |
+| `--auto-pack-window=HH:MM-HH:MM` | Optional UTC maintenance window. A range may cross midnight. Omit it for all day. |
+| `--auto-pack-stale-ratio=F` | Per-ring stale-ratio threshold. Default `0.25`. |
+| `--auto-pack-min-stale-records=N` | Per-ring stale-record threshold. Default `256`. |
+| `--auto-pack-max-rings=N` | Hard ring-count limit per run. Default `1`. Must be positive for automatic packing. |
+| `--auto-pack-max-bytes=N` | Hard segment/index rewrite budget per run. Default `67108864`. Must be positive for automatic packing. |
+| `--auto-pack-max-elapsed-ms=N` | Elapsed-time budget per run. Default `1000`. Must be positive for automatic packing. |
 | `--placement-epoch=N` | Monotonic physical placement generation. Increase it when peer count or virtual-arc settings change. |
 | `--virtual-arcs-per-node=N` | Deterministic virtual arcs assigned to each node. Default `64`; changing it requires a placement epoch increase. |
 | `--start-drained` | Persist read-only maintenance drain before serving. Use it for a newly added node during rolling topology activation. |
@@ -143,6 +162,15 @@ Startup rejects epoch rollback, same-epoch topology changes, and undrained
 changes to an existing topology. Empty multi-node stores above epoch `1` start
 drained automatically. See
 [Physical Placement and Topology Remapping](topology-remapping.md).
+
+Automatic packing runs on the server's existing single-owner maintenance path;
+it never accesses the same `Store` concurrently from another thread. The byte
+and elapsed limits are enforced while writing temporary generation files. If a
+limit or process termination interrupts a pack, the manifest is not switched
+and the previous complete generation remains active. Final atomic publication
+and directory synchronization may finish just beyond the elapsed deadline once
+publication has started. The latest run is stored atomically as
+`segment-maintenance.json` in the data directory.
 
 ## Retrieval Tuning
 

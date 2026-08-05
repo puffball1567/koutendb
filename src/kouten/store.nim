@@ -63,7 +63,17 @@ type
     records*: int
     rings*: int
     bytes*: int64
+    indexBytes*: int64
     removedFiles*: int
+
+  SegmentPackLimitKind* = enum
+    splBytes
+    splElapsed
+
+  SegmentPackLimitError* = object of CatchableError
+    ## A bounded pack stopped before publishing a new generation. The old
+    ## complete generation remains active.
+    limitKind*: SegmentPackLimitKind
 
   StoreSegmentRingReport* = object
     ring*: uint64
@@ -277,6 +287,7 @@ type
     when defined(koutenTestFailpoints):
       segmentPackFailAfterSegmentReplace: bool
       segmentPackFailBeforeManifest: bool
+      segmentPackDelayMs: int
     lockFd: cint
     persistent: bool
     diskBacked*: bool
@@ -1272,12 +1283,27 @@ proc closeRingSegmentHandles(s: Store, ring: uint64) =
       s.segmentReadStreams[ring].close()
     s.segmentReadStreams.del ring
 
-proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} =
+proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
+                      maxElapsedMs = 0'i64): SegmentPackStats {.discardable.} =
   ## Merge only one ring into a new complete segment generation.  The
   ## manifest is switched last, making an interrupted pack select either the
   ## old complete generation or the new complete generation, never a mix.
   if not s.diskBacked or not s.persistent or s.segmentDir.len == 0:
     return
+  if maxBytes < 0:
+    raise newException(ValueError, "maxBytes must be >= 0")
+  if maxElapsedMs < 0:
+    raise newException(ValueError, "maxElapsedMs must be >= 0")
+  let startedAt = getMonoTime()
+
+  template checkElapsedLimit() =
+    if maxElapsedMs > 0 and
+        (getMonoTime() - startedAt).inMilliseconds >= maxElapsedMs:
+      var err = newException(SegmentPackLimitError,
+        "segment pack elapsed-time budget exhausted")
+      err.limitKind = splElapsed
+      raise err
+
   s.flushDiskBackedLog()
   let oldGeneration = s.segmentGenerations.getOrDefault(ring, 0'u64)
   if oldGeneration == uint64.high:
@@ -1297,19 +1323,34 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
     if keys.len > 0:
       wal = s.openWalReadStream()
     for k in keys:
+      checkElapsedLimit()
+      when defined(koutenTestFailpoints):
+        if s.segmentPackDelayMs > 0:
+          sleep(s.segmentPackDelayMs)
       if k notin s.itemOffsets:
         continue
       let body = wal.readParticleBodyAtStream(s.itemOffsets[k])
       let framed = walRecord(body)
+      let indexLine = "P " & $k[0] & " " & $k[1] & " " &
+                      $s.itemOffsets[k] & " " & $segment.getFilePos() & "\n"
+      checkElapsedLimit()
+      if maxBytes > 0 and
+          result.bytes + result.indexBytes + framed.len.int64 +
+            indexLine.len.int64 > maxBytes:
+        var err = newException(SegmentPackLimitError,
+          "segment pack byte budget exhausted")
+        err.limitKind = splBytes
+        raise err
       let segmentOffset = segment.getFilePos()
       segment.write(framed)
-      index.write("P " & $k[0] & " " & $k[1] & " " & $s.itemOffsets[k] &
-                  " " & $segmentOffset & "\n")
+      index.write(indexLine)
       offsets[k] = segmentOffset
       inc result.records
       result.bytes += framed.len.int64
+      result.indexBytes += indexLine.len.int64
     segment.syncFile()
     index.syncFile()
+    checkElapsedLimit()
   except CatchableError:
     segment.close()
     index.close()
@@ -1341,7 +1382,7 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
   for k, offset in offsets:
     s.itemSegmentOffsets[k] = offset
   s.segmentRecordCounts[ring] = result.records
-  result.rings = if result.records > 0: 1 else: 0
+  result.rings = 1
   let activeSegment = s.segmentPath(ring, newGeneration)
   let activeIndex = s.segmentIndexPath(ring, newGeneration)
   let ringPrefix = toHex(ring, 16)
@@ -1360,6 +1401,11 @@ when defined(koutenTestFailpoints):
   proc failSegmentPackBeforeManifestForTest*(s: Store; enabled: bool) =
     s.segmentPackFailBeforeManifest = enabled
 
+  proc delaySegmentPackForTest*(s: Store; milliseconds: int) =
+    if milliseconds < 0:
+      raise newException(ValueError, "segment pack test delay must be >= 0")
+    s.segmentPackDelayMs = milliseconds
+
 proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
                     minStaleRecords = 256): StoreSegmentReport =
   ## Report the derived ring-local read layout. Recommendations are diagnostic
@@ -1372,8 +1418,19 @@ proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
   result.segmentHits = s.segmentReadHits
   result.walFallbacks = s.segmentWalFallbacks
   var rings: seq[uint64] = @[]
+  var seen = initTable[uint64, bool]()
   for ring in s.itemsByRing.keys:
-    rings.add ring
+    if not seen.getOrDefault(ring, false):
+      rings.add ring
+      seen[ring] = true
+  for ring in s.segmentRecordCounts.keys:
+    if not seen.getOrDefault(ring, false):
+      rings.add ring
+      seen[ring] = true
+  for ring in s.segmentGenerations.keys:
+    if not seen.getOrDefault(ring, false):
+      rings.add ring
+      seen[ring] = true
   rings.sort()
   for ring in rings:
     let live = s.ringLiveCount(ring)
@@ -1466,6 +1523,29 @@ proc writeFileDurable(path, data: string) =
     file.syncFile()
   finally:
     file.close()
+
+proc segmentMaintenanceStatusPath*(s: Store): string =
+  if not s.persistent or s.logPath.len == 0:
+    return ""
+  s.logPath.parentDir / "segment-maintenance.json"
+
+proc writeSegmentMaintenanceStatus*(s: Store, data: string) =
+  ## Publish scheduler state atomically. A crash can leave the temporary file,
+  ## but readers only observe the previous or next complete status document.
+  let path = s.segmentMaintenanceStatusPath()
+  if path.len == 0:
+    return
+  let tmp = path & ".tmp"
+  writeFileDurable(tmp, data)
+  replaceFileAtomic(tmp, path)
+  syncDir(path.parentDir)
+
+proc readSegmentMaintenanceStatus*(s: Store): string =
+  let path = s.segmentMaintenanceStatusPath()
+  if path.len > 0 and fileExists(path):
+    readFile(path)
+  else:
+    ""
 
 proc acquireDataDirLock(dir: string): cint =
   when defined(windows):
@@ -1945,11 +2025,17 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
       result.replay(path)
       result.logPath = path
       result.persistent = true
-      if diskBacked and not newLog and result.itemOffsets.len > 0:
-        # Existing v0.10 stores have no sidecar index, so they take one
-        # migration rebuild.  Subsequent opens reuse validated ring segments.
-        if not result.loadSegmentManifest() or
-            not result.loadRingSegmentIndexes():
+      if diskBacked and not newLog:
+        if dirExists(result.segmentDir):
+          # Empty generations are meaningful after every record in a ring is
+          # deleted, so restore the manifest even when the WAL has no live
+          # item offsets.
+          if not result.loadSegmentManifest() or
+              not result.loadRingSegmentIndexes():
+            result.rebuildRingSegments()
+        elif result.itemOffsets.len > 0:
+          # Existing v0.10 stores have no sidecar index, so they take one
+          # migration rebuild. Subsequent opens reuse validated ring segments.
           result.rebuildRingSegments()
       result.logFile = open(path, fmAppend)
       if newLog:

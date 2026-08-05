@@ -278,7 +278,7 @@ Published external drivers:
 
 | Language / runtime | Package | Version | Repository | Mode |
 |---|---|---:|---|---|
-| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.3` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
+| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.5` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
 | JavaScript / TypeScript | [`koutendb`](https://www.npmjs.com/package/koutendb) | `0.1.3` | [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js) | Node-API C ABI wrapper |
 | PHP | [`koutendb/koutendb`](https://packagist.org/packages/koutendb/koutendb) | `0.1.2` | [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) | FFI / C ABI wrapper |
 | C++ | GitHub / CMake source package | `0.1.1` | [`puffball1567/koutendb-cpp`](https://github.com/puffball1567/koutendb-cpp) | C++17 C ABI wrapper |
@@ -544,6 +544,21 @@ Strong durability mode:
 ```sh
 bin/koutend --id=0 --peers=127.0.0.1:7301 --data=/var/lib/kouten --durability=strong
 ```
+
+Bounded automatic ring packing is opt-in and requires explicit I/O limits:
+
+```sh
+bin/koutend --id=0 --peers=127.0.0.1:7301 \
+  --data=/var/lib/kouten --disk-backed --auto-pack \
+  --auto-pack-interval=300 --auto-pack-window=01:00-04:00 \
+  --auto-pack-max-rings=1 --auto-pack-max-bytes=67108864 \
+  --auto-pack-max-elapsed-ms=1000
+```
+
+Preview and inspect the same maintenance decisions with
+`kouten maintenance-plan` and `kouten maintenance-status`. See
+[Data Locality](docs/data-locality.md) and
+[Configuration Reference](docs/config-reference.md).
 
 Ring-prefix authorization:
 

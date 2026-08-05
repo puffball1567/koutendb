@@ -260,6 +260,17 @@ fi
 bin/kouten pack-recommended --data="$KOUTEN_DATA" \
   --min-stale-records=1 --stale-ratio=1.0 |
   grep -q "pack-recommended OK"
+bin/kouten maintenance-plan --data="$KOUTEN_DATA" --json |
+  grep -q '"outcome"'
+bin/kouten maintenance-run --data="$KOUTEN_DATA" --json |
+  grep -q '"schema": "koutendb.segment-maintenance.v1"'
+bin/kouten maintenance-status --data="$KOUTEN_DATA" --json |
+  grep -q '"outcome": "no-work"'
+if bin/kouten maintenance-run --data="$KOUTEN_DATA" \
+    --max-bytes=-1 >/dev/null 2>&1; then
+  echo "maintenance-run accepted a negative byte budget" >&2
+  exit 1
+fi
 bin/kouten get --ring=ops/packed --limit=16 |
   grep -q '"i": 16'
 bin/kouten verify --data="$KOUTEN_DATA" |
