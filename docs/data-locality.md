@@ -270,8 +270,8 @@ kouten segment-status --data=/var/lib/koutendb \
   --min-stale-records=1000 --stale-ratio=0.40
 ```
 
-KoutenDB does not start background packing from this diagnostic. Applications
-can schedule explicit maintenance during a suitable I/O window:
+The diagnostic itself is read-only. Applications can schedule explicit
+maintenance during a suitable I/O window:
 
 ```bash
 kouten pack-recommended --data=/var/lib/koutendb \
@@ -281,6 +281,44 @@ kouten pack-recommended --data=/var/lib/koutendb \
 Successful packing atomically activates the new manifest generation and removes
 inactive files for that ring. A pre-manifest interruption leaves the prior
 generation active.
+
+## Bounded Maintenance
+
+Use the bounded planner before execution:
+
+```bash
+kouten maintenance-plan --data=/var/lib/koutendb \
+  --min-stale-records=1000 --stale-ratio=0.40 \
+  --max-rings=2 --max-bytes=67108864 --max-elapsed-ms=1000 --json
+
+kouten maintenance-run --data=/var/lib/koutendb \
+  --min-stale-records=1000 --stale-ratio=0.40 \
+  --max-rings=2 --max-bytes=67108864 --max-elapsed-ms=1000 --json
+
+kouten maintenance-status --data=/var/lib/koutendb --json
+```
+
+Planning and execution share the same stale-threshold and count/byte selection
+logic. Stable reason codes explain why each ring was selected, below a stale
+threshold, or excluded by a budget. Elapsed time is enforced dynamically while
+temporary generation files are written.
+
+`koutend` can run the same operation automatically, but only after explicit
+opt-in:
+
+```bash
+koutend --id=0 --peers=127.0.0.1:7301 \
+  --data=/var/lib/koutendb/node0 --disk-backed --auto-pack \
+  --auto-pack-interval=300 --auto-pack-window=01:00-04:00 \
+  --auto-pack-max-rings=1 --auto-pack-max-bytes=67108864 \
+  --auto-pack-max-elapsed-ms=1000
+```
+
+The window is UTC and may cross midnight. Automatic packing is off by default
+and refuses to start unless ring, byte, and elapsed limits are all positive.
+An interrupted run never activates an incomplete generation. Its atomic status
+sidecar is converted from `running` to `interrupted` on restart, while the
+manifest-last generation protocol selects the previous complete files.
 
 ## Current Scope
 
@@ -292,8 +330,8 @@ layout bet is simpler:
    ring's derived read segment.
 3. Reuse validated segments after restart and fall back to WAL for any cache
    mismatch or corruption.
-4. Pack one ring into a new complete generation when an operator chooses to
-   merge its accumulated updates; switch generations through a manifest.
+4. Pack one ring into a new complete generation explicitly or through the
+   opt-in bounded scheduler; switch generations through a manifest.
 5. Use global compaction to rewrite the durable WAL snapshot and regenerate
    its derived segments.
 6. Measure the effect directly through locality metrics and query invariants.

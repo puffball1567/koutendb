@@ -59,7 +59,7 @@
 | C ABI | 完了 | ABI version / last error / put/get/retrieve/batch/atlas |
 | Python | 完了 | Native wire minimal |
 | Node.js / TypeScript / Bun | 一部公開済み | npm `koutendb` v0.1.3。Bun は実験的 |
-| Rust | 公開済み | crates.io `koutendb` v0.1.3。詳細は英語正本を参照 |
+| Rust | 公開済み | crates.io `koutendb` v0.1.5。詳細は英語正本を参照 |
 | Go | 完了 | C ABI wrapper minimal |
 | PHP / Swift / Kotlin | 完了 | Docker smoke あり |
 | C# / C++ | 完了 | OSS generic wrappers。Unity / Unreal 公式 asset は別候補 |

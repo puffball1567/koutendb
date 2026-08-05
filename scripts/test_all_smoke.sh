@@ -6,6 +6,7 @@ cd "$ROOT"
 
 scripts/test_core.sh
 scripts/disk_backed_recovery_smoke.sh
+scripts/auto_pack_server_smoke.sh
 scripts/cli_crud_smoke.sh
 scripts/cluster_tx_smoke.sh
 scripts/cluster_failure_smoke.sh

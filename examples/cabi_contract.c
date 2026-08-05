@@ -2,7 +2,10 @@
  * build: gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o bin/cabi_contract
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "koutendb.h"
 
 static int fail(const char *msg) {
@@ -219,6 +222,82 @@ int main(void) {
     return fail("oversized retrieve vector length should fail");
   err = kouten_last_error();
   if (!err || strstr(err, "vec_len") == NULL) return fail("last_error should mention retrieve vec_len");
+
+  kouten_id mutable_id;
+  if (kouten_put(db, "docs/mutable", "before", 6, &mutable_id) != KOUTEN_OK)
+    return fail("mutable put failed");
+  if (kouten_exists(db, mutable_id) != 1) return fail("exists should find live id");
+  if (kouten_update_codec(db, mutable_id, "{\"state\":\"after\"}", 17,
+                          KOUTEN_CODEC_JSON) != KOUTEN_OK)
+    return fail("update_codec failed");
+  int mutable_codec = -1;
+  void *mutable_value = kouten_get_codec(db, mutable_id, &read_len, &mutable_codec);
+  if (!mutable_value || mutable_codec != KOUTEN_CODEC_JSON ||
+      read_len != 17 || memcmp(mutable_value, "{\"state\":\"after\"}", 17) != 0)
+    return fail("updated value differs");
+  kouten_free(mutable_value);
+  if (kouten_remove(db, mutable_id) != KOUTEN_OK) return fail("remove failed");
+  if (kouten_exists(db, mutable_id) != 0) return fail("removed id still exists");
+  if (kouten_remove(db, mutable_id) != KOUTEN_ERR)
+    return fail("second remove should fail");
+
+  char data_dir[160];
+  snprintf(data_dir, sizeof(data_dir), "/tmp/koutendb-cabi-contract-%ld",
+           (long)getpid());
+  if (mkdir(data_dir, 0700) != 0) return fail("cannot create C ABI data dir");
+  void *disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
+  if (!disk_db) return fail("open_dir_options failed");
+  if (kouten_open_dir_options(1, data_dir, 2, 1) != NULL)
+    return fail("open_dir_options should reject invalid boolean options");
+
+  kouten_id maintenance_id;
+  if (kouten_put(disk_db, "maintenance/cabi", "first", 5,
+                 &maintenance_id) != KOUTEN_OK)
+    return fail("disk-backed put failed");
+
+  char *maintenance_json = kouten_segment_maintenance_plan_json(
+    disk_db, 0.0, 0, 1, 1048576, 1000, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"outcome\":\"dry-run\"") == NULL ||
+      strstr(maintenance_json, "\"selectedRings\":1") == NULL)
+    return fail("maintenance plan failed");
+  kouten_free(maintenance_json);
+
+  maintenance_json = kouten_segment_maintenance_run_json(
+    disk_db, 0.0, 0, 1, 1048576, 1000, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"outcome\":\"completed\"") == NULL ||
+      strstr(maintenance_json, "\"packedRings\":1") == NULL)
+    return fail("maintenance run failed");
+  kouten_free(maintenance_json);
+
+  maintenance_json = kouten_segment_maintenance_status_json(disk_db, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"outcome\":\"completed\"") == NULL)
+    return fail("maintenance status failed");
+  kouten_free(maintenance_json);
+
+  maintenance_json = kouten_segment_status_json(disk_db, 0.0, 0, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"diskBacked\":true") == NULL ||
+      strstr(maintenance_json, "\"generation\":\"1\"") == NULL)
+    return fail("segment status failed");
+  kouten_free(maintenance_json);
+
+  int recovered = -1;
+  if (kouten_segment_maintenance_recover(disk_db, &recovered) != KOUTEN_OK ||
+      recovered != 0)
+    return fail("maintenance recover result failed");
+  if (kouten_segment_maintenance_recover(disk_db, NULL) != KOUTEN_ERR)
+    return fail("maintenance recover should reject NULL output");
+  if (kouten_segment_maintenance_plan_json(
+        disk_db, 0.0, 0, 1, -1, 1000, &read_len) != NULL)
+    return fail("maintenance plan should reject a negative byte budget");
+
+  kouten_close(disk_db);
+  disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
+  if (!disk_db || kouten_exists(disk_db, maintenance_id) != 1)
+    return fail("disk-backed C ABI reopen failed");
+  kouten_close(disk_db);
+  char cleanup_command[220];
+  snprintf(cleanup_command, sizeof(cleanup_command), "rm -rf -- '%s'", data_dir);
+  if (system(cleanup_command) != 0) return fail("cannot clean C ABI data dir");
 
   kouten_close(db);
   if (kouten_get(db, id, &read_len) != NULL)
