@@ -96,6 +96,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Concept: [docs/koutendb-concept.md](docs/koutendb-concept.md)
 - Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
+- v0.12 implementation and validation roadmap: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
 - GitHub release notes: [docs/github-release-v0.11.0.md](docs/github-release-v0.11.0.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
