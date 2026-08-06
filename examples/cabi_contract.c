@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include "koutendb.h"
 
@@ -242,8 +243,8 @@ int main(void) {
     return fail("second remove should fail");
 
   char data_dir[160];
-  snprintf(data_dir, sizeof(data_dir), "/tmp/koutendb-cabi-contract-%ld",
-           (long)getpid());
+  snprintf(data_dir, sizeof(data_dir), "/tmp/koutendb-cabi-contract-%ld-%ld",
+           (long)getpid(), (long)time(NULL));
   if (mkdir(data_dir, 0700) != 0) return fail("cannot create C ABI data dir");
   void *disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
   if (!disk_db) return fail("open_dir_options failed");
@@ -280,6 +281,24 @@ int main(void) {
     return fail("segment status failed");
   kouten_free(maintenance_json);
 
+  char *metrics_text = kouten_metrics_text(
+    disk_db, KOUTEN_METRICS_PROMETHEUS, &read_len);
+  if (!metrics_text || read_len == 0 ||
+      strstr(metrics_text, "# TYPE koutendb_items gauge") == NULL ||
+      strstr(metrics_text, "koutendb_segment_wal_fallback_reasons_total") == NULL ||
+      strstr(metrics_text, "ring=\"") != NULL)
+    return fail("Prometheus metrics contract failed");
+  kouten_free(metrics_text);
+  metrics_text = kouten_metrics_text(
+    disk_db, KOUTEN_METRICS_OPENMETRICS, &read_len);
+  if (!metrics_text || strstr(metrics_text, "# EOF\n") == NULL)
+    return fail("OpenMetrics contract failed");
+  kouten_free(metrics_text);
+  if (kouten_metrics_text(disk_db, 99, &read_len) != NULL)
+    return fail("metrics should reject an unknown format");
+  if (kouten_metrics_text(disk_db, KOUTEN_METRICS_PROMETHEUS, NULL) != NULL)
+    return fail("metrics should reject a NULL output length");
+
   int recovered = -1;
   if (kouten_segment_maintenance_recover(disk_db, &recovered) != KOUTEN_OK ||
       recovered != 0)
@@ -304,13 +323,21 @@ int main(void) {
   kouten_free(checkpoint_json);
 
   checkpoint_json = kouten_checkpoint_status_json(checkpoint_dir, &read_len);
-  if (!checkpoint_json || strstr(checkpoint_json, "\"reason\":\"verified\"") == NULL)
+  if (!checkpoint_json || strstr(checkpoint_json, "\"reason\":\"verified\"") == NULL ||
+      strstr(checkpoint_json, "\"reasonCode\":\"verified\"") == NULL)
     return fail("checkpoint status failed");
   kouten_free(checkpoint_json);
   checkpoint_json = kouten_checkpoint_list_json(checkpoint_root, &read_len);
   if (!checkpoint_json || strstr(checkpoint_json, "\"count\":1") == NULL)
     return fail("checkpoint list failed");
   kouten_free(checkpoint_json);
+  metrics_text = kouten_checkpoint_metrics_text(
+    checkpoint_root, KOUTEN_METRICS_PROMETHEUS, &read_len);
+  if (!metrics_text ||
+      strstr(metrics_text, "koutendb_checkpoint_verified_generations") == NULL ||
+      strstr(metrics_text, "cabi-1") != NULL)
+    return fail("checkpoint metrics contract failed");
+  kouten_free(metrics_text);
   if (kouten_checkpoint_cleanup_json(checkpoint_root, 0, &read_len) != NULL)
     return fail("checkpoint cleanup should retain at least one generation");
 

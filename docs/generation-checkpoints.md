@@ -46,9 +46,17 @@ kouten checkpoint-verify \
   --json
 ```
 
-`checkpoint-status` reports `verified=false` and a reason for an invalid
-artifact. `checkpoint-verify` is the fail-fast form for scripts and exits
-non-zero on verification failure.
+`checkpoint-status` reports `verified=false`, a stable `reasonCode`, and a
+human-readable `reason` for an invalid artifact. `checkpoint-verify` is the
+fail-fast form for scripts and exits non-zero on verification failure.
+
+For bounded Prometheus/OpenMetrics health without checkpoint-ID labels:
+
+```sh
+kouten checkpoint-metrics \
+  --checkpoint-root=/backup/kouten-generations \
+  --format=prometheus
+```
 
 The checkpoint root must not overlap the live data directory. Checkpoint IDs
 accept ASCII letters, digits, `.`, `_`, and `-`, are limited to 128 bytes, and
@@ -175,6 +183,8 @@ void *kouten_checkpoint_cleanup_json(const char *root, int keep,
                                      size_t *out_len);
 void *kouten_checkpoint_restore_json(const char *checkpoint_dir,
                                      const char *data_dir, int overwrite,
+                                     size_t *out_len);
+void *kouten_checkpoint_metrics_text(const char *root, int format,
                                      size_t *out_len);
 ```
 

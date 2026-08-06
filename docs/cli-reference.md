@@ -92,7 +92,7 @@ kouten get --config=/etc/koutendb/client.json --ring=docs/japan
 | Command | Purpose |
 |---|---|
 | `health` | Check cluster health. |
-| `metrics` | Emit server metrics. |
+| `metrics` | Emit server metrics. `--format=key-value|prometheus|openmetrics` selects the stable output contract; key/value remains the default. |
 | `rings` | Show ring summaries. |
 | `atlas` | Emit the galaxy/ring map. Works with `--data` or `--peers`. |
 | `drain` | Put cluster nodes into read-only maintenance mode. Requires admin auth. |
@@ -365,6 +365,7 @@ For scripts and reproducible examples, prefer the single-shot commands above.
 | `checkpoint-verify` | `--checkpoint=DIR`; optional `--json` | Strictly verify one checkpoint and exit non-zero on failure. |
 | `checkpoint-list` | `--checkpoint-root=DIR`; optional `--json` | List verified and invalid generations, newest first. |
 | `checkpoint-clean` | `--checkpoint-root=DIR`; optional `--keep=N`, `--json` | Retain the newest verified generations and preserve invalid ones for diagnosis. `N` must be at least one. |
+| `checkpoint-metrics` | `--checkpoint-root=DIR`; optional `--format=key-value|prometheus|openmetrics` | Emit bounded aggregate checkpoint health without checkpoint-ID labels. |
 | `checkpoint-restore` | `--checkpoint=DIR --data=DIR`; optional `--overwrite`, `--json` | Verify and stage a complete generation, then atomically publish the target data directory. |
 | `locality` | `--data=DIR`; optional `--metrics` | Inspect physical WAL locality by ring. |
 | `backup` | `--data=DIR --backup=DIR` | Create backup. |

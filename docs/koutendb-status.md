@@ -71,7 +71,7 @@ Translations:
 | Deterministic locate | Done | Logical `L(id,t)` remains available for orbital planning; physical `P(ringKey, topologyEpoch)` provides stable server ownership |
 | Handoff / forwarder | Foundation | Physical migration is explicit, version-checked, destination-topology-fenced, bounded per tick, retried after failure, and independent of logical orbit frequency. Fully automated membership orchestration is not done |
 | Driver-friendly wire | Done | `PUTR/GETID/QRYID`; `WIREVER` exposes the current protocol version and `CODECS` exposes payload formats. Compatibility policy is documented in `docs/protocol-compatibility.md` |
-| Health / metrics / rings | Done | CLI and wire protocol; metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, storage/ring counts, and physical/scored retrieval work |
+| Health / metrics / rings | Done | CLI and wire protocol; legacy key/value plus Prometheus/OpenMetrics text. Metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, storage/ring counts, physical/scored retrieval work, segment/WAL fallback reasons, maintenance state, and aggregate checkpoint health. Default labels exclude ring names and checkpoint IDs. |
 | Authn + secret key | Done | username/password/secret-key; unusable credential combinations fail at startup |
 | TLS | Done | Standard TLS transport for `koutend` and CLI/client connections when built with `-d:ssl`; `scripts/cluster_tls_smoke.sh` covers authenticated TLS, secret-key transport, JSON put/get, and plain-client rejection |
 | Authz / RBAC | PoC | `koutend --allow-ring=prefix[,prefix...]` and `--role=user:password:reader|writer|admin[:prefixes]`; `scripts/cluster_authz_smoke.sh` and `scripts/cluster_rbac_smoke.sh` cover prefix and role matrix behavior |
@@ -125,7 +125,7 @@ Translations:
 | Payload codec demos | Done | `examples/payload_codecs_demo.sh` covers embedded persistence and prepared selection; `examples/payload_codecs_cluster_demo.sh` covers codec negotiation and legacy wire-header compatibility |
 | Crash / failure case study | Partial | Store-level WAL tail repair, mid-file WAL corruption refusal, compact interruption, partial commit, and cluster owner crash/restart retry are covered |
 | Multi-node cloud case study | Planned | VM/AZ, latency, failover behavior |
-| Prometheus / Datadog exporter | Post-v0.1 candidate | Core exposes key/value metrics now; OpenMetrics / Datadog collector should be added outside the core server loop |
+| Prometheus / OpenMetrics output | Done | Nim, CLI, and additive C ABI surfaces share one bounded-label formatter. HTTP serving and vendor-specific collectors remain deployment concerns outside the database process. |
 | State boundary demo | Post-v0.1 candidate | browser/RN local-global state demo |
 
 ## Security / Safety
@@ -155,7 +155,7 @@ single v0.2.0 milestone.
 - Unreal official plugin
 - package publishing workflows for remaining language drivers
 - API reference documentation
-- Prometheus / OpenMetrics and Datadog metrics adapters
+- Datadog/CloudWatch deployment collectors and managed dashboards
 - Fault-tolerance improvements
 
 ## Managed Service Readiness Gaps
@@ -181,7 +181,7 @@ fully covered by the current concepts or code:
 | Secret rotation | `authProfiles` reference external secrets, but the server and drivers need an explicit rotation story for username/password/secret-key credentials. |
 | Point-in-time recovery / generation checkpoints | Backup/restore exists. Managed services normally require recoverable generations, restore-point selection, and verification before promotion. |
 | Managed drain / quiesce orchestration | The server has admin-only `DRAIN` / `SNAPSHOT` / `RESUME` primitives. Managed services still need rolling orchestration, promotion policy, and backup scheduling around those primitives. |
-| OpenMetrics / CloudWatch / Datadog adapters | KoutenDB exposes key/value metrics, but managed integrations need standard exporters or collectors. |
+| CloudWatch / Datadog managed integrations | KoutenDB emits Prometheus/OpenMetrics text, but provider-managed collection, dashboards, and alert policy remain deployment work. |
 | Quotas and capacity guardrails | Galaxy isolation exists, but managed multi-tenant operation needs limits for WAL bytes, item count, ring count, payload size, and connection pressure. |
 | Protocol / storage compatibility policy | Managed upgrades need clear compatibility rules for wire protocol, WAL records, snapshots, and drivers. |
 

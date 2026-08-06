@@ -68,6 +68,10 @@ typedef struct kouten_batch_result {
 #define KOUTEN_CODEC_NIF  2
 #define KOUTEN_CODEC_BIF  3
 
+#define KOUTEN_METRICS_KEY_VALUE   0
+#define KOUTEN_METRICS_PROMETHEUS  1
+#define KOUTEN_METRICS_OPENMETRICS 2
+
 /* ABI バージョンと直近エラー。last_error はスレッドローカル相当で、所有権は呼び出し側にない。
  * Returned text is valid until the next KoutenDB C ABI call on the same thread.
  */
@@ -127,6 +131,14 @@ void  *kouten_connect_auth_tls(const char *peers,
                               const char *tls_server_name,
                               int tls_insecure_skip_verify);
 void   kouten_close(void *db);
+
+/* Operational metrics. The returned UTF-8 buffer is owned by the caller and
+ * must be released with kouten_free. Prometheus/OpenMetrics output uses only
+ * bounded labels and does not expose ring names by default. */
+void  *kouten_metrics_text(void *db, int format, size_t *out_len);
+void  *kouten_checkpoint_metrics_text(const char *root,
+                                      int format,
+                                      size_t *out_len);
 
 /* DB 時計（PoC は決定論のため手動クロック）。 */
 double kouten_now(void *db);

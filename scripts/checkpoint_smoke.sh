@@ -30,8 +30,16 @@ grep -q '"id": "smoke-1"' <<<"$created"
 bin/kouten checkpoint-verify \
   --checkpoint="$WORK/checkpoints/smoke-1" --json |
   grep -q '"reason": "verified"'
+bin/kouten checkpoint-verify \
+  --checkpoint="$WORK/checkpoints/smoke-1" --json |
+  grep -q '"reasonCode": "verified"'
 bin/kouten checkpoint-list --checkpoint-root="$WORK/checkpoints" --json |
   grep -q '"count": 1'
+bin/kouten checkpoint-metrics --checkpoint-root="$WORK/checkpoints" \
+  --format=prometheus |
+  grep -q 'koutendb_checkpoint_verified_generations{node="0"} 1'
+[[ "$(bin/kouten checkpoint-metrics --checkpoint-root="$WORK/checkpoints" \
+  --format=openmetrics | tail -n 1)" == "# EOF" ]]
 
 echo "[checkpoint] restore selected generation"
 bin/kouten checkpoint-restore \

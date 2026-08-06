@@ -2284,6 +2284,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
   of "METRICS":
     if not sv.requireRole(sock, roleAdmin):
       return true
+    let segment = sv.st.segmentMetrics()
     sock.sendFrame("OK " &
                    "node " & $sv.myId & " " &
                    "uptimeSec " & $(int(epochTime() - sv.startedAt)) & " " &
@@ -2347,6 +2348,21 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "autoPackRings " & $sv.autoPackRings & " " &
                    "autoPackBytes " & $sv.autoPackBytes & " " &
                    "autoPackLastElapsedMs " & $sv.autoPackLastElapsedMs & " " &
+                   "segmentHits " & $segment.hits & " " &
+                   "segmentWalFallbacks " & $segment.walFallbacks & " " &
+                   "segmentWalFallbackPointRead " &
+                     $segment.walFallbackReasons[ssfrPointRead] & " " &
+                   "segmentWalFallbackRingScan " &
+                     $segment.walFallbackReasons[ssfrRingScan] & " " &
+                   "segmentWalFallbackWindowRead " &
+                     $segment.walFallbackReasons[ssfrWindowRead] & " " &
+                   "segmentBytes " & $segment.segmentBytes & " " &
+                   "segmentIndexBytes " & $segment.indexBytes & " " &
+                   "segmentActiveGenerations " &
+                     $segment.activeGenerations & " " &
+                   "segmentStaleRecords " & $segment.staleRecords & " " &
+                   "segmentRecommendedRings " &
+                     $segment.recommendedRings & " " &
                    "persistent " & $(if sv.st.isPersistent: 1 else: 0) & " " &
                    "durabilityStrong " &
                      $(if sv.st.durability == durStrong: 1 else: 0) & " " &

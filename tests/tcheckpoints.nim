@@ -59,6 +59,7 @@ suite "generation checkpoints":
     check created.id == "stable-1"
     check created.complete
     check created.verified
+    check created.reasonCode == "verified"
     check created.reason == "verified"
     check created.sourceWalHighWater == sourceHighWater
     check created.snapshotWalBytes > 0
@@ -76,6 +77,7 @@ suite "generation checkpoints":
                        tWrite: 20.0, payload: "after-checkpoint")
     let restored = restoreCheckpoint(created.path, restoredDir)
     check restored.reason == "restored"
+    check restored.reasonCode == "restored"
     check restored.items == 4
     var reopened = openStore(restoredDir, durability = durStrong,
                              diskBacked = true)
@@ -103,6 +105,7 @@ suite "generation checkpoints":
     file.close()
     let damaged = checkpointStatus(created.path)
     check not damaged.verified
+    check damaged.reasonCode in ["file-size-mismatch", "file-checksum-mismatch"]
     check "size mismatch" in damaged.reason or "checksum mismatch" in damaged.reason
     expect IOError:
       discard verifyCheckpoint(created.path)
@@ -116,6 +119,7 @@ suite "generation checkpoints":
     writeFile(checksumPath, sameSize)
     let checksumDamaged = checkpointStatus(checksumOnly.path)
     check not checksumDamaged.verified
+    check checksumDamaged.reasonCode == "file-checksum-mismatch"
     check "checksum mismatch" in checksumDamaged.reason
 
     let second = st.createCheckpoint(root / "checkpoints", "bad-manifest")
@@ -125,6 +129,7 @@ suite "generation checkpoints":
     rewriteCheckpointManifest(second.path, manifest)
     let invalid = checkpointStatus(second.path)
     check not invalid.verified
+    check invalid.reasonCode == "inventory-invalid"
     check "invalid checkpoint file path" in invalid.reason
 
     let malformed = st.createCheckpoint(root / "checkpoints", "missing-stats")
@@ -134,12 +139,14 @@ suite "generation checkpoints":
     rewriteCheckpointManifest(malformed.path, malformedManifest)
     let malformedStatus = checkpointStatus(malformed.path)
     check not malformedStatus.verified
+    check malformedStatus.reasonCode == "logical-stats-invalid"
     check "checkpoint stats are missing" in malformedStatus.reason
 
     let incomplete = st.createCheckpoint(root / "checkpoints", "incomplete")
     removeFile(incomplete.path / "checkpoint.complete")
     let missingMarker = checkpointStatus(incomplete.path)
     check not missingMarker.verified
+    check missingMarker.reasonCode == "completion-marker-missing"
     check "completion marker is missing" in missingMarker.reason
     when not defined(windows):
       let linked = st.createCheckpoint(root / "checkpoints", "linked")
@@ -150,6 +157,7 @@ suite "generation checkpoints":
       createSymlink(externalPath, segmentPath)
       let linkedStatus = checkpointStatus(linked.path)
       check not linkedStatus.verified
+      check linkedStatus.reasonCode == "symlink-rejected"
       check "symlinks are not allowed" in linkedStatus.reason
 
       let linkedDir = st.createCheckpoint(root / "checkpoints", "linked-dir")
