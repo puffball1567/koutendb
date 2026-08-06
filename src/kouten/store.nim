@@ -6,8 +6,9 @@
 ##   OS クラッシュでは直近バッチを失い得る（歯止め: §16）。durStrong は
 ##   write boundary で fsync する。
 ## - compact は生存レコードだけで WAL を再構築する。backup/restore は
-##   compact 済み WAL を別ディレクトリへ退避・復元する。完全な snapshot
-##   世代管理や fsync 付き checkpoint は今後の運用ノブ。
+##   compact 済み WAL を別ディレクトリへ退避・復元する。
+## - checkpoint は WAL と ring segment/index の完全な一世代を checksum
+##   manifest で固定し、directory rename で公開・復元する。
 ##
 ## 現行 WAL は `!KOUTENDB-WAL 2` の magic/version 行から始まり、各論理
 ## レコードを `@ <len> <crc32>\n<body>` で包む。body は下記の長さ接頭辞
@@ -46,8 +47,8 @@
 ##   S <ringKey> <nextSeq>\n                            次の ring-local seq
 ##   M <maxTWrite>\n                                    最大 write timestamp
 
-import std/[algorithm, tables, os, streams, strutils, monotimes, times, posix,
-            json, tempfiles, math]
+import std/[algorithm, tables, sets, locks, os, streams, strutils, monotimes,
+            times, posix, json, tempfiles, math, sequtils]
 import nimsodium
 import ./[payload, mutation]
 
@@ -231,10 +232,45 @@ type
     source*: string
     destination*: string
 
+  StoreCheckpointFile* = object
+    path*: string
+    kind*: string
+    bytes*: int64
+    checksum*: string
+    ring*: uint64
+    generation*: uint64
+
+  StoreCheckpointStatus* = object
+    format*: string
+    id*: string
+    path*: string
+    createdAt*: float
+    sourceWalHighWater*: int64
+    snapshotWalBytes*: int64
+    complete*: bool
+    verified*: bool
+    reason*: string
+    items*: int
+    tombstones*: int
+    rings*: int
+    files*: seq[StoreCheckpointFile]
+
+  StoreCheckpointCleanupStats* = object
+    root*: string
+    kept*: int
+    removed*: seq[string]
+    invalid*: seq[string]
+
   MutationState* = object
     found*: bool
     deleted*: bool
     version*: MutationVersion
+
+  DataDirLock = object
+    fd: cint
+    guardFd: cint
+    identity: string
+    held: bool
 
   Store* = ref object
     items*: Table[(uint64, uint32), Particle]
@@ -288,7 +324,7 @@ type
       segmentPackFailAfterSegmentReplace: bool
       segmentPackFailBeforeManifest: bool
       segmentPackDelayMs: int
-    lockFd: cint
+    dataDirLock: DataDirLock
     persistent: bool
     diskBacked*: bool
     durability*: StoreDurability
@@ -303,9 +339,28 @@ const
   WalMagicLine = "!KOUTENDB-WAL 2"
   WalRecordTag = "@"
   EncryptedBackupMagic = "KOUTENDB-BACKUP-SECRETBOX-V1\n"
+  CheckpointFormat = "koutendb-checkpoint-v1"
+  CheckpointManifestName = "checkpoint.json"
+  CheckpointCompleteName = "checkpoint.complete"
+  CheckpointChecksumAlgorithm = "blake2b-chain-v1"
+  CheckpointChecksumChunkBytes = 1024 * 1024
   AppliedUniverseSyncRetention =
     when defined(koutenTestSmallLimits): 3
     else: 100_000
+
+when defined(koutenTestFailpoints):
+  var checkpointRestoreFailAfterExchange = false
+  var checkpointRestoreFailAfterPublish = false
+
+  proc failCheckpointRestoreAfterExchangeForTest*(enabled: bool) =
+    checkpointRestoreFailAfterExchange = enabled
+
+  proc failCheckpointRestoreAfterPublishForTest*(enabled: bool) =
+    checkpointRestoreFailAfterPublish = enabled
+
+var dataDirRegistryLock: Lock
+var openDataDirs = initHashSet[string]()
+initLock(dataDirRegistryLock)
 
 type
   WalCorruptionError = object of CatchableError
@@ -1547,24 +1602,33 @@ proc readSegmentMaintenanceStatus*(s: Store): string =
   else:
     ""
 
-proc acquireDataDirLock(dir: string): cint =
-  when defined(windows):
-    return -1
-  else:
-    let lockPath = dir / ".kouten.lock"
-    result = posix.open(lockPath.cstring, posix.O_RDWR or posix.O_CREAT, 0o600)
+proc unregisterDataDir(identity: string) =
+  acquire(dataDirRegistryLock)
+  try:
+    openDataDirs.excl identity
+  finally:
+    release(dataDirRegistryLock)
+
+proc dataDirGuardPath(identity: string): string =
+  ## Unlike the legacy lock inside the data directory, this path does not move
+  ## when checkpoint restore atomically replaces the directory.
+  identity & ".kouten-dir.lock"
+
+when not defined(windows):
+  proc acquireFileLock(path, dir: string): cint =
+    result = posix.open(path.cstring, posix.O_RDWR or posix.O_CREAT, 0o600)
     if result < 0:
-      raise newException(IOError, "cannot open data directory lock: " & lockPath)
+      raise newException(IOError, "cannot open data directory lock: " & path)
     var fl = posix.Tflock(l_type: posix.F_WRLCK.cshort,
                           l_whence: posix.SEEK_SET.cshort,
                           l_start: 0,
                           l_len: 0)
     if posix.fcntl(result, posix.F_SETLK, addr fl) != 0:
       discard posix.close(result)
+      result = -1
       raise newException(IOError, "data directory is already open: " & dir)
 
-proc releaseDataDirLock(fd: cint) =
-  when not defined(windows):
+  proc releaseFileLock(fd: var cint) =
     if fd < 0:
       return
     var fl = posix.Tflock(l_type: posix.F_UNLCK.cshort,
@@ -1573,6 +1637,42 @@ proc releaseDataDirLock(fd: cint) =
                           l_len: 0)
     discard posix.fcntl(fd, posix.F_SETLK, addr fl)
     discard posix.close(fd)
+    fd = -1
+
+proc acquireDataDirLock(dir: string): DataDirLock =
+  ## POSIX record locks are process-scoped, so they do not reject a second
+  ## Store handle in the same process. Reserve the canonical directory in a
+  ## process-local registry as well as taking the cross-process file lock.
+  let identity = expandFilename(dir)
+  acquire(dataDirRegistryLock)
+  try:
+    if identity in openDataDirs:
+      raise newException(IOError, "data directory is already open: " & dir)
+    openDataDirs.incl identity
+  finally:
+    release(dataDirRegistryLock)
+
+  result = DataDirLock(fd: -1, guardFd: -1, identity: identity, held: true)
+  try:
+    when not defined(windows):
+      result.guardFd = acquireFileLock(dataDirGuardPath(identity), dir)
+      result.fd = acquireFileLock(dir / ".kouten.lock", dir)
+  except CatchableError:
+    when not defined(windows):
+      releaseFileLock(result.fd)
+      releaseFileLock(result.guardFd)
+    unregisterDataDir(identity)
+    result.held = false
+    raise
+
+proc releaseDataDirLock(dataDirLock: var DataDirLock) =
+  if not dataDirLock.held:
+    return
+  when not defined(windows):
+    releaseFileLock(dataDirLock.fd)
+    releaseFileLock(dataDirLock.guardFd)
+  unregisterDataDir(dataDirLock.identity)
+  dataDirLock = DataDirLock(fd: -1, guardFd: -1)
 
 proc backupKey(passphrase: string): SecretBoxKey =
   if passphrase.len == 0:
@@ -2009,13 +2109,12 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
                 diskBacked = false, mutationOrigin = 1'u32): Store =
   ## dir == "" ならメモリのみ。指定時は dir/kouten.log に追記・起動時に再生。
   result = Store(lastFlush: getMonoTime(), nextTxId: 1,
-                 lockFd: -1,
                  durability: durability,
                  diskBacked: diskBacked,
                  mutationOrigin: mutationOrigin)
   if dir.len > 0:
     createDir(dir)
-    result.lockFd = acquireDataDirLock(dir)
+    result.dataDirLock = acquireDataDirLock(dir)
     let path = dir / "kouten.log"
     if diskBacked:
       result.segmentDir = dir / "segments"
@@ -2044,8 +2143,7 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
       if durability == durStrong:
         syncDir(dir)
     except CatchableError:
-      releaseDataDirLock(result.lockFd)
-      result.lockFd = -1
+      releaseDataDirLock(result.dataDirLock)
       raise
 
 proc setGalaxy*(s: Store, galaxy: string) =
@@ -2179,8 +2277,7 @@ proc close*(s: Store) =
         raise
     s.logFile.close()
     s.persistent = false
-  releaseDataDirLock(s.lockFd)
-  s.lockFd = -1
+  releaseDataDirLock(s.dataDirLock)
 
 proc writeSnapshotFile(s: Store, path: string) =
   var file = open(path, fmWrite)
@@ -2353,6 +2450,667 @@ proc snapshotStatsFromFile(path, source: string): StoreBackupStats =
   var s = Store(lastFlush: getMonoTime(), nextTxId: 1)
   s.replay(path, repair = false)
   result = s.snapshotStats(path, source)
+
+proc checkpointChecksum(path: string): string =
+  var file = open(path, fmRead)
+  var buffer = newString(CheckpointChecksumChunkBytes)
+  var state = genericHash("KOUTENDB-CHECKPOINT-CHECKSUM-V1\0")
+  var total = 0'i64
+  var chunkIndex = 0'i64
+  try:
+    while true:
+      let read = file.readChars(buffer.toOpenArray(0, buffer.high))
+      if read == 0:
+        break
+      let chunkHash = genericHash(buffer[0 ..< read])
+      state = genericHash("KOUTENDB-CHECKPOINT-CHUNK-V1\0" & state &
+                          chunkHash & "\0" & $chunkIndex & "\0" & $read)
+      total += read.int64
+      inc chunkIndex
+  finally:
+    file.close()
+  CheckpointChecksumAlgorithm & ":" &
+    genericHashHex("KOUTENDB-CHECKPOINT-FINAL-V1\0" & state & "\0" &
+                   $chunkIndex & "\0" & $total)
+
+proc checkpointIdValid(id: string): bool =
+  if id.len == 0 or id.len > 128 or id == "." or id == ".." or
+      id.startsWith(".tmp-"):
+    return false
+  for c in id:
+    if not (c in {'a'..'z'} or c in {'A'..'Z'} or c in {'0'..'9'} or
+            c in {'-', '_', '.'}):
+      return false
+  true
+
+proc newCheckpointId(): string =
+  let millis = int64(floor(epochTime() * 1000.0))
+  "cp-" & $millis & "-" &
+    strutils.toHex(randomBytes(6)).toLowerAscii()
+
+proc checkpointRelativePathValid(path: string): bool =
+  if path.len == 0 or path.isAbsolute or '\\' in path:
+    return false
+  let parts = path.split('/')
+  if parts.anyIt(it.len == 0 or it == "." or it == ".."):
+    return false
+  path == "kouten.log" or path == "segments/manifest" or
+    (parts.len == 2 and parts[0] == "segments" and
+     (parts[1].endsWith(".seg") or parts[1].endsWith(".idx")))
+
+proc normalizedAbsolute(path: string): string =
+  let absolute = absolutePath(path).normalizedPath()
+  var existing = absolute
+  var suffix: seq[string] = @[]
+  while not fileExists(existing) and not dirExists(existing) and
+      not symlinkExists(existing):
+    let parent = existing.parentDir
+    if parent == existing:
+      break
+    suffix.insert(existing.extractFilename, 0)
+    existing = parent
+  result =
+    if fileExists(existing) or dirExists(existing) or symlinkExists(existing):
+      expandFilename(existing)
+    else:
+      existing
+  for component in suffix:
+    result = result / component
+  result.normalizePath()
+
+proc pathContains(parent, child: string): bool =
+  let normalizedParent = normalizedAbsolute(parent)
+  let normalizedChild = normalizedAbsolute(child)
+  normalizedChild == normalizedParent or
+    normalizedChild.startsWith(normalizedParent & DirSep)
+
+proc pathsOverlap(a, b: string): bool =
+  pathContains(a, b) or pathContains(b, a)
+
+proc syncPath(path: string) =
+  var file = open(path, fmAppend)
+  try:
+    file.syncFile()
+  finally:
+    file.close()
+
+proc copyFileDurable(src, dst: string) =
+  createDir(dst.parentDir)
+  copyFile(src, dst)
+  syncPath(dst)
+
+proc moveDirAtomic(src, dst: string) =
+  when defined(windows):
+    moveDir(src, dst)
+  else:
+    if cRename(src.cstring, dst.cstring) != 0:
+      raiseOSError(osLastError())
+
+when defined(linux):
+  {.emit: """
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#ifndef RENAME_EXCHANGE
+#define RENAME_EXCHANGE (1 << 1)
+#endif
+static int kouten_rename_exchange(const char *left, const char *right) {
+  return (int)syscall(SYS_renameat2, AT_FDCWD, left,
+                      AT_FDCWD, right, RENAME_EXCHANGE);
+}
+""".}
+  proc cRenameExchange(left, right: cstring): cint
+    {.importc: "kouten_rename_exchange", nodecl.}
+
+proc exchangeDirsAtomic(left, right: string) =
+  ## Existing-directory restore requires one indivisible namespace change.
+  ## A two-rename fallback can leave the target path absent after a crash, so
+  ## unsupported platforms fail closed and can restore into a fresh path.
+  when defined(linux):
+    if cRenameExchange(left.cstring, right.cstring) != 0:
+      raiseOSError(osLastError())
+  else:
+    raise newException(IOError,
+      "atomic checkpoint overwrite is not supported on this platform; " &
+      "restore into a new data directory")
+
+proc sealCheckpointSegments(s: Store) =
+  ## A freshly rebuilt checkpoint starts with legacy generation-zero files.
+  ## Promote all complete files together and publish one manifest last, so the
+  ## checkpoint never relies on the implicit legacy layout.
+  if not s.diskBacked or s.segmentDir.len == 0 or
+      not dirExists(s.segmentDir):
+    return
+  s.closeSegmentFiles()
+  s.closeSegmentIndexFiles()
+  s.closeSegmentReadStreams()
+  var rings: seq[uint64] = @[]
+  for ring in s.segmentRecordCounts.keys:
+    rings.add ring
+  rings.sort()
+  for ring in rings:
+    let oldSegment = s.segmentPath(ring, 0)
+    let oldIndex = s.segmentIndexPath(ring, 0)
+    if not fileExists(oldSegment) or not fileExists(oldIndex):
+      raise newException(IOError,
+        "checkpoint segment generation is incomplete for ring " & $ring)
+    oldSegment.syncPath()
+    oldIndex.syncPath()
+    let newSegment = s.segmentPath(ring, 1)
+    let newIndex = s.segmentIndexPath(ring, 1)
+    replaceFileAtomic(oldSegment, newSegment)
+    replaceFileAtomic(oldIndex, newIndex)
+    s.segmentGenerations[ring] = 1
+  if rings.len > 0:
+    s.writeSegmentManifest()
+  syncDir(s.segmentDir)
+
+proc checkpointFileNode(file: StoreCheckpointFile): JsonNode =
+  result = %*{
+    "path": file.path,
+    "kind": file.kind,
+    "bytes": $file.bytes,
+    "checksum": file.checksum
+  }
+  if file.ring != 0 or file.kind in ["segment", "segment-index"]:
+    result["ring"] = %($file.ring)
+    result["generation"] = %($file.generation)
+
+proc checkpointFiles(checkpointDir: string): seq[StoreCheckpointFile] =
+  let wal = checkpointDir / "kouten.log"
+  if not fileExists(wal):
+    raise newException(IOError, "checkpoint WAL is missing")
+  result.add StoreCheckpointFile(
+    path: "kouten.log", kind: "wal", bytes: getFileSize(wal),
+    checksum: checkpointChecksum(wal))
+  let segmentDir = checkpointDir / "segments"
+  let manifest = segmentDir / "manifest"
+  if not fileExists(manifest):
+    if dirExists(segmentDir):
+      for kind, path in walkDir(segmentDir):
+        if kind in {pcFile, pcLinkToFile}:
+          raise newException(IOError,
+            "checkpoint segment files exist without a manifest: " & path)
+    return
+  result.add StoreCheckpointFile(
+    path: "segments/manifest", kind: "segment-manifest",
+    bytes: getFileSize(manifest), checksum: checkpointChecksum(manifest))
+  let rows = readFile(manifest).splitLines()
+  if rows.len == 0 or rows[0] != "!KOUTENDB-SEGMENTS 1":
+    raise newException(IOError, "invalid checkpoint segment manifest")
+  var seen = initTable[uint64, bool]()
+  for i in 1 ..< rows.len:
+    let line = rows[i].strip()
+    if line.len == 0:
+      continue
+    let parts = line.splitWhitespace()
+    if parts.len != 2:
+      raise newException(IOError, "invalid checkpoint segment manifest row")
+    let ring = parseBiggestUInt(parts[0]).uint64
+    let generation = parseBiggestUInt(parts[1]).uint64
+    if generation == 0 or seen.getOrDefault(ring, false):
+      raise newException(IOError, "invalid checkpoint segment generation")
+    seen[ring] = true
+    let segmentName = segmentFileName(ring, generation)
+    let indexName = segmentIndexFileName(ring, generation)
+    let segment = segmentDir / segmentName
+    let index = segmentDir / indexName
+    if not fileExists(segment) or not fileExists(index):
+      raise newException(IOError,
+        "checkpoint segment generation is incomplete for ring " & $ring)
+    result.add StoreCheckpointFile(
+      path: "segments/" & segmentName, kind: "segment",
+      bytes: getFileSize(segment), checksum: checkpointChecksum(segment),
+      ring: ring, generation: generation)
+    result.add StoreCheckpointFile(
+      path: "segments/" & indexName, kind: "segment-index",
+      bytes: getFileSize(index), checksum: checkpointChecksum(index),
+      ring: ring, generation: generation)
+
+proc checkpointManifest(status: StoreCheckpointStatus): string =
+  var files = newJArray()
+  for file in status.files:
+    files.add checkpointFileNode(file)
+  $(%*{
+    "format": CheckpointFormat,
+    "id": status.id,
+    "complete": true,
+    "createdAt": status.createdAt,
+    "sourceWalHighWater": $status.sourceWalHighWater,
+    "snapshotWalBytes": $status.snapshotWalBytes,
+    "stats": {
+      "items": status.items,
+      "tombstones": status.tombstones,
+      "rings": status.rings
+    },
+    "files": files
+  })
+
+proc parseCheckpointManifest(checkpointDir: string): StoreCheckpointStatus =
+  result.path = checkpointDir
+  let manifestPath = checkpointDir / CheckpointManifestName
+  let completePath = checkpointDir / CheckpointCompleteName
+  if symlinkExists(checkpointDir) or symlinkExists(manifestPath) or
+      symlinkExists(completePath):
+    raise newException(IOError, "checkpoint symlinks are not allowed")
+  if not fileExists(manifestPath):
+    raise newException(IOError, "checkpoint manifest is missing")
+  if not fileExists(completePath):
+    raise newException(IOError, "checkpoint completion marker is missing")
+  if readFile(completePath).strip() != checkpointChecksum(manifestPath):
+    raise newException(IOError, "checkpoint manifest checksum mismatch")
+  let node = parseJson(readFile(manifestPath))
+  if node.isNil or node.kind != JObject or not node.hasKey("format") or
+      node["format"].kind != JString or
+      node["format"].getStr() != CheckpointFormat:
+    raise newException(IOError, "unsupported checkpoint manifest format")
+  result.format = node["format"].getStr()
+  if not node.hasKey("id") or node["id"].kind != JString:
+    raise newException(IOError, "invalid checkpoint identity")
+  result.id = node["id"].getStr()
+  if not checkpointIdValid(result.id):
+    raise newException(IOError, "invalid checkpoint identity")
+  if not node.hasKey("complete") or node["complete"].kind != JBool:
+    raise newException(IOError, "checkpoint completion state is missing")
+  result.complete = node["complete"].getBool()
+  if not result.complete:
+    raise newException(IOError, "checkpoint is not complete")
+  if not node.hasKey("createdAt") or
+      node["createdAt"].kind notin {JFloat, JInt}:
+    raise newException(IOError, "invalid checkpoint creation time")
+  result.createdAt =
+    if node["createdAt"].kind == JFloat: node["createdAt"].getFloat()
+    else: node["createdAt"].getInt().float
+  if result.createdAt < 0 or
+      result.createdAt.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(IOError, "invalid checkpoint creation time")
+  if not node.hasKey("sourceWalHighWater") or
+      node["sourceWalHighWater"].kind != JString or
+      not node.hasKey("snapshotWalBytes") or
+      node["snapshotWalBytes"].kind != JString:
+    raise newException(IOError, "invalid checkpoint WAL bounds")
+  try:
+    result.sourceWalHighWater =
+      parseBiggestInt(node["sourceWalHighWater"].getStr()).int64
+    result.snapshotWalBytes =
+      parseBiggestInt(node["snapshotWalBytes"].getStr()).int64
+  except CatchableError:
+    raise newException(IOError, "invalid checkpoint WAL bounds")
+  if result.sourceWalHighWater < 0 or result.snapshotWalBytes < 0:
+    raise newException(IOError, "invalid checkpoint WAL bounds")
+  if not node.hasKey("stats") or node["stats"].kind != JObject:
+    raise newException(IOError, "checkpoint stats are missing")
+  let stats = node["stats"]
+  for field in ["items", "tombstones", "rings"]:
+    if not stats.hasKey(field) or stats[field].kind != JInt:
+      raise newException(IOError, "invalid checkpoint stats")
+  result.items = stats["items"].getInt()
+  result.tombstones = stats["tombstones"].getInt()
+  result.rings = stats["rings"].getInt()
+  if result.items < 0 or result.tombstones < 0 or result.rings < 0:
+    raise newException(IOError, "invalid checkpoint stats")
+  if not node.hasKey("files") or node["files"].kind != JArray or
+      node["files"].len == 0:
+    raise newException(IOError, "checkpoint file inventory is missing")
+  let files = node["files"]
+  var seen = initTable[string, bool]()
+  for entry in files:
+    if entry.kind != JObject:
+      raise newException(IOError, "invalid checkpoint file entry")
+    for field in ["path", "kind", "bytes", "checksum"]:
+      if not entry.hasKey(field) or entry[field].kind != JString:
+        raise newException(IOError, "invalid checkpoint file entry")
+    let relative = entry["path"].getStr()
+    if not checkpointRelativePathValid(relative) or
+        seen.getOrDefault(relative, false):
+      raise newException(IOError, "invalid checkpoint file path: " & relative)
+    seen[relative] = true
+    var file = StoreCheckpointFile(
+      path: relative,
+      kind: entry["kind"].getStr(),
+      checksum: entry["checksum"].getStr())
+    try:
+      file.bytes = parseBiggestInt(entry["bytes"].getStr()).int64
+      if entry.hasKey("ring"):
+        if entry["ring"].kind != JString or
+            not entry.hasKey("generation") or
+            entry["generation"].kind != JString:
+          raise newException(ValueError, "invalid ring generation")
+        file.ring = parseBiggestUInt(entry["ring"].getStr()).uint64
+        file.generation =
+          parseBiggestUInt(entry["generation"].getStr()).uint64
+      elif entry.hasKey("generation"):
+        raise newException(ValueError, "generation without ring")
+    except CatchableError:
+      raise newException(IOError,
+        "invalid checkpoint file metadata: " & relative)
+    if file.bytes < 0 or
+        not file.checksum.startsWith(CheckpointChecksumAlgorithm & ":"):
+      raise newException(IOError,
+        "invalid checkpoint file metadata: " & relative)
+    case relative
+    of "kouten.log":
+      if file.kind != "wal":
+        raise newException(IOError, "checkpoint WAL kind is invalid")
+    of "segments/manifest":
+      if file.kind != "segment-manifest":
+        raise newException(IOError,
+          "checkpoint segment manifest kind is invalid")
+    else:
+      if file.generation == 0:
+        raise newException(IOError,
+          "checkpoint segment generation must be positive")
+      let expectedKind =
+        if relative.endsWith(".seg"): "segment" else: "segment-index"
+      let expectedName =
+        if expectedKind == "segment":
+          segmentFileName(file.ring, file.generation)
+        else:
+          segmentIndexFileName(file.ring, file.generation)
+      if file.kind != expectedKind or
+          relative != "segments/" & expectedName:
+        raise newException(IOError,
+          "checkpoint segment metadata does not match its path: " & relative)
+    result.files.add file
+
+proc validateCheckpointContents(checkpointDir: string): StoreCheckpointStatus =
+  result = parseCheckpointManifest(checkpointDir)
+  var inventory = initTable[string, StoreCheckpointFile]()
+  for file in result.files:
+    let path = checkpointDir / file.path
+    if symlinkExists(path):
+      raise newException(IOError,
+        "checkpoint file symlinks are not allowed: " & file.path)
+    if not fileExists(path):
+      raise newException(IOError, "checkpoint file is missing: " & file.path)
+    if getFileSize(path) != file.bytes:
+      raise newException(IOError, "checkpoint file size mismatch: " & file.path)
+    if checkpointChecksum(path) != file.checksum:
+      raise newException(IOError, "checkpoint checksum mismatch: " & file.path)
+    inventory[file.path] = file
+  if "kouten.log" notin inventory or inventory["kouten.log"].kind != "wal":
+    raise newException(IOError, "checkpoint WAL inventory is missing")
+  let wal = checkpointDir / "kouten.log"
+  if getFileSize(wal) != result.snapshotWalBytes:
+    raise newException(IOError, "checkpoint snapshot WAL size mismatch")
+  let stats = snapshotStatsFromFile(wal, checkpointDir)
+  if stats.items != result.items or stats.tombstones != result.tombstones or
+      stats.ringMeta != result.rings:
+    raise newException(IOError, "checkpoint logical statistics mismatch")
+
+  let segmentDir = checkpointDir / "segments"
+  if symlinkExists(segmentDir):
+    raise newException(IOError,
+      "checkpoint segment directory symlinks are not allowed")
+  if "segments/manifest" in inventory:
+    var verifier = Store(lastFlush: getMonoTime(), nextTxId: 1,
+                         diskBacked: true, persistent: true,
+                         logPath: wal, segmentDir: segmentDir)
+    verifier.replay(wal, repair = false)
+    if not verifier.loadSegmentManifest() or
+        not verifier.loadRingSegmentIndexes():
+      raise newException(IOError, "checkpoint segment index validation failed")
+    if verifier.itemSegmentOffsets.len != verifier.itemOffsets.len:
+      raise newException(IOError, "checkpoint segment coverage is incomplete")
+    for k, offset in verifier.itemSegmentOffsets:
+      let stream = newFileStream(verifier.segmentPath(k[0]), fmRead)
+      if stream.isNil:
+        raise newException(IOError, "cannot open checkpoint segment")
+      try:
+        let particle = stream.readParticleAtStream(offset)
+        if particle.parent != k[0] or particle.seq != k[1] or
+            particle.version != verifier.itemVersions.getOrDefault(k):
+          raise newException(IOError,
+            "checkpoint segment does not match WAL revision")
+      finally:
+        stream.close()
+    verifier.closeSegmentReadStreams()
+    for kind, path in walkDir(segmentDir):
+      if kind in {pcFile, pcLinkToFile}:
+        let relative = "segments/" & path.extractFilename
+        if relative notin inventory:
+          raise newException(IOError,
+            "checkpoint contains an unreferenced segment file: " & relative)
+  elif dirExists(segmentDir):
+    for kind, path in walkDir(segmentDir):
+      if kind in {pcFile, pcLinkToFile}:
+        raise newException(IOError,
+          "checkpoint contains segments without an inventory: " & path)
+  result.verified = true
+  result.reason = "verified"
+
+proc checkpointStatus*(checkpointDir: string): StoreCheckpointStatus =
+  ## Inspect one immutable checkpoint without mutating or repairing it.
+  result.path = checkpointDir
+  try:
+    result = validateCheckpointContents(checkpointDir)
+  except CatchableError:
+    result.verified = false
+    result.complete = false
+    result.reason = getCurrentExceptionMsg()
+
+proc verifyCheckpoint*(checkpointDir: string): StoreCheckpointStatus =
+  result = checkpointStatus(checkpointDir)
+  if not result.verified:
+    raise newException(IOError, result.reason)
+
+proc createCheckpoint*(s: Store; root = ""; id = ""):
+    StoreCheckpointStatus =
+  ## Build a self-contained compact WAL and its matching ring-local sidecars,
+  ## then publish the checksum manifest and directory last.
+  if not s.persistent or s.logPath.len == 0:
+    raise newException(ValueError, "checkpoint requires a persistent store")
+  let checkpointId = if id.len > 0: id else: newCheckpointId()
+  if not checkpointIdValid(checkpointId):
+    raise newException(ValueError, "invalid checkpoint identity")
+  let sourceDir = s.logPath.parentDir
+  let checkpointRoot = if root.len > 0: root else: sourceDir & ".checkpoints"
+  if pathsOverlap(sourceDir, checkpointRoot):
+    raise newException(ValueError,
+      "checkpoint root must be outside the source data directory")
+  createDir(checkpointRoot)
+  let finalDir = checkpointRoot / checkpointId
+  let stageDir = checkpointRoot / (".tmp-" & checkpointId)
+  if dirExists(finalDir) or fileExists(finalDir) or symlinkExists(finalDir):
+    raise newException(IOError, "checkpoint already exists: " & checkpointId)
+  if dirExists(stageDir) or fileExists(stageDir) or symlinkExists(stageDir):
+    raise newException(IOError,
+      "checkpoint staging directory already exists: " & stageDir)
+  s.sync()
+  let sourceHighWater = s.logSize().int64
+  createDir(stageDir)
+  let stageGuardPath = dataDirGuardPath(expandFilename(stageDir))
+  try:
+    s.writeSnapshotFile(stageDir / "kouten.log")
+    var staged = openStore(stageDir, durability = durStrong, diskBacked = true)
+    try:
+      staged.sealCheckpointSegments()
+    finally:
+      staged.close()
+    let lockPath = stageDir / ".kouten.lock"
+    if fileExists(lockPath):
+      removeFile(lockPath)
+    if fileExists(stageGuardPath):
+      removeFile(stageGuardPath)
+    let stats = snapshotStatsFromFile(stageDir / "kouten.log", stageDir)
+    var status = StoreCheckpointStatus(
+      format: CheckpointFormat,
+      id: checkpointId,
+      path: stageDir,
+      createdAt: epochTime(),
+      sourceWalHighWater: sourceHighWater,
+      snapshotWalBytes: getFileSize(stageDir / "kouten.log"),
+      complete: true,
+      items: stats.items,
+      tombstones: stats.tombstones,
+      rings: stats.ringMeta,
+      files: checkpointFiles(stageDir))
+    writeFileDurable(stageDir / CheckpointManifestName,
+                     checkpointManifest(status))
+    writeFileDurable(stageDir / CheckpointCompleteName,
+      checkpointChecksum(stageDir / CheckpointManifestName) & "\n")
+    discard validateCheckpointContents(stageDir)
+    syncDir(stageDir)
+    moveDirAtomic(stageDir, finalDir)
+    syncDir(checkpointRoot)
+    result = verifyCheckpoint(finalDir)
+  except CatchableError:
+    if dirExists(stageDir):
+      removeDir(stageDir)
+    if fileExists(stageGuardPath):
+      try:
+        removeFile(stageGuardPath)
+      except CatchableError:
+        discard
+    raise
+
+proc listCheckpoints*(root: string): seq[StoreCheckpointStatus] =
+  if root.len == 0 or not dirExists(root):
+    return
+  var paths: seq[string] = @[]
+  for kind, path in walkDir(root):
+    if kind in {pcDir, pcLinkToDir} and
+        not path.extractFilename.startsWith(".tmp-"):
+      paths.add path
+  paths.sort()
+  for path in paths:
+    result.add checkpointStatus(path)
+  result.sort(proc(a, b: StoreCheckpointStatus): int =
+    result = cmp(b.createdAt, a.createdAt)
+    if result == 0:
+      result = cmp(b.id, a.id))
+
+proc cleanupCheckpoints*(root: string; keep = 2):
+    StoreCheckpointCleanupStats =
+  ## Corrupt checkpoints are retained for diagnosis. At least one verified
+  ## checkpoint is always retained, regardless of caller input.
+  if root.len == 0:
+    raise newException(ValueError, "checkpoint root is required")
+  if keep < 1:
+    raise newException(ValueError,
+      "checkpoint cleanup must retain at least one verified generation")
+  result.root = root
+  let statuses = listCheckpoints(root)
+  var verified: seq[StoreCheckpointStatus] = @[]
+  for status in statuses:
+    if status.verified:
+      verified.add status
+    else:
+      result.invalid.add status.path.extractFilename
+  result.kept = min(keep, verified.len)
+  for i in keep ..< verified.len:
+    removeDir(verified[i].path)
+    result.removed.add verified[i].id
+  if result.removed.len > 0:
+    syncDir(root)
+
+proc restoreCheckpoint*(checkpointDir, targetDir: string;
+                        overwrite = false): StoreCheckpointStatus =
+  ## Verify first, stage every referenced file, verify the staged copy, then
+  ## atomically exchange the whole data directory. No partial target is served.
+  if checkpointDir.len == 0 or targetDir.len == 0:
+    raise newException(ValueError,
+      "checkpoint and target directories are required")
+  let sourceStatus = verifyCheckpoint(checkpointDir)
+  if pathsOverlap(checkpointDir, targetDir):
+    raise newException(ValueError,
+      "checkpoint and target data directories must not overlap")
+  if symlinkExists(targetDir):
+    raise newException(IOError,
+      "checkpoint restore target must not be a symlink")
+  createDir(targetDir.parentDir)
+  let nonce = strutils.toHex(randomBytes(5)).toLowerAscii()
+  let stageDir = targetDir & ".checkpoint-stage-" & nonce
+  let previousDir = targetDir & ".checkpoint-previous-" & nonce
+  var targetLock: DataDirLock
+  var removePlaceholder = false
+  var targetExisted = false
+  if dirExists(targetDir):
+    if not overwrite:
+      raise newException(IOError, "target data directory already exists: " & targetDir)
+    targetExisted = true
+    targetLock = acquireDataDirLock(targetDir)
+  elif fileExists(targetDir):
+    raise newException(IOError, "target path is not a directory: " & targetDir)
+  else:
+    # Materialize the identity long enough to take both the stable sibling
+    # guard and the legacy in-directory lock. The empty placeholder is then
+    # removed while the stable guard remains held across publication.
+    createDir(targetDir)
+    targetLock = acquireDataDirLock(targetDir)
+    removePlaceholder = true
+  var previousPublished = false
+  var targetPublished = false
+  try:
+    if removePlaceholder:
+      removeDir(targetDir)
+    if dirExists(stageDir) or fileExists(stageDir) or
+        symlinkExists(stageDir) or dirExists(previousDir) or
+        fileExists(previousDir) or symlinkExists(previousDir):
+      raise newException(IOError, "checkpoint restore staging collision")
+    createDir(stageDir)
+    for file in sourceStatus.files:
+      copyFileDurable(checkpointDir / file.path, stageDir / file.path)
+    copyFileDurable(checkpointDir / CheckpointManifestName,
+                    stageDir / CheckpointManifestName)
+    copyFileDurable(checkpointDir / CheckpointCompleteName,
+                    stageDir / CheckpointCompleteName)
+    discard validateCheckpointContents(stageDir)
+    if targetExisted:
+      exchangeDirsAtomic(stageDir, targetDir)
+      targetPublished = true
+      when defined(koutenTestFailpoints):
+        if checkpointRestoreFailAfterExchange:
+          raise newException(IOError,
+            "test checkpoint restore failure after atomic exchange")
+      moveDirAtomic(stageDir, previousDir)
+      previousPublished = true
+    else:
+      moveDirAtomic(stageDir, targetDir)
+      targetPublished = true
+    syncDir(targetDir.parentDir)
+    when defined(koutenTestFailpoints):
+      if checkpointRestoreFailAfterPublish:
+        raise newException(IOError,
+          "test checkpoint restore failure after publication")
+    let restoredStatus = validateCheckpointContents(targetDir)
+    if restoredStatus.items != sourceStatus.items or
+        restoredStatus.tombstones != sourceStatus.tombstones or
+        restoredStatus.rings != sourceStatus.rings:
+      raise newException(IOError,
+        "restored checkpoint logical statistics mismatch")
+    removeFile(targetDir / CheckpointManifestName)
+    removeFile(targetDir / CheckpointCompleteName)
+    syncDir(targetDir)
+    result = sourceStatus
+    result.path = targetDir
+    result.reason = "restored"
+    if dirExists(previousDir):
+      try:
+        removeDir(previousDir)
+        syncDir(targetDir.parentDir)
+        previousPublished = false
+      except CatchableError:
+        result.reason = "restored; previous target cleanup pending at " &
+                        previousDir
+  except CatchableError:
+    if targetPublished and targetExisted:
+      let previousPath =
+        if previousPublished: previousDir
+        else: stageDir
+      if dirExists(targetDir) and dirExists(previousPath):
+        exchangeDirsAtomic(targetDir, previousPath)
+        syncDir(targetDir.parentDir)
+    elif targetPublished and dirExists(targetDir):
+      removeDir(targetDir)
+      syncDir(targetDir.parentDir)
+    if dirExists(stageDir):
+      removeDir(stageDir)
+    if dirExists(previousDir):
+      removeDir(previousDir)
+    raise
+  finally:
+    releaseDataDirLock(targetLock)
 
 proc sameParticleRevision(current, candidate: Particle): bool =
   current.parent == candidate.parent and

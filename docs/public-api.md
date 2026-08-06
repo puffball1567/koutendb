@@ -87,6 +87,9 @@ For application-facing tuning, prefer `SearchProfile` over raw numeric knobs:
 |---|---|---|
 | `CompactStats` | store-defined | Result of WAL compaction. |
 | `BackupStats` | store-defined | Result of backup / verify / restore operations. |
+| `CheckpointFile` | `path`, `kind`, `bytes`, `checksum`, optional ring generation | One immutable file referenced by a checkpoint manifest. |
+| `CheckpointStatus` | identity, creation time, WAL bounds, logical counts, file inventory, `complete`, `verified`, `reason` | Creation, verification, listing, or restore result for one checkpoint generation. |
+| `CheckpointCleanupStats` | `root`, `kept`, `removed`, `invalid` | Retention result. Invalid checkpoints are reported and preserved. |
 | `KoutenOperationalVerifyReport` | object | Data-dir operational verification report. |
 | `KoutenOperationalCheck` | object | One named operational verification check. |
 | `DumpStats` | `bytes`, `records`, `rings`, `documents`, `destination` | JSONL dump summary. |
@@ -229,20 +232,13 @@ or stellar lens.
 | `segmentMaintenanceStatus()` | Read the last atomically published maintenance status. |
 | `recoverInterruptedSegmentMaintenance()` | Convert a stale `running` marker left by process termination into `interrupted`. |
 | `packDiskBackedRing(ring)` | Explicitly publish a new complete segment generation for one ring. |
+| `createCheckpoint(root = "", id = "")` | Create and verify an immutable WAL plus segment/index generation. The default root is `DATA_DIR.checkpoints`. |
+| `checkpointStatus(checkpointDir)` | Inspect one checkpoint without mutating or repairing it. Invalid checkpoints return `verified=false` plus a reason. |
+| `verifyCheckpoint(checkpointDir)` | Strictly verify the manifest, completion marker, file sizes/checksums, WAL replay, segment coverage, and logical counts; raise on failure. |
+| `listCheckpoints(root)` | List verified and invalid checkpoint directories, newest first. Incomplete `.tmp-*` staging directories are ignored. |
+| `cleanupCheckpoints(root, keep = 2)` | Remove older verified generations while retaining at least one. Invalid generations are never removed automatically. |
+| `restoreCheckpoint(checkpointDir, dataDir, overwrite = false)` | Verify and stage the complete generation, then atomically replace the target data directory. Select durability and disk-backed behavior when opening the restored directory. |
 | `backup(dstDir)` | Create a compact backup. |
-
-The additive C ABI persistence surface includes:
-
-- `kouten_open_dir_options` for strong durability and disk-backed reads;
-- `kouten_segment_status_json` for physical segment diagnostics;
-- `kouten_segment_maintenance_plan_json` and
-  `kouten_segment_maintenance_run_json` for the same bounded decision path;
-- `kouten_segment_maintenance_status_json` and
-  `kouten_segment_maintenance_recover` for durable run-state inspection.
-
-These calls require an embedded persistent handle opened with
-`disk_backed=1`. JSON buffers are owned by the caller and must be released with
-`kouten_free`.
 | `backupEncrypted(dstDir, passphrase)` | Create an encrypted backup. |
 | `verifyBackup(backupDir)` | Verify a backup. |
 | `operationalVerify(dataDir, diskBacked = true, verifySegments = false, maxWalBytes = -1, maxSegmentFiles = -1, maxItems = -1, maxRings = -1)` | Open and inspect a persistent embedded data directory, optionally failing when WAL bytes, segment-file count, item count, or ring count exceed configured trial thresholds. |
@@ -251,6 +247,23 @@ These calls require an embedded persistent handle opened with
 | `restoreEncryptedBackup(backupDir, dataDir, passphrase, overwrite = false, durability = durBuffered)` | Restore an encrypted backup into a data directory. |
 | `dump(path = "", includeVectors = true)` | Export `koutendb.dump.v1` JSONL with ring, payload, vector, and codec metadata. |
 | `importJsonl(path, defaultRing = "imported", ...)` | Import KoutenDB dump JSONL or external JSONL with ring routing. |
+
+The additive C ABI persistence surface includes:
+
+- `kouten_open_dir_options` for strong durability and disk-backed reads;
+- `kouten_segment_status_json` for physical segment diagnostics;
+- `kouten_segment_maintenance_plan_json` and
+  `kouten_segment_maintenance_run_json` for the same bounded decision path;
+- `kouten_segment_maintenance_status_json` and
+  `kouten_segment_maintenance_recover` for durable run-state inspection;
+- `kouten_checkpoint_create_json`, `kouten_checkpoint_status_json`,
+  `kouten_checkpoint_list_json`, `kouten_checkpoint_cleanup_json`, and
+  `kouten_checkpoint_restore_json` for the same checkpoint lifecycle.
+
+Create and segment-maintenance calls require an embedded persistent handle.
+Segment maintenance additionally requires `disk_backed=1`; checkpoint
+status/list/cleanup/restore operate on filesystem paths. JSON buffers are owned
+by the caller and must be released with `kouten_free`.
 
 ## Universe Sync And Warp
 

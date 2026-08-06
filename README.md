@@ -112,6 +112,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Benchmark notes: [docs/koutendb-bench.md](docs/koutendb-bench.md)
 - Effect validation: [docs/effect-validation.md](docs/effect-validation.md)
 - Cloud operations metrics: [docs/cloud-operations.md](docs/cloud-operations.md)
+- Generation checkpoints: [docs/generation-checkpoints.md](docs/generation-checkpoints.md)
 - Topology configuration reference: [docs/topology-config.md](docs/topology-config.md)
 - Topology pattern catalog: [docs/topology-examples.md](docs/topology-examples.md)
 - Topology remapping: [docs/topology-remapping.md](docs/topology-remapping.md)
@@ -588,6 +589,25 @@ kouten restore-encrypted --backup=backup.enc --data=restored --passphrase=change
 `backup`, `backup-encrypted`, `restore`, and `restore-encrypted` use
 temporary files plus atomic replacement. Snapshot files are fsynced before they
 are made visible.
+
+Immutable generation checkpoints preserve one verified WAL and ring-local
+segment/index generation together:
+
+```sh
+kouten checkpoint-create --data=/var/lib/kouten --json
+kouten checkpoint-list --checkpoint-root=/var/lib/kouten.checkpoints --json
+kouten checkpoint-verify \
+  --checkpoint=/var/lib/kouten.checkpoints/CHECKPOINT_ID --json
+kouten checkpoint-restore \
+  --checkpoint=/var/lib/kouten.checkpoints/CHECKPOINT_ID \
+  --data=/var/lib/kouten-restored --json
+```
+
+The default root is the data-directory sibling `DATA_DIR.checkpoints`.
+Publication is manifest-last and directory-atomic; restore verifies and stages
+the complete generation before atomically replacing the target directory. See
+[Generation Checkpoints](docs/generation-checkpoints.md) for cleanup,
+integrity, and trust-boundary details.
 
 ### Driver Checks
 

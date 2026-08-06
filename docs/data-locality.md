@@ -334,7 +334,14 @@ layout bet is simpler:
    opt-in bounded scheduler; switch generations through a manifest.
 5. Use global compaction to rewrite the durable WAL snapshot and regenerate
    its derived segments.
-6. Measure the effect directly through locality metrics and query invariants.
+6. Seal a selected compact WAL and its complete segment/index generations as
+   one immutable, checksummed checkpoint when the physical read layout must be
+   recoverable together with logical state.
+7. Measure the effect directly through locality metrics and query invariants.
+
+Generation checkpoints do not replace maintenance. Packing and compaction
+improve the active layout; a checkpoint freezes one verified result of that
+layout for restore. See [Generation Checkpoints](generation-checkpoints.md).
 
 Secondary access paths should avoid fighting this primary layout. In the current
 design, secondary mechanisms should remain hints, projections, or lookup maps

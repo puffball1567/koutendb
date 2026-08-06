@@ -766,6 +766,74 @@ proc kouten_segment_maintenance_recover(h: pointer,
     setError(e)
     KoutenErr
 
+proc kouten_checkpoint_create_json(h: pointer, root, checkpointId: cstring,
+                                   outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let status = ensureHandle(h).createCheckpoint(optStr(root),
+                                                   optStr(checkpointId))
+    copyJsonToShared(checkpointStatusJson(status), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_checkpoint_status_json(checkpointDir: cstring,
+                                   outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let path = cstringToString(checkpointDir, "checkpoint_dir",
+                               allowNil = false)
+    copyJsonToShared(checkpointStatusJson(checkpointStatus(path)), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_checkpoint_list_json(root: cstring,
+                                 outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let path = cstringToString(root, "root", allowNil = false)
+    copyJsonToShared(checkpointListJson(path, listCheckpoints(path)), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_checkpoint_cleanup_json(root: cstring, keep: cint,
+                                    outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let path = cstringToString(root, "root", allowNil = false)
+    copyJsonToShared(checkpointCleanupJson(
+      cleanupCheckpoints(path, int(keep))), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_checkpoint_restore_json(checkpointDir, dataDir: cstring,
+                                    overwrite: cint,
+                                    outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    if overwrite notin [cint(0), cint(1)]:
+      raise newException(ValueError, "overwrite must be 0 or 1")
+    let status = restoreCheckpoint(
+      cstringToString(checkpointDir, "checkpoint_dir", allowNil = false),
+      cstringToString(dataDir, "data_dir", allowNil = false),
+      overwrite = overwrite != 0)
+    copyJsonToShared(checkpointStatusJson(status), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
 proc kouten_locate(h: pointer, id: KoutenCId,
                   at: cdouble): cint {.exportc, cdecl, dynlib.} =
   ## at < 0 で「現在」。失敗時 -1。

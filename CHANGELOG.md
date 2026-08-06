@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added immutable generation checkpoints that seal a compact WAL and complete
+  ring-local segment/index generations behind a checksummed manifest and
+  completion marker.
+- Added checkpoint create, inspect, strict verify, list, fail-safe cleanup, and
+  atomic-directory restore APIs through Nim, CLI, and additive C ABI v2 JSON
+  functions.
+- Added corruption, symlink, overlap, retention, empty-store, CLI, and C ABI
+  checkpoint coverage.
+
+### Fixed / Hardened
+
+- Checkpoint restore now verifies a complete staged generation before
+  publication and rolls back to an existing target if post-publication
+  validation fails.
+- Linux checkpoint overwrite now exchanges the staged and existing data
+  directories with `renameat2(RENAME_EXCHANGE)`, with rollback tests at both
+  the immediate post-exchange and post-publication boundaries. Platforms
+  without an equivalent primitive fail closed for existing-directory overwrite.
+- Checkpoint retention preserves invalid generations for diagnosis and refuses
+  to remove the final verified generation.
+- Persistent data-directory exclusion now combines canonical in-process
+  reservations with cross-process file locks. Checkpoint restore holds a
+  stable sibling guard across verification, directory publication, and
+  rollback, so an active or concurrently opened target cannot be replaced.
+
 ## v0.11.0 - 2026-08-04
 
 ### Added

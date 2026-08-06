@@ -241,6 +241,26 @@ void  *kouten_segment_maintenance_run_json(void *db,
 void  *kouten_segment_maintenance_status_json(void *db, size_t *out_len);
 int    kouten_segment_maintenance_recover(void *db, int *out_recovered);
 
+/* Immutable generation checkpoints. Creation uses an embedded persistent
+ * handle; verification/list/cleanup/restore operate on checkpoint paths.
+ * Returned JSON buffers must be released with kouten_free. NULL root/id on
+ * create selects the data-directory default and an automatic identity. */
+void  *kouten_checkpoint_create_json(void *db,
+                                     const char *root,
+                                     const char *checkpoint_id,
+                                     size_t *out_len);
+void  *kouten_checkpoint_status_json(const char *checkpoint_dir,
+                                     size_t *out_len);
+void  *kouten_checkpoint_list_json(const char *root,
+                                   size_t *out_len);
+void  *kouten_checkpoint_cleanup_json(const char *root,
+                                      int keep,
+                                      size_t *out_len);
+void  *kouten_checkpoint_restore_json(const char *checkpoint_dir,
+                                      const char *data_dir,
+                                      int overwrite,
+                                      size_t *out_len);
+
 /* 所在。at < 0 で「現在」。未来時刻も渡せる（ephemeris）。失敗時 -1。 */
 int    kouten_locate(void *db, kouten_id id, double at);
 
