@@ -603,6 +603,25 @@ proc evictState(s: Store, parent: uint64, seq: uint32) =
       s.itemsByRing[parent] = entries
   s.forwarders.del k
 
+proc insertItemKeyBySeq(s: Store, parent: uint64,
+                        itemKey: (uint64, uint32)) =
+  ## itemsByRing is the lightweight logical access path used by bounded ring
+  ## reads. Keep it ordered independently from WAL/segment physical order so
+  ## cursor pagination never needs to sort or scan payload records.
+  var entries = s.itemsByRing.getOrDefault(parent, @[])
+  var low = 0
+  var high = entries.len
+  while low < high:
+    let middle = low + (high - low) div 2
+    if entries[middle][1] < itemKey[1]:
+      low = middle + 1
+    else:
+      high = middle
+  if low < entries.len and entries[low] == itemKey:
+    return
+  entries.insert(itemKey, low)
+  s.itemsByRing[parent] = entries
+
 proc mergeTombstoneMetadata(current: var Tombstone,
                             incoming: Tombstone): bool =
   for node in incoming.acknowledgedNodes:
@@ -641,7 +660,7 @@ proc applyOp(s: Store, op: TxOp) =
     let oldHasVector = s.itemHasVector.getOrDefault(k, false)
     let newHasVector = p.vec.len > 0
     if k notin s.items and k notin s.itemOffsets:
-      s.itemsByRing.mgetOrPut(p.parent, @[]).add k
+      s.insertItemKeyBySeq(p.parent, k)
     if oldHasVector != newHasVector:
       if newHasVector:
         inc s.vectorCount
@@ -1256,6 +1275,36 @@ proc ringLiveCount*(s: Store, ring: uint64): int =
   ## itemsByRing is updated together with live state on upsert/delete replay,
   ## so this does not touch payload files.
   s.itemsByRing.getOrDefault(ring, @[]).len
+
+proc itemKeysByRingPage*(s: Store, ring: uint64, afterSeq: int64,
+                         limit: int): tuple[
+                           items: seq[(uint64, uint32)], hasMore: bool] =
+  ## Select a logical cursor page from seq-ordered metadata. Segment/WAL
+  ## physical order is intentionally irrelevant, and no payload is read while
+  ## locating the page boundary.
+  if limit <= 0:
+    return
+  let keys = s.itemsByRing.getOrDefault(ring, @[])
+  var low = 0
+  var high = keys.len
+  while low < high:
+    let middle = low + (high - low) div 2
+    if keys[middle][1].int64 <= afterSeq:
+      low = middle + 1
+    else:
+      high = middle
+  var index = low
+  while index < keys.len and result.items.len < limit:
+    let itemKey = keys[index]
+    inc index
+    if itemKey in s.items or itemKey in s.itemOffsets:
+      result.items.add itemKey
+  while index < keys.len:
+    let itemKey = keys[index]
+    inc index
+    if itemKey in s.items or itemKey in s.itemOffsets:
+      result.hasMore = true
+      break
 
 iterator allParticles*(s: Store): Particle =
   for ring in s.itemsByRing.keys:

@@ -2008,11 +2008,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let ringKey = parseBiggestUInt(parts[1]).uint64
     if not sv.requireRingKey(sock, ringKey):
       return true
-    var n = 0
-    for k in sv.st.itemsByRing.getOrDefault(ringKey, @[]):
-      if k in sv.st.items:
-        inc n
-    sock.sendFrame("COUNT " & $n)
+    sock.sendFrame("COUNT " & $sv.st.ringLiveCount(ringKey))
   of "LISTR":
     requireParts(parts, "LISTR", 4)
     let ringKey = parseBiggestUInt(parts[1]).uint64
@@ -2028,13 +2024,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     var rows: seq[Particle] = @[]
     var nextCursor = "_"
     if limit > 0:
-      for k in sv.st.itemsByRing.getOrDefault(ringKey, @[]):
-        if k[1].int64 <= afterSeq or k notin sv.st.items:
-          continue
-        if rows.len >= limit:
-          nextCursor = $(rows[^1].seq)
-          break
-        rows.add sv.st.items[k]
+      let page = sv.st.itemKeysByRingPage(ringKey, afterSeq, limit)
+      for k in page.items:
+        rows.add sv.st.getParticle(k[0], k[1])
+      if page.hasMore and rows.len > 0:
+        nextCursor = $(rows[^1].seq)
     sock.sendFrame("LVAL " & $rows.len & " " & nextCursor)
     for p in rows:
       sock.sendFrame("ITEM " & $p.seq & " " & $p.tWrite & " " & $p.parent & " " &
