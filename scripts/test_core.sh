@@ -19,6 +19,7 @@ run_nim_test tests/tfield.nim
 run_nim_test tests/tstore.nim
 run_nim_test tests/tapi.nim
 run_nim_test tests/tmaintenance_window.nim
+run_nim_test tests/tcheckpoints.nim
 
 echo "[test-core] tests/tsegment_failpoints.nim"
 nim c -d:koutenTestFailpoints \

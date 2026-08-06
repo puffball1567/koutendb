@@ -37,6 +37,7 @@ downstream AI/RAG or application logic.
 - [Topology Remapping](topology-remapping.md)
 - [Universe Sync](universe-sync.md)
 - [Data Locality](data-locality.md)
+- [Generation Checkpoints](generation-checkpoints.md)
 - [Time Orbit Design](time-orbit.md)
 - [Data Migration](data-migration.md)
 - [Cloud Operations Metrics](cloud-operations.md)

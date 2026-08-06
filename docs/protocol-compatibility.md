@@ -16,8 +16,9 @@ across arbitrary mixed-version clusters.
 
 Additive C ABI functions may retain the current ABI version when existing
 struct layouts, calling conventions, and symbol behavior do not change. The
-v0.12 disk-backed open, CRUD completion, and bounded-maintenance JSON functions
-follow this rule, preserving ABI v2 for already-published wrappers.
+v0.12 disk-backed open, CRUD completion, bounded-maintenance, and generation-
+checkpoint JSON functions follow this rule, preserving ABI v2 for already-
+published wrappers.
 
 ## Wire Protocol
 
@@ -177,6 +178,13 @@ writes and compacted snapshots use the versioned format. For portable,
 human-readable migration across releases, use `kouten dump` and
 `kouten import-jsonl` rather than copying or editing WAL internals directly.
 See [Data Migration](data-migration.md) for the supported JSONL boundary.
+
+Generation checkpoints are versioned separately as
+`koutendb-checkpoint-v1`. They are immutable restore artifacts that bind one
+compact WAL to its ring segment/index files through a checksum inventory and a
+manifest completion marker. They are not the pre-v1 portable migration format:
+restore them with the same compatible KoutenDB release line, and use JSONL dump
+and import when crossing an unsupported storage-format boundary.
 
 ## Production Readiness Boundaries
 

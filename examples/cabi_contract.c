@@ -290,13 +290,49 @@ int main(void) {
         disk_db, 0.0, 0, 1, -1, 1000, &read_len) != NULL)
     return fail("maintenance plan should reject a negative byte budget");
 
+  char checkpoint_root[200];
+  char checkpoint_dir[220];
+  char checkpoint_restore[200];
+  snprintf(checkpoint_root, sizeof(checkpoint_root), "%s-checkpoints", data_dir);
+  snprintf(checkpoint_dir, sizeof(checkpoint_dir), "%s/cabi-1", checkpoint_root);
+  snprintf(checkpoint_restore, sizeof(checkpoint_restore), "%s-restored", data_dir);
+  char *checkpoint_json = kouten_checkpoint_create_json(
+    disk_db, checkpoint_root, "cabi-1", &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"verified\":true") == NULL ||
+      strstr(checkpoint_json, "\"id\":\"cabi-1\"") == NULL)
+    return fail("checkpoint create failed");
+  kouten_free(checkpoint_json);
+
+  checkpoint_json = kouten_checkpoint_status_json(checkpoint_dir, &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"reason\":\"verified\"") == NULL)
+    return fail("checkpoint status failed");
+  kouten_free(checkpoint_json);
+  checkpoint_json = kouten_checkpoint_list_json(checkpoint_root, &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"count\":1") == NULL)
+    return fail("checkpoint list failed");
+  kouten_free(checkpoint_json);
+  if (kouten_checkpoint_cleanup_json(checkpoint_root, 0, &read_len) != NULL)
+    return fail("checkpoint cleanup should retain at least one generation");
+
+  checkpoint_json = kouten_checkpoint_restore_json(
+    checkpoint_dir, checkpoint_restore, 0, &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"reason\":\"restored\"") == NULL)
+    return fail("checkpoint restore failed");
+  kouten_free(checkpoint_json);
+  void *restored_db = kouten_open_dir_options(1, checkpoint_restore, 1, 1);
+  if (!restored_db || kouten_exists(restored_db, maintenance_id) != 1)
+    return fail("restored checkpoint does not contain source data");
+  kouten_close(restored_db);
+
   kouten_close(disk_db);
   disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
   if (!disk_db || kouten_exists(disk_db, maintenance_id) != 1)
     return fail("disk-backed C ABI reopen failed");
   kouten_close(disk_db);
-  char cleanup_command[220];
-  snprintf(cleanup_command, sizeof(cleanup_command), "rm -rf -- '%s'", data_dir);
+  char cleanup_command[640];
+  snprintf(cleanup_command, sizeof(cleanup_command),
+           "rm -rf -- '%s' '%s' '%s'", data_dir, checkpoint_root,
+           checkpoint_restore);
   if (system(cleanup_command) != 0) return fail("cannot clean C ABI data dir");
 
   kouten_close(db);

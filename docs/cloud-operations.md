@@ -39,6 +39,46 @@ Automatic maintenance is disabled by default. Configure it only with positive
 ring, byte, and elapsed limits; see
 [Configuration Reference](config-reference.md).
 
+## Generation Checkpoint Operations
+
+Create and independently verify a selected storage generation before an
+upgrade, migration, or external copy:
+
+```sh
+kouten checkpoint-create \
+  --data=/var/lib/koutendb \
+  --checkpoint-root=/backup/koutendb-generations \
+  --checkpoint-id=before-upgrade-2026-08-05 \
+  --durability=strong \
+  --json
+
+kouten checkpoint-verify \
+  --checkpoint=/backup/koutendb-generations/before-upgrade-2026-08-05 \
+  --json
+```
+
+For a cluster node, use the admin `drain` and `snapshot` barrier before creating
+the local checkpoint, then `resume` after the artifact has been verified. The
+checkpoint API itself is embedded/path-based and does not coordinate a cluster
+quiet point.
+
+Retention is explicit and fail-safe:
+
+```sh
+kouten checkpoint-clean \
+  --checkpoint-root=/backup/koutendb-generations \
+  --keep=3 \
+  --json
+```
+
+Only older verified generations are removed. Invalid generations remain for
+diagnosis, and `--keep=0` is rejected. Copy or upload the entire immutable
+checkpoint directory; copying only the WAL discards the selected ring-local
+read generation. Verify again after transport and before promotion.
+
+See [Generation Checkpoints](generation-checkpoints.md) for the manifest,
+restore, and trust-boundary contract.
+
 Recovery mirrors can be verified as a separate operational check:
 
 ```sh

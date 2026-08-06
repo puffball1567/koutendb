@@ -193,6 +193,22 @@ suite "store persistence":
       child.close()
       removeDir(dir)
 
+  test "persistent data dirs are locked within one process and by canonical path":
+    let root = createTempDir("kouten-store", "same-process-lock")
+    let dir = root / "data"
+    var st = openStore(dir)
+    expect IOError:
+      discard openStore(dir)
+    when not defined(windows):
+      let alias = root / "data-alias"
+      createSymlink(dir, alias)
+      expect IOError:
+        discard openStore(alias)
+    st.close()
+    var reopened = openStore(dir)
+    reopened.close()
+    removeDir(root)
+
   test "Particle vec は E レコードで復元される":
     let dir = createTempDir("kouten-store", "vec")
     var st = openStore(dir)

@@ -2173,6 +2173,69 @@ proc runSegmentMaintenanceStatus(dataDir: string; jsonFormat: bool) =
     let stopReason = status{"stopReason"}.getStr()
     echo &"maintenance-status {outcome} startedAt={startedAt} finishedAt={finishedAt} packed={packedRings} stopReason={stopReason}"
 
+proc printCheckpointStatus(status: CheckpointStatus; jsonFormat: bool) =
+  if jsonFormat:
+    echo pretty(checkpointStatusJson(status))
+  else:
+    echo &"checkpoint {status.reason} id={status.id} verified={status.verified} complete={status.complete} items={status.items} tombstones={status.tombstones} rings={status.rings} walHighWater={status.sourceWalHighWater} snapshotBytes={status.snapshotWalBytes} path={status.path}"
+
+proc runCheckpointCreate(dataDir, checkpointRoot, checkpointId: string;
+                         durability: KoutenDurability; jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError, "checkpoint-create requires --data=DIR")
+  var db = open(dataDir = dataDir, durability = durability,
+                diskBacked = true)
+  var status: CheckpointStatus
+  try:
+    status = db.createCheckpoint(checkpointRoot, checkpointId)
+  finally:
+    db.close()
+  printCheckpointStatus(status, jsonFormat)
+
+proc runCheckpointStatus(checkpointPath: string; jsonFormat: bool) =
+  if checkpointPath.len == 0:
+    raise newException(ValueError,
+      "checkpoint-status requires --checkpoint=DIR")
+  printCheckpointStatus(checkpointStatus(checkpointPath), jsonFormat)
+
+proc runCheckpointVerify(checkpointPath: string; jsonFormat: bool) =
+  if checkpointPath.len == 0:
+    raise newException(ValueError,
+      "checkpoint-verify requires --checkpoint=DIR")
+  printCheckpointStatus(verifyCheckpoint(checkpointPath), jsonFormat)
+
+proc runCheckpointList(checkpointRoot: string; jsonFormat: bool) =
+  if checkpointRoot.len == 0:
+    raise newException(ValueError,
+      "checkpoint-list requires --checkpoint-root=DIR")
+  let statuses = listCheckpoints(checkpointRoot)
+  if jsonFormat:
+    echo pretty(checkpointListJson(checkpointRoot, statuses))
+  else:
+    echo &"checkpoint-list count={statuses.len} root={checkpointRoot}"
+    for status in statuses:
+      printCheckpointStatus(status, false)
+
+proc runCheckpointCleanup(checkpointRoot: string; keep: int;
+                          jsonFormat: bool) =
+  if checkpointRoot.len == 0:
+    raise newException(ValueError,
+      "checkpoint-clean requires --checkpoint-root=DIR")
+  let stats = cleanupCheckpoints(checkpointRoot, keep)
+  if jsonFormat:
+    echo pretty(checkpointCleanupJson(stats))
+  else:
+    echo &"checkpoint-clean kept={stats.kept} removed={stats.removed.len} invalid={stats.invalid.len} root={stats.root}"
+
+proc runCheckpointRestore(checkpointPath, dataDir: string; overwrite: bool;
+                          jsonFormat: bool) =
+  if checkpointPath.len == 0 or dataDir.len == 0:
+    raise newException(ValueError,
+      "checkpoint-restore requires --checkpoint=DIR --data=DIR")
+  let status = restoreCheckpoint(checkpointPath, dataDir,
+                                 overwrite = overwrite)
+  printCheckpointStatus(status, jsonFormat)
+
 proc runLocality(dataDir: string, metricsFormat: bool) =
   if dataDir.len == 0:
     raise newException(ValueError, "locality requires --data=DIR")
@@ -3134,6 +3197,12 @@ proc printHelp() =
   echo "  kouten maintenance-plan --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]"
   echo "  kouten maintenance-run --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]"
   echo "  kouten maintenance-status --data=DIR [--json]"
+  echo "  kouten checkpoint-create --data=DIR [--checkpoint-root=DIR] [--checkpoint-id=ID] [--durability=buffered|strong] [--json]"
+  echo "  kouten checkpoint-status --checkpoint=DIR [--json]"
+  echo "  kouten checkpoint-verify --checkpoint=DIR [--json]"
+  echo "  kouten checkpoint-list --checkpoint-root=DIR [--json]"
+  echo "  kouten checkpoint-clean --checkpoint-root=DIR [--keep=N] [--json]"
+  echo "  kouten checkpoint-restore --checkpoint=DIR --data=DIR [--overwrite] [--json]"
   echo "  kouten locality --data=DIR [--metrics]"
   echo "  kouten backup --data=DIR --backup=DIR [--durability=buffered|strong]"
   echo "  kouten restore --backup=DIR --data=DIR [--overwrite] [--durability=buffered|strong]"
@@ -3171,6 +3240,8 @@ proc main() =
   var outPath = ""
   var inPath = ""
   var checkpointPath = ""
+  var checkpointRoot = ""
+  var checkpointId = ""
   var payload = ""
   var codecName = "auto"
   var charset = ""
@@ -3248,6 +3319,7 @@ proc main() =
   var payloadBytes = 100
   var importBatchSize = 1000
   var checkpointEvery = DefaultScaleInCheckpointEvery
+  var checkpointKeep = 2
   var retryLimit = DefaultScaleInRetryLimit
   var retryDelayMs = DefaultScaleInRetryDelayMs
   var maxTransfers = 0
@@ -3336,6 +3408,8 @@ proc main() =
       of "out": outPath = val
       of "in": inPath = val
       of "checkpoint": checkpointPath = val
+      of "checkpoint-root": checkpointRoot = val
+      of "checkpoint-id": checkpointId = val
       of "payload": payload = val
       of "codec": codecName = val
       of "charset": charset = val
@@ -3455,6 +3529,7 @@ proc main() =
       of "payload-bytes": payloadBytes = parseInt(val)
       of "batch-size": importBatchSize = parseInt(val)
       of "checkpoint-every": checkpointEvery = parseInt(val)
+      of "keep": checkpointKeep = parseInt(val)
       of "retry-limit": retryLimit = parseInt(val)
       of "retry-delay-ms": retryDelayMs = parseInt(val)
       of "max-transfers": maxTransfers = parseInt(val)
@@ -3611,6 +3686,19 @@ proc main() =
                           false, jsonFormat)
   of "maintenance-status":
     runSegmentMaintenanceStatus(dataDir, jsonFormat)
+  of "checkpoint-create":
+    runCheckpointCreate(dataDir, checkpointRoot, checkpointId, durability,
+                        jsonFormat)
+  of "checkpoint-status":
+    runCheckpointStatus(checkpointPath, jsonFormat)
+  of "checkpoint-verify":
+    runCheckpointVerify(checkpointPath, jsonFormat)
+  of "checkpoint-list":
+    runCheckpointList(checkpointRoot, jsonFormat)
+  of "checkpoint-clean":
+    runCheckpointCleanup(checkpointRoot, checkpointKeep, jsonFormat)
+  of "checkpoint-restore":
+    runCheckpointRestore(checkpointPath, dataDir, overwrite, jsonFormat)
   of "locality": runLocality(dataDir, metricsFormat)
   of "backup": runBackup(dataDir, backupDir, durability)
   of "restore": runRestore(backupDir, dataDir, overwrite, durability)

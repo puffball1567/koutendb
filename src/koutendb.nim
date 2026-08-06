@@ -416,6 +416,9 @@ type
   CompactStats* = StoreCompactStats
   BackupStats* = StoreBackupStats
   LocalityReport* = StoreLocalityReport
+  CheckpointFile* = StoreCheckpointFile
+  CheckpointStatus* = StoreCheckpointStatus
+  CheckpointCleanupStats* = StoreCheckpointCleanupStats
 
   KoutenSegmentRingStatus* = object
     ring*: string
@@ -1427,6 +1430,95 @@ proc runSegmentMaintenance*(db: KoutenDb;
     "bytesRewritten": result.bytesRewritten,
     "elapsedMs": result.elapsedMs,
     "stopReason": result.stopReason
+  })
+
+proc checkpointStatusJson*(status: CheckpointStatus): JsonNode =
+  var files = newJArray()
+  for file in status.files:
+    var entry = %*{
+      "path": file.path,
+      "kind": file.kind,
+      "bytes": file.bytes,
+      "checksum": file.checksum
+    }
+    if file.kind in ["segment", "segment-index"]:
+      entry["ringKey"] = %($file.ring)
+      entry["generation"] = %($file.generation)
+    files.add entry
+  %*{
+    "schema": "koutendb.checkpoint-status.v1",
+    "format": status.format,
+    "id": status.id,
+    "path": status.path,
+    "createdAt": status.createdAt,
+    "sourceWalHighWater": $status.sourceWalHighWater,
+    "snapshotWalBytes": $status.snapshotWalBytes,
+    "complete": status.complete,
+    "verified": status.verified,
+    "reason": status.reason,
+    "items": status.items,
+    "tombstones": status.tombstones,
+    "rings": status.rings,
+    "files": files
+  }
+
+proc checkpointListJson*(root: string;
+                         statuses: openArray[CheckpointStatus]): JsonNode =
+  var entries = newJArray()
+  for status in statuses:
+    entries.add checkpointStatusJson(status)
+  %*{
+    "schema": "koutendb.checkpoint-list.v1",
+    "root": root,
+    "count": statuses.len,
+    "checkpoints": entries
+  }
+
+proc checkpointCleanupJson*(stats: CheckpointCleanupStats): JsonNode =
+  %*{
+    "schema": "koutendb.checkpoint-cleanup.v1",
+    "root": stats.root,
+    "kept": stats.kept,
+    "removed": stats.removed,
+    "invalid": stats.invalid
+  }
+
+proc createCheckpoint*(db: KoutenDb; root = ""; id = ""):
+    CheckpointStatus =
+  if db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      "cluster connection cannot checkpoint remote stores")
+  result = db.st.createCheckpoint(root, id)
+  db.audit("checkpoint-create", extra = %*{
+    "checkpointId": result.id,
+    "path": result.path,
+    "sourceWalHighWater": $result.sourceWalHighWater,
+    "snapshotWalBytes": $result.snapshotWalBytes,
+    "items": result.items,
+    "rings": result.rings
+  })
+
+proc checkpointStatus*(checkpointDir: string): CheckpointStatus =
+  store.checkpointStatus(checkpointDir)
+
+proc verifyCheckpoint*(checkpointDir: string): CheckpointStatus =
+  store.verifyCheckpoint(checkpointDir)
+
+proc listCheckpoints*(root: string): seq[CheckpointStatus] =
+  store.listCheckpoints(root)
+
+proc cleanupCheckpoints*(root: string; keep = 2): CheckpointCleanupStats =
+  store.cleanupCheckpoints(root, keep)
+
+proc restoreCheckpoint*(checkpointDir, dataDir: string;
+                        overwrite = false): CheckpointStatus =
+  result = store.restoreCheckpoint(checkpointDir, dataDir, overwrite)
+  appendAudit(dataDir, "checkpoint-restore", extra = %*{
+    "checkpointId": result.id,
+    "source": checkpointDir,
+    "snapshotWalBytes": $result.snapshotWalBytes,
+    "items": result.items,
+    "rings": result.rings
   })
 
 proc backup*(db: KoutenDb, dstDir: string): BackupStats =
