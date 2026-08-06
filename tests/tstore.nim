@@ -1167,6 +1167,7 @@ suite "store persistence":
     check reopened.itemSegmentOffsets.len == 0
     let fallbackReport = reopened.segmentReport()
     check fallbackReport.walFallbacks == 1
+    check fallbackReport.walFallbackReasons[ssfrPointRead] == 1
     reopened.close()
     removeDir(dir)
 
@@ -1194,6 +1195,7 @@ suite "store persistence":
     let report = reopened.segmentReport()
     check report.segmentHits == 0
     check report.walFallbacks == 1
+    check report.walFallbackReasons[ssfrRingScan] == 1
     reopened.close()
     removeDir(dir)
 
@@ -1241,6 +1243,7 @@ suite "store persistence":
     check reopened.itemSegmentOffsets.len == 2
     let report = reopened.segmentReport()
     check report.walFallbacks == 1
+    check report.walFallbackReasons[ssfrPointRead] == 1
     reopened.close()
     removeDir(dir)
 

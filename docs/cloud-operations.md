@@ -1,11 +1,30 @@
 # Cloud Operations Metrics
 
-KoutenDB v0.1.0 exposes lightweight node metrics through the existing wire
-protocol and CLI:
+KoutenDB exposes node metrics through the authenticated admin wire command and
+CLI. The legacy key/value output remains the default:
 
 ```sh
 kouten metrics --peers=127.0.0.1:7301,127.0.0.1:7302,127.0.0.1:7303
 ```
+
+Prometheus and OpenMetrics text formats are available without a sidecar format
+conversion step:
+
+```sh
+kouten metrics --peers=127.0.0.1:7301,127.0.0.1:7302,127.0.0.1:7303 \
+  --user=metrics --password-file=/run/secrets/kouten_metrics \
+  --format=prometheus
+
+kouten metrics --peers=127.0.0.1:7301 \
+  --user=metrics --password-file=/run/secrets/kouten_metrics \
+  --format=openmetrics
+```
+
+The OpenMetrics form ends with `# EOF`. Metric names use the `koutendb_`
+prefix. Counters use the `_total` suffix. Node IDs and bounded reason values
+are labels; ring names, checkpoint IDs, record IDs, and user-controlled values
+are not emitted as labels. This prevents normal ring growth from creating an
+unbounded Prometheus time-series set.
 
 Disk-backed embedded deployments expose their local read-layout diagnostics
 separately:
@@ -69,6 +88,10 @@ kouten checkpoint-clean \
   --checkpoint-root=/backup/koutendb-generations \
   --keep=3 \
   --json
+
+kouten checkpoint-metrics \
+  --checkpoint-root=/backup/koutendb-generations \
+  --format=prometheus
 ```
 
 Only older verified generations are removed. Invalid generations remain for
@@ -199,10 +222,10 @@ galaxies, as long as each configured universe still contains the required galaxy
 names. KoutenDB rejects duplicate galaxy names inside a single universe because
 that would make the archive and policy target ambiguous.
 
-This is intentionally not a Prometheus, OpenMetrics, Datadog, or CloudWatch
-exporter yet. The output is a stable key/value line that can be scraped by a
-sidecar, init script, cron job, or managed-agent integration on AWS, GCP, and
-similar platforms.
+KoutenDB emits Prometheus/OpenMetrics text but does not embed an HTTP metrics
+server. Use a Prometheus node-exporter textfile collector, an exec-capable
+agent, a sidecar, or a scheduled task to publish the command output. This keeps
+HTTP lifecycle and vendor dependencies outside the database process.
 
 ## Metrics
 
@@ -228,6 +251,13 @@ similar platforms.
 | `handoffStaleAck` | Acknowledgements rejected because the record or target changed | Concurrent mutation or ownership churn |
 | `handoffQueueFull` | Queue submissions rejected by backpressure | Worker saturation; source copies remain retained |
 | `walBytes` | Current WAL file size in bytes | Disk capacity and compaction trigger |
+| `segmentHits` | Successful reads served from ring-local segment generations | Confirm that the physical read layout is active |
+| `segmentWalFallbacks` | Reads that rejected a derived segment and used the authoritative WAL | Alert on new fallback activity and verify segment health |
+| `segmentWalFallbackPointRead` / `segmentWalFallbackRingScan` / `segmentWalFallbackWindowRead` | Bounded fallback reason counters | Distinguish point, whole-ring, and bounded-window failures without log parsing |
+| `segmentBytes` / `segmentIndexBytes` | Active derived read-layout bytes | Capacity and maintenance planning |
+| `segmentActiveGenerations` | Number of active non-zero ring generations | Confirm packing coverage |
+| `segmentStaleRecords` | Aggregate stale records in active segment generations | Maintenance pressure |
+| `segmentRecommendedRings` | Rings currently over the default pack threshold | Maintenance backlog |
 | `warpJobs` | Persisted warp jobs | Delayed update backlog |
 | `universeSyncEvents` | Persisted universe sync outbox events | Eventual-convergence backlog / remote delivery pressure |
 | `universeSyncApplied` | Durable applied universe event keys on this node | Idempotency state / replay baseline |
@@ -243,6 +273,17 @@ similar platforms.
 | `clusterTxApplied` | Applied cluster transaction intents | Apply progress |
 | `clusterTxPending` | Committed but unapplied cluster transaction intents | Retry backlog / owner failure signal |
 | `clumps` | Field-state clump count | Query/index state growth |
+
+Prometheus output also exposes the fixed-label families
+`koutendb_segment_wal_fallback_reasons_total{reason=...}` and, for embedded
+handles, `koutendb_guardrail_rejections_total{reason=...}`. The reason label is
+chosen from a fixed vocabulary; arbitrary exception text is never used as a
+label.
+
+`checkpoint-metrics` exposes aggregate checkpoint health without checkpoint-ID
+labels: generation count, verified/invalid generation counts, newest creation
+time and age, and whether the newest generation can be verified. The last value
+fails closed to `0` when any invalid generation cannot be ordered reliably.
 
 ## Recovery Mirror Metrics
 
@@ -305,16 +346,24 @@ Start with conservative alerts:
 ## Cloud Mapping
 
 On AWS, these values can be pushed as CloudWatch custom metrics by a small
-sidecar or scheduled task. On GCP, use an Ops Agent custom script or a small
-collector that converts the key/value response into Cloud Monitoring metrics.
-Datadog can ingest the same values through a custom check or by converting them
-to OpenMetrics in a sidecar.
+sidecar or scheduled task. On GCP, use an Ops Agent custom script. Datadog and
+Prometheus-compatible agents can consume the OpenMetrics text directly through
+an exec integration or textfile bridge.
 
 KoutenDB does not require cloud-specific APIs in the core. The core exposes the
 operational facts; deployment tooling decides how to ship them.
 
-## Post-v0.1 Exporters
+## C ABI
 
-Prometheus / OpenMetrics output and a Datadog-friendly collector are v0.2+
-candidates. They should live outside the core server loop so KoutenDB does not
-take a dependency on any single cloud or observability vendor.
+The additive C ABI uses the same formatter as the Nim API and CLI:
+
+```c
+void *kouten_metrics_text(void *db, int format, size_t *out_len);
+void *kouten_checkpoint_metrics_text(const char *root,
+                                     int format,
+                                     size_t *out_len);
+```
+
+Use `KOUTEN_METRICS_KEY_VALUE`, `KOUTEN_METRICS_PROMETHEUS`, or
+`KOUTEN_METRICS_OPENMETRICS`. Release every non-null buffer with
+`kouten_free()`.

@@ -700,6 +700,45 @@ proc maintenancePolicyFromC(staleRatio: cdouble, minStaleRecords,
     maxElapsedMs: maxElapsedMs)
   validateSegmentMaintenancePolicy(result)
 
+proc metricsFormatFromC(format: cint): KoutenMetricsFormat =
+  case format
+  of 0: kmfKeyValue
+  of 1: kmfPrometheus
+  of 2: kmfOpenMetrics
+  else:
+    raise newException(ValueError, "metrics format must be 0, 1, or 2")
+
+proc kouten_metrics_text(h: pointer, format: cint,
+                         outLen: ptr csize_t): pointer
+                         {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outLen == nil:
+      raise newException(ValueError, "out_len is nil")
+    let output = ensureHandle(h).metricsText(metricsFormatFromC(format))
+    outLen[] = csize_t(output.len)
+    copyStringToShared(output)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_checkpoint_metrics_text(root: cstring, format: cint,
+                                    outLen: ptr csize_t): pointer
+                                    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    if outLen == nil:
+      raise newException(ValueError, "out_len is nil")
+    let output = checkpointMetricsText(
+      cstringToString(root, "root", allowNil = false),
+      metricsFormatFromC(format))
+    outLen[] = csize_t(output.len)
+    copyStringToShared(output)
+  except CatchableError as e:
+    setError(e)
+    nil
+
 proc kouten_segment_status_json(h: pointer, staleRatio: cdouble,
                                 minStaleRecords: cint,
                                 outLen: ptr csize_t): pointer

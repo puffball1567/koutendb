@@ -88,15 +88,31 @@ type
     indexBytes*: int64
     packRecommended*: bool
 
+  StoreSegmentFallbackReason* = enum
+    ssfrPointRead
+    ssfrRingScan
+    ssfrWindowRead
+
   StoreSegmentReport* = object
     diskBacked*: bool
     segmentHits*: uint64
     walFallbacks*: uint64
+    walFallbackReasons*: array[StoreSegmentFallbackReason, uint64]
     rings*: seq[StoreSegmentRingReport]
     recommendedRings*: int
     totalSegmentBytes*: int64
     totalIndexBytes*: int64
     maxGeneration*: uint64
+
+  StoreSegmentMetrics* = object
+    hits*: uint64
+    walFallbacks*: uint64
+    walFallbackReasons*: array[StoreSegmentFallbackReason, uint64]
+    segmentBytes*: int64
+    indexBytes*: int64
+    activeGenerations*: int
+    staleRecords*: int
+    recommendedRings*: int
 
   Particle* = object
     parent*: uint64
@@ -249,6 +265,7 @@ type
     snapshotWalBytes*: int64
     complete*: bool
     verified*: bool
+    reasonCode*: string
     reason*: string
     items*: int
     tombstones*: int
@@ -320,6 +337,7 @@ type
     segmentReadStreams: Table[uint64, FileStream]
     segmentReadHits: uint64
     segmentWalFallbacks: uint64
+    segmentWalFallbackReasons: array[StoreSegmentFallbackReason, uint64]
     when defined(koutenTestFailpoints):
       segmentPackFailAfterSegmentReplace: bool
       segmentPackFailBeforeManifest: bool
@@ -1091,6 +1109,7 @@ proc segmentParticleOrWal(s: Store, parent: uint64, seq: uint32,
   except CatchableError:
     s.itemSegmentOffsets.del key(parent, seq)
     inc s.segmentWalFallbacks
+    inc s.segmentWalFallbackReasons[ssfrPointRead]
     return s.readParticleAt(walOffset)
 
 proc openSegmentReadStream(s: Store, ring: uint64): FileStream =
@@ -1143,6 +1162,7 @@ iterator particlesByRing*(s: Store, ring: uint64): Particle =
         # for this read if a segment cannot be fully verified.
         fromSegment.setLen(0)
         inc s.segmentWalFallbacks
+        inc s.segmentWalFallbackReasons[ssfrRingScan]
       finally:
         segmentStream.close()
     if segmentUsable:
@@ -1212,6 +1232,7 @@ proc particlesByRingWindow*(s: Store, ring: uint64, limit: int,
             # stream for every item.
             s.itemSegmentOffsets.del k
             inc s.segmentWalFallbacks
+            inc s.segmentWalFallbackReasons[ssfrWindowRead]
             if k notin s.itemOffsets:
               raise
             if walStream == nil:
@@ -1472,6 +1493,7 @@ proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
   result.diskBacked = s.diskBacked
   result.segmentHits = s.segmentReadHits
   result.walFallbacks = s.segmentWalFallbacks
+  result.walFallbackReasons = s.segmentWalFallbackReasons
   var rings: seq[uint64] = @[]
   var seen = initTable[uint64, bool]()
   for ring in s.itemsByRing.keys:
@@ -1513,6 +1535,38 @@ proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
     result.totalSegmentBytes += segmentBytes
     result.totalIndexBytes += indexBytes
     result.maxGeneration = max(result.maxGeneration, generation)
+
+proc segmentMetrics*(s: Store; staleRatioThreshold = 0.25;
+                     minStaleRecords = 256): StoreSegmentMetrics =
+  ## Low-cost aggregate metrics. This intentionally avoids walking every live
+  ## record so a monitoring scrape cannot become a full data scan.
+  if staleRatioThreshold < 0 or staleRatioThreshold > 1:
+    raise newException(ValueError, "staleRatioThreshold must be between 0 and 1")
+  if minStaleRecords < 0:
+    raise newException(ValueError, "minStaleRecords must be >= 0")
+  result.hits = s.segmentReadHits
+  result.walFallbacks = s.segmentWalFallbacks
+  result.walFallbackReasons = s.segmentWalFallbackReasons
+  if not s.diskBacked or s.segmentDir.len == 0:
+    return
+  var rings = initHashSet[uint64]()
+  for ring in s.itemsByRing.keys: rings.incl ring
+  for ring in s.segmentRecordCounts.keys: rings.incl ring
+  for ring in s.segmentGenerations.keys: rings.incl ring
+  for ring in rings:
+    let generation = s.segmentGenerations.getOrDefault(ring, 0'u64)
+    if generation > 0:
+      inc result.activeGenerations
+    let records = s.segmentRecordCounts.getOrDefault(ring, 0)
+    let stale = max(0, records - s.ringLiveCount(ring))
+    let ratio = if records == 0: 0.0 else: float(stale) / float(records)
+    result.staleRecords += stale
+    if stale >= minStaleRecords and ratio >= staleRatioThreshold:
+      inc result.recommendedRings
+    let segmentPath = s.segmentPath(ring)
+    let indexPath = s.segmentIndexPath(ring)
+    if fileExists(segmentPath): result.segmentBytes += getFileSize(segmentPath)
+    if fileExists(indexPath): result.indexBytes += getFileSize(indexPath)
 
 proc readClusterTxOp(fs: Stream, parts: seq[string], firstData: int): ClusterTxOp =
   var data = firstData
@@ -2877,7 +2931,46 @@ proc validateCheckpointContents(checkpointDir: string): StoreCheckpointStatus =
         raise newException(IOError,
           "checkpoint contains segments without an inventory: " & path)
   result.verified = true
+  result.reasonCode = "verified"
   result.reason = "verified"
+
+proc checkpointReasonCode*(reason: string): string =
+  ## Bounded machine-readable classification for checkpoint diagnostics.
+  ## Human-readable error details remain in `reason`.
+  let value = reason.toLowerAscii()
+  if value == "verified": "verified"
+  elif value.startsWith("restored"): "restored"
+  elif "symlink" in value: "symlink-rejected"
+  elif "manifest is missing" in value: "manifest-missing"
+  elif "completion marker is missing" in value: "completion-marker-missing"
+  elif "manifest checksum mismatch" in value: "manifest-checksum-mismatch"
+  elif "unsupported checkpoint manifest format" in value: "unsupported-format"
+  elif "checkpoint identity" in value: "invalid-identity"
+  elif "creation time" in value: "invalid-created-at"
+  elif "wal bounds" in value: "invalid-wal-bounds"
+  elif "checkpoint stats" in value or "logical statistics" in value:
+    "logical-stats-invalid"
+  elif "file inventory" in value or "wal inventory" in value:
+    "inventory-missing"
+  elif "file entry" in value or "file metadata" in value or
+      "file path" in value or "kind is invalid" in value or
+      "generation" in value:
+    "inventory-invalid"
+  elif "file is missing" in value: "file-missing"
+  elif "size mismatch" in value: "file-size-mismatch"
+  elif "checksum mismatch" in value: "file-checksum-mismatch"
+  elif "segment index validation failed" in value:
+    "segment-index-invalid"
+  elif "segment coverage is incomplete" in value:
+    "segment-coverage-incomplete"
+  elif "segment does not match wal revision" in value:
+    "segment-revision-mismatch"
+  elif "unreferenced segment file" in value or
+      "segments without an inventory" in value:
+    "unreferenced-file"
+  elif "not complete" in value or "completion state" in value:
+    "incomplete"
+  else: "verification-failed"
 
 proc checkpointStatus*(checkpointDir: string): StoreCheckpointStatus =
   ## Inspect one immutable checkpoint without mutating or repairing it.
@@ -2888,6 +2981,7 @@ proc checkpointStatus*(checkpointDir: string): StoreCheckpointStatus =
     result.verified = false
     result.complete = false
     result.reason = getCurrentExceptionMsg()
+    result.reasonCode = checkpointReasonCode(result.reason)
 
 proc verifyCheckpoint*(checkpointDir: string): StoreCheckpointStatus =
   result = checkpointStatus(checkpointDir)
@@ -3084,6 +3178,7 @@ proc restoreCheckpoint*(checkpointDir, targetDir: string;
     syncDir(targetDir)
     result = sourceStatus
     result.path = targetDir
+    result.reasonCode = "restored"
     result.reason = "restored"
     if dirExists(previousDir):
       try:
@@ -3091,6 +3186,7 @@ proc restoreCheckpoint*(checkpointDir, targetDir: string;
         syncDir(targetDir.parentDir)
         previousPublished = false
       except CatchableError:
+        result.reasonCode = "restored-cleanup-pending"
         result.reason = "restored; previous target cleanup pending at " &
                         previousDir
   except CatchableError:

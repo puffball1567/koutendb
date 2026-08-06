@@ -931,15 +931,27 @@ proc runHealth(peers, username, password, authToken, secretKey, galaxy: string,
 
 proc runMetrics(peers, username, password, authToken, secretKey, galaxy: string,
                 tls: bool, tlsCaFile, tlsServerName: string,
-                tlsInsecureSkipVerify: bool) =
+                tlsInsecureSkipVerify: bool, outputFormat: string) =
   var db = connect(peers, username = username, password = password,
                    authToken = authToken, secretKey = secretKey, galaxy = galaxy,
                    tls = tls, tlsCaFile = tlsCaFile,
                    tlsServerName = tlsServerName,
                    tlsInsecureSkipVerify = tlsInsecureSkipVerify)
-  for line in db.metrics():
-    echo line
+  let output = db.metricsText(parseKoutenMetricsFormat(outputFormat))
+  stdout.write(output)
+  if output.len == 0 or output[^1] != '\n':
+    stdout.write("\n")
   db.close()
+
+proc runCheckpointMetrics(root, outputFormat: string) =
+  if root.len == 0:
+    raise newException(ValueError,
+      "checkpoint-metrics requires --checkpoint-root=DIR")
+  let output = checkpointMetricsText(
+    root, parseKoutenMetricsFormat(outputFormat))
+  stdout.write(output)
+  if output.len == 0 or output[^1] != '\n':
+    stdout.write("\n")
 
 proc runShutdown(peers, username, password, authToken, secretKey, galaxy: string,
                  tls: bool, tlsCaFile, tlsServerName: string,
@@ -3188,7 +3200,8 @@ proc printHelp() =
   echo "  kouten ring-profile --data=DIR --ring=RING [--codec=raw|json|nif|bif] [--charset=UTF-8] [--format-version=VERSION]"
   echo "  kouten shell [--data=DIR | --peers=host:port,...]"
   echo "  kouten atlas [--data=DIR | --peers=host:port,...]"
-  echo "  kouten health|metrics|rings|drain|resume|snapshot --peers=host:port,..."
+  echo "  kouten health|rings|drain|resume|snapshot --peers=host:port,..."
+  echo "  kouten metrics --peers=host:port,... [--format=key-value|prometheus|openmetrics]"
   echo "  kouten driver list|info|install [LANG] [--manifest-path=FILE] [--execute]"
   echo "  kouten compact --data=DIR"
   echo "  kouten pack-ring --data=DIR --ring=RING [--durability=buffered|strong]"
@@ -3202,6 +3215,7 @@ proc printHelp() =
   echo "  kouten checkpoint-verify --checkpoint=DIR [--json]"
   echo "  kouten checkpoint-list --checkpoint-root=DIR [--json]"
   echo "  kouten checkpoint-clean --checkpoint-root=DIR [--keep=N] [--json]"
+  echo "  kouten checkpoint-metrics --checkpoint-root=DIR [--format=key-value|prometheus|openmetrics]"
   echo "  kouten checkpoint-restore --checkpoint=DIR --data=DIR [--overwrite] [--json]"
   echo "  kouten locality --data=DIR [--metrics]"
   echo "  kouten backup --data=DIR --backup=DIR [--durability=buffered|strong]"
@@ -3246,6 +3260,7 @@ proc main() =
   var codecName = "auto"
   var charset = ""
   var formatVersion = ""
+  var outputFormat = "key-value"
   var view = "auto"
   var idArg = ""
   var nearRingBase = ""
@@ -3414,6 +3429,7 @@ proc main() =
       of "codec": codecName = val
       of "charset": charset = val
       of "format-version": formatVersion = val
+      of "format": outputFormat = val
       of "view": view = val
       of "id": idArg = val
       of "near": nearRingBase = val
@@ -3624,7 +3640,9 @@ proc main() =
               tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
   of "metrics":
     runMetrics(peers, username, password, authToken, secretKey, galaxy, tls,
-               tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
+               tlsCaFile, tlsServerName, tlsInsecureSkipVerify, outputFormat)
+  of "checkpoint-metrics":
+    runCheckpointMetrics(checkpointRoot, outputFormat)
   of "shutdown":
     runShutdown(peers, username, password, authToken, secretKey, galaxy, tls,
                 tlsCaFile, tlsServerName, tlsInsecureSkipVerify)

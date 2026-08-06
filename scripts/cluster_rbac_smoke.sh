@@ -67,6 +67,10 @@ src/koutencli resume --peers="$PEERS" --user=admin --password=admin |
   grep -q "resumed"
 src/koutencli metrics --peers="$PEERS" --user=admin --password=admin |
   grep -q "draining 0"
+src/koutencli metrics --peers="$PEERS" --user=admin --password=admin \
+  --format=prometheus | grep -q "# TYPE koutendb_requests_total counter"
+[[ "$(src/koutencli metrics --peers="$PEERS" --user=admin --password=admin \
+  --format=openmetrics | tail -n 1)" == "# EOF" ]]
 
 echo "[cluster-rbac] run tcluster_rbac"
 KOUTEN_TEST_PEERS="$PEERS" nim c --nimcache:/tmp/nimcache_kouten_tcluster_rbac -r tests/tcluster_rbac.nim

@@ -23,12 +23,13 @@
 
 import std/[algorithm, tables, hashes, json, times, monotimes, strutils, os, net]
 import kouten/[core, store, select, wire, field, vector_backend,
-              planner_backend, payload]
+              planner_backend, payload, metrics_format]
 
 export vector_backend
 export planner_backend
 export payload
 export select
+export metrics_format
 
 type
   KoutenDurability* = StoreDurability
@@ -136,6 +137,12 @@ type
     maxRingCount*: int
     maxRecordsPerRing*: int
 
+  KoutenGuardrailReason = enum
+    kgrPayloadBytes
+    kgrVectorDimension
+    kgrRingCount
+    kgrRecordsPerRing
+
   SearchProfile* = object
     ## 人間向けの retrieval tuning profile。
     ## RDB の optimizer hint を、KoutenDB では自然な語彙で表す。
@@ -207,6 +214,7 @@ type
     ringWriteAckModes: Table[uint64, WriteAckMode]
     ringApplyPolicies: Table[uint64, RingApplyPolicy]
     guardrails: KoutenGuardrails
+    guardrailDenials: array[KoutenGuardrailReason, uint64]
     ringChildren: Table[uint64, seq[uint64]]
     stellarMembers: Table[string, seq[string]]
     stellarByMember: Table[string, seq[string]]
@@ -437,6 +445,9 @@ type
     diskBacked*: bool
     segmentHits*: uint64
     walFallbacks*: uint64
+    walFallbackPointReads*: uint64
+    walFallbackRingScans*: uint64
+    walFallbackWindowReads*: uint64
     rings*: seq[KoutenSegmentRingStatus]
     recommendedRings*: int
     totalSegmentBytes*: int64
@@ -1132,6 +1143,9 @@ proc segmentStatus*(db: KoutenDb; staleRatioThreshold = 0.25;
   result.diskBacked = report.diskBacked
   result.segmentHits = report.segmentHits
   result.walFallbacks = report.walFallbacks
+  result.walFallbackPointReads = report.walFallbackReasons[ssfrPointRead]
+  result.walFallbackRingScans = report.walFallbackReasons[ssfrRingScan]
+  result.walFallbackWindowReads = report.walFallbackReasons[ssfrWindowRead]
   result.recommendedRings = report.recommendedRings
   result.totalSegmentBytes = report.totalSegmentBytes
   result.totalIndexBytes = report.totalIndexBytes
@@ -1170,6 +1184,11 @@ proc segmentStatusJson*(status: KoutenSegmentStatus): JsonNode =
     "maxGeneration": $status.maxGeneration,
     "segmentHits": $status.segmentHits,
     "walFallbacks": $status.walFallbacks,
+    "walFallbackReasons": {
+      "point-read-failed": $status.walFallbackPointReads,
+      "ring-scan-failed": $status.walFallbackRingScans,
+      "window-read-failed": $status.walFallbackWindowReads
+    },
     "rings": rings
   }
 
@@ -1256,7 +1275,13 @@ proc segmentMaintenanceJson*(maintenance: KoutenSegmentMaintenanceResult;
       "ringKey": $decision.ringKey,
       "recommended": decision.recommended,
       "selected": decision.selected,
+      "reasonCode": decision.reason,
       "reason": decision.reason,
+      "cleanupReasonCode":
+        (if decision.reason == "packed" and decision.filesRemoved > 0:
+           "inactive-generations-removed"
+         elif decision.reason == "packed": "no-inactive-generations"
+         else: "not-run"),
       "staleRecords": decision.staleRecords,
       "staleRatio": decision.staleRatio,
       "estimatedBytes": decision.estimatedBytes,
@@ -1278,6 +1303,7 @@ proc segmentMaintenanceJson*(maintenance: KoutenSegmentMaintenanceResult;
     "recordsRewritten": maintenance.recordsRewritten,
     "bytesRewritten": maintenance.bytesRewritten,
     "filesRemoved": maintenance.filesRemoved,
+    "stopReasonCode": maintenance.stopReason,
     "stopReason": maintenance.stopReason,
     "policy": {
       "staleRatioThreshold": policy.staleRatioThreshold,
@@ -1455,6 +1481,7 @@ proc checkpointStatusJson*(status: CheckpointStatus): JsonNode =
     "snapshotWalBytes": $status.snapshotWalBytes,
     "complete": status.complete,
     "verified": status.verified,
+    "reasonCode": status.reasonCode,
     "reason": status.reason,
     "items": status.items,
     "tombstones": status.tombstones,
@@ -1477,11 +1504,43 @@ proc checkpointListJson*(root: string;
 proc checkpointCleanupJson*(stats: CheckpointCleanupStats): JsonNode =
   %*{
     "schema": "koutendb.checkpoint-cleanup.v1",
+    "reasonCode": "cleanup-completed",
     "root": stats.root,
     "kept": stats.kept,
     "removed": stats.removed,
     "invalid": stats.invalid
   }
+
+proc checkpointMetrics*(root: string): seq[string] =
+  ## Aggregate checkpoint health without checkpoint-ID labels. The bounded
+  ## shape is safe for regular Prometheus/OpenMetrics scrapes.
+  let statuses = listCheckpoints(root)
+  var verified = 0
+  var invalid = 0
+  var newestCreatedAt = 0.0
+  var newestVerified = 0
+  for status in statuses:
+    if status.verified: inc verified else: inc invalid
+    if status.createdAt >= newestCreatedAt:
+      newestCreatedAt = status.createdAt
+      newestVerified = if status.verified: 1 else: 0
+  # A damaged manifest may hide its creation time. In that case KoutenDB
+  # cannot prove that the newest generation is healthy, so report unhealthy.
+  if invalid > 0:
+    newestVerified = 0
+  let newestAge =
+    if newestCreatedAt > 0: max(0.0, epochTime() - newestCreatedAt)
+    else: 0.0
+  result.add "node 0 checkpointGenerations " & $statuses.len &
+             " checkpointVerifiedGenerations " & $verified &
+             " checkpointInvalidGenerations " & $invalid &
+             " checkpointNewestCreatedAtSec " & $newestCreatedAt &
+             " checkpointNewestAgeSec " & $newestAge &
+             " checkpointNewestVerified " & $newestVerified
+
+proc checkpointMetricsText*(root: string;
+                            format = kmfPrometheus): string =
+  formatMetricLines(checkpointMetrics(root), format)
 
 proc createCheckpoint*(db: KoutenDb; root = ""; id = ""):
     CheckpointStatus =
@@ -2207,6 +2266,7 @@ proc checkPayloadGuardrails(db: KoutenDb, encoded: EncodedPayload,
                             vecLen: int) =
   let g = db.guardrails
   if g.maxPayloadBytes > 0 and encoded.data.len > g.maxPayloadBytes:
+    inc db.guardrailDenials[kgrPayloadBytes]
     db.audit("guardrail-denied", ok = false,
              message = "payload exceeds maxPayloadBytes",
              extra = %*{"maxPayloadBytes": g.maxPayloadBytes,
@@ -2214,6 +2274,7 @@ proc checkPayloadGuardrails(db: KoutenDb, encoded: EncodedPayload,
     raise newException(KoutenGuardrailError,
       "payload exceeds maxPayloadBytes " & $g.maxPayloadBytes)
   if g.maxVectorDim > 0 and vecLen > g.maxVectorDim:
+    inc db.guardrailDenials[kgrVectorDimension]
     db.audit("guardrail-denied", ok = false,
              message = "vector dimension exceeds maxVectorDim",
              extra = %*{"maxVectorDim": g.maxVectorDim,
@@ -2227,6 +2288,7 @@ proc checkWriteGuardrails(db: KoutenDb, encoded: EncodedPayload,
   let g = db.guardrails
   if g.maxRingCount > 0 and ring notin db.ringNames and
       db.ringNames.len >= g.maxRingCount:
+    inc db.guardrailDenials[kgrRingCount]
     db.audit("guardrail-denied", ok = false, ring = ring,
              message = "ring count exceeds maxRingCount",
              extra = %*{"maxRingCount": g.maxRingCount,
@@ -2236,6 +2298,7 @@ proc checkWriteGuardrails(db: KoutenDb, encoded: EncodedPayload,
   if g.maxRecordsPerRing > 0 and db.mode == mEmbedded and ring in db.ringNames:
     let key = db.ringNames[ring]
     if db.liveRecordsInEmbeddedRing(key) >= g.maxRecordsPerRing:
+      inc db.guardrailDenials[kgrRecordsPerRing]
       db.audit("guardrail-denied", ok = false, ring = ring,
                message = "ring records exceed maxRecordsPerRing",
                extra = %*{"maxRecordsPerRing": g.maxRecordsPerRing,
@@ -2406,12 +2469,13 @@ proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
     if g.maxRecordsPerRing > 0:
       let staged = tx.stagedRingWrites.getOrDefault(key, 0)
       if tx.db.liveRecordsInEmbeddedRing(key) + staged >= g.maxRecordsPerRing:
+        inc tx.db.guardrailDenials[kgrRecordsPerRing]
         tx.db.audit("guardrail-denied", ok = false, ring = ring,
                     message = "ring records exceed maxRecordsPerRing",
                     extra = %*{"maxRecordsPerRing": g.maxRecordsPerRing,
                                "records": tx.db.liveRecordsInEmbeddedRing(key),
                                "stagedRecords": staged})
-        raise newException(ValueError,
+        raise newException(KoutenGuardrailError,
           "ring records exceed maxRecordsPerRing " & $g.maxRecordsPerRing)
     if tx.db.st.ringNames.getOrDefault(key, "") != ring:
       tx.tx.putRingName(key, ring)
@@ -4909,19 +4973,51 @@ proc health*(db: KoutenDb): seq[string] =
       result.add db.client.healthReq(i)
 
 proc metrics*(db: KoutenDb): seq[string] =
-  ## 管理・監視用の簡易 metrics。Prometheus 形式化は次段階。
+  ## Backward-compatible key/value operational metrics.
   case db.mode
   of mEmbedded:
+    let segment = db.st.segmentMetrics()
     result.add "node 0 items " & $db.st.count &
                " rings " & $db.st.ringMeta.len &
                " forwarders " & $db.st.forwarders.len &
+               " walBytes " & $db.st.logSize &
+               " persistent " & $(if db.st.isPersistent: 1 else: 0) &
+               " durabilityStrong " &
+                 $(if db.st.durability == durStrong: 1 else: 0) &
                " clusterTxCommitted " & $db.st.clusterTxCommitted &
                " clusterTxApplied " & $db.st.clusterTxApplied &
                " clusterTxPending " & $db.st.clusterTxPending &
-               " universeSyncEvents " & $db.st.universeSyncEvents.len
+               " universeSyncEvents " & $db.st.universeSyncEvents.len &
+               " segmentHits " & $segment.hits &
+               " segmentWalFallbacks " & $segment.walFallbacks &
+               " segmentWalFallbackPointRead " &
+                 $segment.walFallbackReasons[ssfrPointRead] &
+               " segmentWalFallbackRingScan " &
+                 $segment.walFallbackReasons[ssfrRingScan] &
+               " segmentWalFallbackWindowRead " &
+                 $segment.walFallbackReasons[ssfrWindowRead] &
+               " segmentBytes " & $segment.segmentBytes &
+               " segmentIndexBytes " & $segment.indexBytes &
+               " segmentActiveGenerations " & $segment.activeGenerations &
+               " segmentStaleRecords " & $segment.staleRecords &
+               " segmentRecommendedRings " & $segment.recommendedRings &
+               " guardrailDeniedPayloadBytes " &
+                 $db.guardrailDenials[kgrPayloadBytes] &
+               " guardrailDeniedVectorDim " &
+                 $db.guardrailDenials[kgrVectorDimension] &
+               " guardrailDeniedRingCount " &
+                 $db.guardrailDenials[kgrRingCount] &
+               " guardrailDeniedRecordsPerRing " &
+                 $db.guardrailDenials[kgrRecordsPerRing]
   of mCluster:
     for i in 0 ..< db.client.peers.len:
       result.add db.client.metricsReq(i)
+
+proc metricsText*(db: KoutenDb;
+                  format = kmfPrometheus): string =
+  ## Prometheus/OpenMetrics projection with bounded labels. Use `metrics()`
+  ## when the legacy key/value contract is required.
+  formatMetricLines(db.metrics(), format)
 
 proc shutdownCluster*(db: KoutenDb): seq[string] =
   ## 運用・テスト用の graceful shutdown。認証導入までは信頼ネットワーク前提。
