@@ -25,6 +25,7 @@ downstream AI/RAG or application logic.
 - [v0.12 Implementation And Validation Roadmap](v0.12-roadmap.md)
 - [Operational Trials](operational-trials.md)
 - [Soak Testing](soak-testing.md)
+- [Accelerated Churn Testing](accelerated-churn-testing.md)
 - [Benchmark Notes](koutendb-bench.md)
 - [Benchmark Comparison Tables](benchmark-comparison.md)
 - [Effect Validation](effect-validation.md)
