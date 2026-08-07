@@ -376,6 +376,21 @@ when defined(koutenTestFailpoints):
   proc failCheckpointRestoreAfterPublishForTest*(enabled: bool) =
     checkpointRestoreFailAfterPublish = enabled
 
+when defined(koutenTestCrashPoints):
+  proc processCrashPoint(name: string) =
+    ## Test-only process boundary. The smoke runner waits for the marker and
+    ## sends SIGKILL, so recovery observes real process termination rather
+    ## than an exception unwinding open files and cleanup handlers.
+    if getEnv("KOUTEN_TEST_CRASH_POINT") != name:
+      return
+    let readyPath = getEnv("KOUTEN_TEST_CRASH_READY")
+    if readyPath.len == 0:
+      raise newException(IOError,
+        "KOUTEN_TEST_CRASH_READY is required for crash-point tests")
+    writeFile(readyPath, name & "\n")
+    while true:
+      sleep(1000)
+
 var dataDirRegistryLock: Lock
 var openDataDirs = initHashSet[string]()
 initLock(dataDirRegistryLock)
@@ -1469,6 +1484,8 @@ proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
       let segmentOffset = segment.getFilePos()
       segment.write(framed)
       index.write(indexLine)
+      when defined(koutenTestCrashPoints):
+        processCrashPoint("segment-output")
       offsets[k] = segmentOffset
       inc result.records
       result.bytes += framed.len.int64
@@ -1487,11 +1504,15 @@ proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
   index.close()
   if wal != nil: wal.close()
   replaceFileAtomic(tmpSegment, newSegment)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("segment-after-data-publish")
   when defined(koutenTestFailpoints):
     if s.segmentPackFailAfterSegmentReplace:
       raise newException(IOError,
         "test segment pack failure after segment replacement")
   replaceFileAtomic(tmpIndex, newIndex)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("segment-before-manifest")
   when defined(koutenTestFailpoints):
     if s.segmentPackFailBeforeManifest:
       raise newException(IOError, "test segment pack failure before manifest")
@@ -1499,6 +1520,8 @@ proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
   s.segmentGenerations[ring] = newGeneration
   try:
     s.writeSegmentManifest()
+    when defined(koutenTestCrashPoints):
+      processCrashPoint("segment-after-manifest")
   except CatchableError:
     s.segmentGenerations[ring] = oldGeneration
     raise
@@ -1517,6 +1540,8 @@ proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
          path.endsWith(".tmp")):
       removeFile(path)
       inc result.removedFiles
+      when defined(koutenTestCrashPoints):
+        processCrashPoint("segment-cleanup")
   syncDir(s.segmentDir)
 
 when defined(koutenTestFailpoints):
@@ -3094,7 +3119,11 @@ proc createCheckpoint*(s: Store; root = ""; id = ""):
       checkpointChecksum(stageDir / CheckpointManifestName) & "\n")
     discard validateCheckpointContents(stageDir)
     syncDir(stageDir)
+    when defined(koutenTestCrashPoints):
+      processCrashPoint("checkpoint-before-publish")
     moveDirAtomic(stageDir, finalDir)
+    when defined(koutenTestCrashPoints):
+      processCrashPoint("checkpoint-after-publish")
     syncDir(checkpointRoot)
     result = verifyCheckpoint(finalDir)
   except CatchableError:
@@ -3436,7 +3465,11 @@ proc backup*(s: Store, dstDir: string): StoreBackupStats =
   if s.persistent:
     s.flushMaybe(force = true)
   s.writeSnapshotFile(tmp)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("backup-before-publish")
   replaceFileAtomic(tmp, dst)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("backup-after-publish")
   syncDir(dstDir)
   result = s.snapshotStats(dst, s.logPath)
 

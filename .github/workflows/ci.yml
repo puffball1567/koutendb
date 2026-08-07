@@ -149,6 +149,9 @@ jobs:
       - name: Run disk-backed server maintenance and pagination smoke
         run: scripts/auto_pack_server_smoke.sh
 
+      - name: Run process crash publication matrix
+        run: scripts/process_crash_matrix.sh
+
       - name: Run recovery smoke
         run: scripts/recovery_smoke.sh
 
