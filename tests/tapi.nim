@@ -1648,6 +1648,61 @@ suite "永続化":
     finally:
       removeDir(root)
 
+  test "disk-backed list pagination remains monotonic after old-seq updates":
+    let root = createTempDir("koutendb", "disk-backed-list-pagination")
+    let dir = root / "db"
+    const RecordCount = 700
+    const PageSize = 128
+
+    proc collectPages(db: KoutenDb): tuple[seqs: seq[uint32],
+                                            cursors: seq[int64]] =
+      var cursor = ""
+      for _ in 0 ..< 16:
+        let page = db.listByRing("docs/paged", limit = PageSize,
+                                 cursor = cursor)
+        for item in page.items:
+          result.seqs.add item.id.toRaw.seq
+        if page.nextCursor.len == 0:
+          return
+        result.cursors.add parseBiggestInt(page.nextCursor)
+        cursor = page.nextCursor
+      raise newException(AssertionDefect,
+        "ring pagination did not terminate within its page bound")
+
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      var ids: seq[KoutenId] = @[]
+      for i in 0 ..< RecordCount:
+        ids.add db.put(%*{"n": i, "revision": 0}, ring = "docs/paged")
+      discard db.packDiskBackedRing("docs/paged")
+
+      for i in 0 ..< 200:
+        db.update(ids[i], %*{"n": i, "revision": 1})
+      var deleted = initTable[uint32, bool]()
+      for i in countup(0, 680, 17):
+        deleted[ids[i].toRaw.seq] = true
+        db.remove(ids[i])
+
+      var expected: seq[uint32] = @[]
+      for id in ids:
+        if not deleted.getOrDefault(id.toRaw.seq, false):
+          expected.add id.toRaw.seq
+
+      let before = collectPages(db)
+      check before.seqs == expected
+      for i in 1 ..< before.cursors.len:
+        check before.cursors[i] > before.cursors[i - 1]
+      db.close()
+
+      var reopened = open(dataDir = dir, diskBacked = true)
+      let after = collectPages(reopened)
+      check after.seqs == expected
+      check after.cursors == before.cursors
+      check parseJson(reopened.get(ids[1]))["revision"].getInt() == 1
+      reopened.close()
+    finally:
+      removeDir(root)
+
   test "operationalVerify opens WAL and reports segment/locality health":
     let root = createTempDir("koutendb", "operational-verify")
     let dir = root / "db"

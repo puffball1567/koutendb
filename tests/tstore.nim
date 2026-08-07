@@ -1247,6 +1247,31 @@ suite "store persistence":
     reopened.close()
     removeDir(dir)
 
+  test "ring metadata keeps sequence order for out-of-order first writes":
+    let dir = createTempDir("kouten-store", "ring-key-sequence-order")
+    let ring = 630'u64
+    var st = openStore(dir, diskBacked = true)
+    for sequence in [9'u32, 1'u32, 5'u32, 3'u32]:
+      st.upsert Particle(parent: ring, seq: sequence, period: 60.0, head: 0.0,
+                         tWrite: float(sequence), payload: "item-" & $sequence)
+    check st.itemsByRing[ring].mapIt(it[1]) ==
+      @[1'u32, 3'u32, 5'u32, 9'u32]
+    check st.particlesByRingWindow(ring, 10).mapIt(it.seq) ==
+      @[1'u32, 3'u32, 5'u32, 9'u32]
+    let firstPage = st.itemKeysByRingPage(ring, -1, 2)
+    check firstPage.items.mapIt(it[1]) == @[1'u32, 3'u32]
+    check firstPage.hasMore
+    let secondPage = st.itemKeysByRingPage(ring, 3, 2)
+    check secondPage.items.mapIt(it[1]) == @[5'u32, 9'u32]
+    check not secondPage.hasMore
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.itemsByRing[ring].mapIt(it[1]) ==
+      @[1'u32, 3'u32, 5'u32, 9'u32]
+    reopened.close()
+    removeDir(dir)
+
   test "bounded ring windows handle limits direction deletes and post-pack writes":
     let dir = createTempDir("kouten-store", "segment-window-boundaries")
     let ring = 631'u64

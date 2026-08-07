@@ -2920,9 +2920,9 @@ proc patch*(db: KoutenDb, id: KoutenId, patchDoc: JsonNode): JsonNode =
 
 proc countByRing*(db: KoutenDb, ring: string): int =
   ## ring 内の live record 数。cluster v1 は全ノード集計。
-  if ring notin db.ringNames:
+  if db.mode == mEmbedded and ring notin db.ringNames:
     return 0
-  let key = db.ringNames[ring]
+  let key = db.ringKeyForRead(ring)
   case db.mode
   of mEmbedded:
     for itemKey in db.st.itemsByRing.getOrDefault(key, @[]):
@@ -2936,17 +2936,19 @@ proc listByRing*(db: KoutenDb, ring: string, limit = 100,
                  cursor = ""): KoutenListPage =
   ## ring 内を seq 昇順で cursor pagination する。cursor は前回の nextCursor。
   ## cluster v1 は全ノードから集めて merge する。
-  if limit <= 0 or ring notin db.ringNames:
+  if limit <= 0 or (db.mode == mEmbedded and ring notin db.ringNames):
     return
-  let key = db.ringNames[ring]
+  let key = db.ringKeyForRead(ring)
   let afterSeq =
     if cursor.len == 0: -1'i64
     else: int64(parseBiggestInt(cursor))
   if db.mode == mCluster:
     var rows: seq[WireListItem] = @[]
+    var remoteHasMore = false
     for node in 0 ..< db.client.peers.len:
       let part = db.client.listRingReq(node, key, limit, cursor)
       rows.add part.items
+      remoteHasMore = remoteHasMore or part.nextCursor.len > 0
     rows.sort(proc(a, b: WireListItem): int = cmp(a.seq, b.seq))
     for row in rows:
       if row.seq.int64 <= afterSeq:
@@ -2958,21 +2960,21 @@ proc listByRing*(db: KoutenDb, ring: string, limit = 100,
         id: KoutenId(parent: row.parent, epoch: db.tbl.epoch, seq: row.seq,
                     tWrite: row.tWrite),
         payload: row.payload, codec: row.codec)
+    if result.nextCursor.len == 0 and remoteHasMore and result.items.len > 0:
+      result.nextCursor = $(result.items[^1].id.seq)
     return
-  var emitted = 0
-  var lastSeq = -1'i64
-  for p in db.st.particlesByRing(key):
-    if p.seq.int64 <= afterSeq:
-      continue
-    if emitted >= limit:
-      result.nextCursor = $lastSeq
-      break
+  # Segment physical order is optimized independently from logical cursor
+  # order. Use the seq-ordered metadata path so updates to old records cannot
+  # regress the cursor or duplicate rows across pages.
+  let page = db.st.itemKeysByRingPage(key, afterSeq, limit)
+  for itemKey in page.items:
+    let p = db.st.getParticle(itemKey[0], itemKey[1])
     result.items.add KoutenRecord(
       id: KoutenId(parent: p.parent, epoch: db.tbl.epoch, seq: p.seq,
                   tWrite: p.tWrite),
       payload: p.payload, codec: p.codec)
-    lastSeq = p.seq.int64
-    inc emitted
+  if page.hasMore and result.items.len > 0:
+    result.nextCursor = $(result.items[^1].id.seq)
 
 proc defaultReadOptions*(): KoutenReadOptions =
   KoutenReadOptions(
