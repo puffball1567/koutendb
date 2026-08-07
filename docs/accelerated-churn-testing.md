@@ -53,6 +53,55 @@ examples/accelerated_churn.sh
 This short form validates the runner itself. It is not the v0.12 endurance
 evidence and is intentionally not part of normal CI.
 
+## Recorded v0.12 Operation-Bounded Run
+
+The following local run completed on 2026-08-07 after the disk-backed cursor
+pagination fix:
+
+```sh
+KOUTEN_CHURN_SECONDS=0 \
+KOUTEN_CHURN_OPERATIONS=120000 \
+KOUTEN_CHURN_WORKDIR=/tmp/koutendb-churn-v012-120k \
+examples/accelerated_churn.sh
+```
+
+Environment:
+
+- Ubuntu Linux 6.8.0, x86-64;
+- AMD Ryzen 5 5600H, 6 cores / 12 threads;
+- Nim 2.2.10;
+- ARC memory management and release optimization;
+- local disk-backed mode, without Docker or network transport.
+
+Results:
+
+| Measurement | Result |
+|---|---:|
+| Elapsed time | 830 seconds |
+| Churn operations | 120,000 |
+| Writes recorded by the workload | 32,045 puts / 66,012 updates / 23,991 deletes |
+| Checked point reads | 120,000 |
+| Exact logical-state comparisons | 1,202 |
+| Bounded maintenance runs | 482 |
+| Verified checkpoints | 120 |
+| Close/reopen cycles | 60 |
+| Backup/restore comparisons | 30 |
+| Final live records | 8,054 across 17 rings |
+| Duplicate or missing logical records | 0 |
+| Segment-to-WAL fallbacks | 0 |
+| Final recommended rings | 0 |
+| Final operational verification | Passed |
+
+The final checkpoint was complete and verified. The final logical set matched
+the independent model after the maintenance backlog was drained. Sampled point
+read latency was 31.431 us p50, 46.237 us p95, and 56.854 us p99. These latency
+values describe this local generated workload and machine; they are validation
+telemetry, not universal performance claims.
+
+This run provides dense state-transition evidence. It does not replace the
+separate process-crash, concurrency, storage-failure, container, or final
+72-hour matrices.
+
 ## Output
 
 The work directory contains:
