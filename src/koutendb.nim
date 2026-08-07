@@ -2332,9 +2332,13 @@ proc put*(db: KoutenDb, encoded: EncodedPayload, ring: string = "default",
   of mCluster:
     # Stable physical ring owner. Logical orbit timing is independent.
     let node = int(db.tbl.placementOwner(key))
-    let (seq, tWrite) = db.client.putReq(node, key, ri.period, ri.headAngle,
-                                         encoded.data, normVec, encoded.codec)
-    result = KoutenId(parent: key, epoch: db.tbl.epoch, seq: seq, tWrite: tWrite)
+    let placed = db.client.putRingReq(node, ring, encoded.data, normVec,
+                                      encoded.codec)
+    if placed.parent != key:
+      raise newException(IOError,
+        "server returned a different ring key for " & ring)
+    result = KoutenId(parent: placed.parent, epoch: placed.epoch,
+                      seq: placed.seq, tWrite: placed.tWrite)
 
 proc put*(db: KoutenDb, payload: string, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =

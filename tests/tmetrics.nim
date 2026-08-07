@@ -12,7 +12,7 @@ suite "operational metrics":
 
   test "Prometheus output is deterministic bounded and typed":
     let lines = @[
-      "node 0 requests 12 items 3 segmentWalFallbacks 2 " &
+      "node 0 requests 12 connectionsRejected 1 items 3 segmentWalFallbacks 2 " &
         "segmentWalFallbackPointRead 1 segmentWalFallbackRingScan 1",
       "node 1 requests 7 items 4 segmentWalFallbacks 0 " &
         "segmentWalFallbackPointRead 0 segmentWalFallbackRingScan 0"
@@ -20,6 +20,10 @@ suite "operational metrics":
     let output = formatMetricLines(lines, kmfPrometheus)
     check output.contains("# TYPE koutendb_requests_total counter")
     check output.contains("koutendb_requests_total{node=\"0\"} 12")
+    check output.contains(
+      "# TYPE koutendb_connections_rejected_total counter")
+    check output.contains(
+      "koutendb_connections_rejected_total{node=\"0\"} 1")
     check output.contains("koutendb_items{node=\"1\"} 4")
     check output.contains(
       "koutendb_segment_wal_fallback_reasons_total{node=\"0\"," &

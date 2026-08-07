@@ -152,6 +152,9 @@ jobs:
       - name: Run process crash publication matrix
         run: scripts/process_crash_matrix.sh
 
+      - name: Run concurrency and backpressure matrix
+        run: scripts/concurrency_backpressure_smoke.sh
+
       - name: Run recovery smoke
         run: scripts/recovery_smoke.sh
 

@@ -238,6 +238,7 @@ HTTP lifecycle and vendor dependencies outside the database process.
 | `authFailures` | Failed authentication attempts | Credential abuse or misconfiguration signal |
 | `authzDenied` | Authorization denials | Role/ring-prefix policy mismatch or probing |
 | `connectionsAccepted` | Total accepted TCP connections | Connection churn baseline |
+| `connectionsRejected` | Connections rejected by the fixed admission limit | Explicit connection-pressure and overload signal |
 | `activeConnections` | Current open TCP connections | Client pressure and leak detection |
 | `items` | Stored live particles/documents on the node | Capacity and skew monitoring |
 | `tombstones` | Durable logical-delete guard markers retained by the node | Mutation-ordering safety and acknowledgement/reclamation pressure |
@@ -341,6 +342,8 @@ Start with conservative alerts:
   `recoveryMirrorBytes` changes unexpectedly compared with the source and
   previous mirrors.
 - `activeConnections` rises without returning to the normal range.
+- `connectionsRejected` increases, indicating that the fixed connection
+  admission limit is protecting the node from overload.
 - `uptimeSec` resets outside planned maintenance.
 
 ## Cloud Mapping
