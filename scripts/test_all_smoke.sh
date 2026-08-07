@@ -7,6 +7,7 @@ cd "$ROOT"
 scripts/test_core.sh
 scripts/disk_backed_recovery_smoke.sh
 scripts/process_crash_matrix.sh
+scripts/concurrency_backpressure_smoke.sh
 scripts/auto_pack_server_smoke.sh
 scripts/checkpoint_smoke.sh
 scripts/cli_crud_smoke.sh

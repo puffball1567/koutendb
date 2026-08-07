@@ -89,6 +89,11 @@ maximum result budget and a maximum vector scan count. If a request crosses
 those bounds, the server returns a stable `ERR bad-request` instead of keeping
 the single-threaded server busy indefinitely.
 
+`LISTR` pages are also bounded to 10,000 records per request. Clients should
+use the returned cursor instead of requesting an unbounded ring response.
+Accepted sockets have both receive and send deadlines, so a client that stops
+mid-request or stops reading a response cannot hold the server loop forever.
+
 The normal fix is not to raise the cap first. Prefer a `ring`, `stellar`, child
 scope, or narrower retrieval plan so KoutenDB can reduce the candidate set before
 scoring. This turns unsafe broad scans into an observable tuning problem instead

@@ -12,7 +12,8 @@ type
 
 const CounterKeys = [
   "requests", "errors", "authFailures", "authzDenied",
-  "drainRejectedWrites", "connectionsAccepted", "tombstonesReclaimed",
+  "drainRejectedWrites", "connectionsAccepted", "connectionsRejected",
+  "tombstonesReclaimed",
   "handoffQueued", "handoffApplied", "handoffFailed", "handoffStaleAck",
   "handoffQueueFull", "universeApplyApplied", "universeApplySkipped",
   "universeApplyErrors", "universeApplyForwarded", "retrieveRequests",

@@ -42,8 +42,18 @@ const
   MaxWireBodyBytes = 64 * 1024 * 1024
   MaxWireVectorDim = MaxWireBodyBytes div sizeof(float32)
   MaxWireJsonDepth = 128
-  SocketReadTimeoutMs = 10_000
-  MaxActiveConnections = 1024
+  SocketReadTimeoutMs =
+    when defined(koutenTestBackpressure): 250
+    else: 10_000
+  SocketWriteTimeoutMs =
+    when defined(koutenTestBackpressure): 250
+    else: 10_000
+  MaxActiveConnections =
+    when defined(koutenTestBackpressure): 8
+    else: 1024
+  MaxListRingItems =
+    when defined(koutenTestBackpressure): 32
+    else: 10_000
   MaxRetrieveBudget =
     when defined(koutenTestSmallLimits): 4
     else: 1024
@@ -210,6 +220,7 @@ type
     authzDenied: uint64
     drainRejectedWrites: uint64
     connectionsAccepted: uint64
+    connectionsRejected: uint64
     activeConnections: int
     universeApplyApplied: uint64
     universeApplySkipped: uint64
@@ -815,13 +826,19 @@ proc validateJsonDepth(raw: string, maxDepth: int) =
       else:
         discard
 
-proc setSocketReadTimeout(sock: Socket, timeoutMs: int) =
+proc setSocketTimeouts(sock: Socket, readTimeoutMs, writeTimeoutMs: int) =
   when defined(windows):
     discard
   else:
-    var tv = posix.Timeval(tv_sec: posix.Time(timeoutMs div 1000),
-                           tv_usec: posix.Suseconds((timeoutMs mod 1000) * 1000))
+    var tv = posix.Timeval(tv_sec: posix.Time(readTimeoutMs div 1000),
+                           tv_usec: posix.Suseconds(
+                             (readTimeoutMs mod 1000) * 1000))
     discard posix.setsockopt(sock.getFd, SOL_SOCKET, SO_RCVTIMEO,
+                             addr tv, SockLen(sizeof(tv)))
+    tv = posix.Timeval(tv_sec: posix.Time(writeTimeoutMs div 1000),
+                       tv_usec: posix.Suseconds(
+                         (writeTimeoutMs mod 1000) * 1000))
+    discard posix.setsockopt(sock.getFd, SOL_SOCKET, SO_SNDTIMEO,
                              addr tv, SockLen(sizeof(tv)))
 
 proc denyRingName(sv: Server, sock: Socket, name: string) =
@@ -2015,6 +2032,10 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let limit = parseInt(parts[2])
     let cursorLen = parseInt(parts[3])
     discard checkedWireLen(cursorLen, "cursorLen")
+    if limit < 0 or limit > MaxListRingItems:
+      sock.drainBytes(cursorLen)
+      raise newException(ValueError,
+        "LISTR limit must be between 0 and " & $MaxListRingItems)
     if not sv.ringKeyAllowed(sock, ringKey):
       sock.drainBytes(cursorLen)
       sv.denyRingKey(sock, ringKey)
@@ -2290,6 +2311,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "drainRejectedWrites " & $sv.drainRejectedWrites & " " &
                    "drainStartedAt " & $(int(sv.drainStartedAt)) & " " &
                    "connectionsAccepted " & $sv.connectionsAccepted & " " &
+                   "connectionsRejected " & $sv.connectionsRejected & " " &
                    "activeConnections " & $sv.activeConnections & " " &
                    "items " & $sv.st.count & " " &
                    "tombstones " & $sv.st.tombstones.len & " " &
@@ -2743,10 +2765,16 @@ proc main() =
         listener.accept(client)
         if conns.len >= MaxActiveConnections:
           inc sv.errorResponses
+          inc sv.connectionsRejected
+          if not sv.tlsEnabled:
+            try:
+              client.sendFrame("ERR overloaded")
+            except CatchableError:
+              discard
           client.close()
           continue
         client.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
-        client.setSocketReadTimeout(SocketReadTimeoutMs)
+        client.setSocketTimeouts(SocketReadTimeoutMs, SocketWriteTimeoutMs)
         when defined(ssl):
           if sv.tlsEnabled:
             try:
