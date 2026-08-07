@@ -33,6 +33,7 @@ matrix used before releases.
 | Soak testing | `examples/soak_72h.sh`, `examples/soak_runner.nim` | Optional local runner: long-running three-node cluster validation with mixed writes, point reads, query projection, ring reads, retrieval, metrics, snapshot, and offline verify. Not part of CI. |
 | Accelerated churn | `examples/accelerated_churn.sh`, `examples/accelerated_churn.nim` | Manual high-density disk-backed validator: seeded writes, updates, deletes, backfills, bounded maintenance, checkpoint retention, reopen, backup/restore, independent full-state comparisons, bounded latency sampling, RSS/storage/fallback metrics, and final offline verification. A 120,000-operation local run completed with 1,202 exact logical-state comparisons, 60 reopens, 30 backup/restore comparisons, zero duplicate or missing records, and zero WAL fallbacks. It remains outside CI. |
 | Disk-backed crash recovery | `scripts/disk_backed_recovery_smoke.sh`, `examples/disk_backed_recovery_matrix.nim` | Three process-level `SIGKILL` rounds during repeated strong-durability two-ring transactions, each followed by restart, atomic-pair verification, ring pack, compact, backup, restore, and result re-verification. The round count is configurable with `KOUTEN_RECOVERY_ROUNDS`. |
+| Publication crash boundaries | `scripts/process_crash_matrix.sh`, `examples/process_crash_matrix.nim` | CI matrix using actual `SIGKILL` at nine exact boundaries: segment output, data and index publication, manifest activation, inactive-generation cleanup, and checkpoint/backup publication before and after replacement. Restart verification requires old-or-new generation visibility, unrelated-ring isolation, hidden unpublished checkpoints, restorable published state, retry safety, temporary-file cleanup, and zero post-recovery WAL fallback. Test hooks are compile-time-only and absent from release builds. This is process-crash coverage, not a power-loss durability claim. |
 | Driver compatibility | `scripts/driver_compat.sh` | Optional smoke: C, C++, and published driver-facing C ABI paths when enabled |
 | Data model demos | `scripts/demo_smoke.sh`, `examples/stellar_data_model_demo.sh`, `examples/locality_layout_demo.sh`, `examples/payload_codecs_demo.sh`, `examples/effect_validation_demo.sh` | Demo-covered: non-copy stellar visibility, narrowed stellar reads, original ring preservation after detach, payload codec persistence, compaction locality reporting, messy locality workloads, compact-before/after logical result invariants, lightweight effect validation, and read micro-samples. `examples/effect_validation_matrix.sh` and `examples/offline_effect_validation.sh` are manual validation tools, not default CI smoke steps. |
 
@@ -42,6 +43,7 @@ For a normal core release, run:
 
 ```sh
 scripts/test_core.sh
+scripts/process_crash_matrix.sh
 scripts/checkpoint_smoke.sh
 scripts/cli_crud_smoke.sh
 scripts/auto_pack_server_smoke.sh
