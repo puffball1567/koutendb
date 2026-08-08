@@ -1,0 +1,6 @@
+@ 128 2135983541
+XP 1 4673013234906969203 0 60.0 5.15 0.75 54 0 json 1786149796099999 0 1
+{"kind":"notification","message":"first","read":false}
+@ 128 82223340
+XP 1 4673013234906969203 1 60.0 5.15 0.75 54 0 json 1786149796100009 0 1
+{"kind":"notification","message":"second","read":true}

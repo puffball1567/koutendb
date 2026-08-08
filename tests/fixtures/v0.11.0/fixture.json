@@ -1,0 +1,8 @@
+{
+  "release": "v0.11.0",
+  "commit": "40c5e43cdf31baff6b3ffcc763003bb5456996af",
+  "documents": 26,
+  "rings": 12,
+  "segmentLayout": "manifest-generation-one",
+  "generator": "tagged-release-public-api"
+}
