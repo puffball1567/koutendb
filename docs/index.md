@@ -41,6 +41,7 @@ downstream AI/RAG or application logic.
 - [Generation Checkpoints](generation-checkpoints.md)
 - [Time Orbit Design](time-orbit.md)
 - [Data Migration](data-migration.md)
+- [Container Persistence and Security Validation](container-security-validation.md)
 - [Cloud Operations Metrics](cloud-operations.md)
 - [Threat Model](threat-model.md)
 - [Test Coverage](test-coverage.md)
