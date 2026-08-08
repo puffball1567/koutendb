@@ -155,6 +155,9 @@ jobs:
       - name: Run concurrency and backpressure matrix
         run: scripts/concurrency_backpressure_smoke.sh
 
+      - name: Run storage failure matrix
+        run: scripts/storage_failure_matrix.sh
+
       - name: Run recovery smoke
         run: scripts/recovery_smoke.sh
 

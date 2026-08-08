@@ -45,6 +45,15 @@ process-local segment hit/WAL fallback counters. `verify` exits non-zero when
 an explicitly configured capacity bound is exceeded, making it suitable for a
 scheduled health check.
 
+If a WAL write or durability flush fails, the open Store handle is poisoned:
+the failed mutation is not published into its readable state and later writes
+are rejected instead of continuing from an uncertain file position. Resolve
+the storage fault, restart the process, and run `kouten verify --data=...`
+before resuming writes. A checksummed torn record at the final WAL boundary is
+removed during reopen; corruption before the final boundary causes open/replay
+to fail instead of being truncated. Ring segment, index, and manifest files are
+derived read-layout data and can be rebuilt from the authoritative WAL.
+
 An opt-in disk-backed server also reports bounded maintenance counters through
 the existing `metrics` command: attempts, completed/partial/interrupted/failed
 runs, no-work runs, packed rings, rewritten bytes, and the last elapsed time.

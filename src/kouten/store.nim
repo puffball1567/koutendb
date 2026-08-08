@@ -55,6 +55,13 @@ import ./[payload, mutation]
 export payload
 export mutation
 
+when defined(koutenTestStorageFailures):
+  type
+    TestWalFailure* = enum
+      twfNone,
+      twfDiskFull,
+      twfShortWrite
+
 type
   StoreDurability* = enum
     durBuffered    ## batched flush: fast, may lose the last batch on OS crash
@@ -342,6 +349,9 @@ type
       segmentPackFailAfterSegmentReplace: bool
       segmentPackFailBeforeManifest: bool
       segmentPackDelayMs: int
+    when defined(koutenTestStorageFailures):
+      testWalFailure: TestWalFailure
+      testWalShortBytes: int
     dataDirLock: DataDirLock
     persistent: bool
     diskBacked*: bool
@@ -2233,6 +2243,50 @@ when defined(koutenTestFailpoints):
   proc poisonWritesForTest*(s: Store, message = "test write failure") =
     s.markWriteFailed(message)
 
+when defined(koutenTestStorageFailures):
+  proc failNextWalWriteForTest*(s: Store, failure: TestWalFailure;
+                                shortBytes = 7) =
+    if failure == twfShortWrite and shortBytes <= 0:
+      raise newException(ValueError, "shortBytes must be positive")
+    s.testWalFailure = failure
+    s.testWalShortBytes = shortBytes
+
+proc writeStoreWalRecord(s: Store, body: string) =
+  s.ensureWritable()
+  try:
+    when defined(koutenTestStorageFailures):
+      let failure = s.testWalFailure
+      s.testWalFailure = twfNone
+      case failure
+      of twfDiskFull:
+        raise newException(IOError, "No space left on device (injected)")
+      of twfShortWrite:
+        let framed = walRecord(body)
+        let written = min(s.testWalShortBytes, framed.len)
+        s.logFile.write(framed[0 ..< written])
+        s.logFile.flushFile()
+        raise newException(IOError, "short WAL write (injected)")
+      of twfNone:
+        discard
+    s.logFile.writeWalRecord(body)
+  except CatchableError:
+    s.markWriteFailed(getCurrentExceptionMsg())
+    raise
+
+proc writeStoreWalLine(s: Store, line: string) =
+  s.writeStoreWalRecord(lineRecord(line))
+
+proc writeStoreParticleRecord(s: Store, tag: string, txid: uint64,
+                              p: Particle) =
+  s.writeStoreWalRecord(particleRecordBody(tag, txid, p))
+
+proc writeStoreTombstoneRecord(s: Store, tag: string, txid: uint64,
+                               tombstone: Tombstone) =
+  s.writeStoreWalLine(tombstoneRecordBody(tag, txid, tombstone))
+
+proc writeStoreClusterTxOp(s: Store, txid: uint64, op: ClusterTxOp) =
+  s.writeStoreWalRecord(clusterTxOpBody(txid, op))
+
 proc openStore*(dir: string, durability: StoreDurability = durBuffered,
                 diskBacked = false, mutationOrigin = 1'u32): Store =
   ## dir == "" ならメモリのみ。指定時は dir/kouten.log に追記・起動時に再生。
@@ -2283,10 +2337,10 @@ proc setGalaxy*(s: Store, galaxy: string) =
       raise newException(ValueError,
         "data dir belongs to galaxy '" & s.galaxy & "', not '" & galaxy & "'")
     return
-  s.galaxy = galaxy
   if s.persistent:
-    s.logFile.writeWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
+    s.writeStoreWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
     s.flushMaybe(force = true)
+  s.galaxy = galaxy
 
 proc clusterTxPending*(s: Store): int
 
@@ -2327,12 +2381,12 @@ proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
   if s.placementEpoch != 0 and s.universeSyncEvents.len > 0:
     raise newException(ValueError,
       "placement topology changes require zero pending Universe sync events")
+  if s.persistent:
+    s.writeStoreWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
+    s.flushMaybe(force = true)
   s.placementEpoch = epoch
   s.placementNodes = nodes
   s.placementVirtualArcs = virtualArcs
-  if s.persistent:
-    s.logFile.writeWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
-    s.flushMaybe(force = true)
 
 proc setMaintenanceDrained*(s: Store, drained: bool) =
   ## Persist the operator-controlled quiet point used by backup and explicit
@@ -2343,7 +2397,7 @@ proc setMaintenanceDrained*(s: Store, drained: bool) =
     return
   s.ensureWritable()
   if s.persistent:
-    s.logFile.writeWalLine("MD " & $(if drained: 1 else: 0))
+    s.writeStoreWalLine("MD " & $(if drained: 1 else: 0))
     s.flushMaybe(force = true)
   s.maintenanceDrained = drained
 
@@ -3601,11 +3655,11 @@ proc putRingMeta*(s: Store, ringKey: uint64, period, head: float) =
       s.ringMeta[ringKey] == (period: period, head: head):
     return
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalLine("R " & $ringKey & " " & $period & " " & $head)
+    s.flushMaybe()
   s.applyOp(TxOp(kind: txRingMeta, ringKey: ringKey,
                  ringPeriod: period, ringHead: head))
-  if s.persistent:
-    s.logFile.writeWalLine("R " & $ringKey & " " & $period & " " & $head)
-    s.flushMaybe()
 
 proc putRingName*(s: Store, ringKey: uint64, name: string) =
   if name.len == 0:
@@ -3613,32 +3667,32 @@ proc putRingName*(s: Store, ringKey: uint64, name: string) =
   s.ensureWritable()
   if s.ringNames.getOrDefault(ringKey, "") == name:
     return
-  s.ringNames[ringKey] = name
   if s.persistent:
-    s.logFile.writeWalRecord("N " & $ringKey & " " & $name.len & "\n" & name & "\n")
+    s.writeStoreWalRecord("N " & $ringKey & " " & $name.len & "\n" & name & "\n")
     s.flushMaybe()
+  s.ringNames[ringKey] = name
 
 proc putGalaxyDescription*(s: Store, description: string) =
   if s.galaxyDescription == description:
     return
   s.ensureWritable()
-  s.galaxyDescription = description
   if s.persistent:
-    s.logFile.writeWalRecord("GD " & $description.len & "\n" & description & "\n")
+    s.writeStoreWalRecord("GD " & $description.len & "\n" & description & "\n")
     s.flushMaybe(force = true)
+  s.galaxyDescription = description
 
 proc putRingDescription*(s: Store, ringKey: uint64, description: string) =
   if s.ringDescriptions.getOrDefault(ringKey, "") == description:
     return
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalRecord("RD " & $ringKey & " " & $description.len & "\n" &
+                             description & "\n")
+    s.flushMaybe(force = true)
   if description.len == 0:
     s.ringDescriptions.del ringKey
   else:
     s.ringDescriptions[ringKey] = description
-  if s.persistent:
-    s.logFile.writeWalRecord("RD " & $ringKey & " " & $description.len & "\n" &
-                             description & "\n")
-    s.flushMaybe(force = true)
 
 proc putRingPayloadProfile*(s: Store, ringKey: uint64,
                             profile: RingPayloadProfile) =
@@ -3646,15 +3700,15 @@ proc putRingPayloadProfile*(s: Store, ringKey: uint64,
       s.ringPayloadProfiles[ringKey] == profile:
     return
   s.ensureWritable()
-  s.ringPayloadProfiles[ringKey] = profile
+  let raw = $(%*{
+    "defaultCodec": profile.defaultCodec.payloadCodecName,
+    "charset": profile.charset,
+    "formatVersion": profile.formatVersion
+  })
   if s.persistent:
-    let raw = $(%*{
-      "defaultCodec": profile.defaultCodec.payloadCodecName,
-      "charset": profile.charset,
-      "formatVersion": profile.formatVersion
-    })
-    s.logFile.writeWalRecord("RP " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
+    s.writeStoreWalRecord("RP " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
     s.flushMaybe(force = true)
+  s.ringPayloadProfiles[ringKey] = profile
 
 proc putTimeOrbitProfile*(s: Store, ringKey: uint64,
                           profile: TimeOrbitProfile) =
@@ -3663,11 +3717,11 @@ proc putTimeOrbitProfile*(s: Store, ringKey: uint64,
     return
   s.ensureWritable()
   validateTimeOrbitProfile(profile)
-  s.ringTimeOrbitProfiles[ringKey] = profile
+  let raw = timeOrbitProfileJson(profile)
   if s.persistent:
-    let raw = timeOrbitProfileJson(profile)
-    s.logFile.writeWalRecord("TO " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
+    s.writeStoreWalRecord("TO " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
     s.flushMaybe(force = true)
+  s.ringTimeOrbitProfiles[ringKey] = profile
 
 proc putStellarMap*(s: Store, stellar, blob: string) =
   if stellar.len == 0:
@@ -3676,17 +3730,17 @@ proc putStellarMap*(s: Store, stellar, blob: string) =
   if blob.len > 0 and s.stellarMaps.getOrDefault(stellar, "") == blob:
     return
   if blob.len == 0:
-    s.stellarMaps.del stellar
     if s.persistent:
       let raw = $(%*{"stellar": stellar, "deleted": true})
-      s.logFile.writeWalRecord("SM " & $raw.len & "\n" & raw & "\n")
+      s.writeStoreWalRecord("SM " & $raw.len & "\n" & raw & "\n")
       s.flushMaybe(force = true)
+    s.stellarMaps.del stellar
     return
   discard validateStellarMapBlob(stellar, blob)
-  s.stellarMaps[stellar] = blob
   if s.persistent:
-    s.logFile.writeWalRecord("SM " & $blob.len & "\n" & blob & "\n")
+    s.writeStoreWalRecord("SM " & $blob.len & "\n" & blob & "\n")
     s.flushMaybe(force = true)
+  s.stellarMaps[stellar] = blob
 
 proc putWarpJob*(s: Store, jobId: uint64, blob: string) =
   ## KoutenDB layer が解釈する warp job snapshot を保存する。
@@ -3694,17 +3748,17 @@ proc putWarpJob*(s: Store, jobId: uint64, blob: string) =
   if blob.len == 0:
     raise newException(ValueError, "warp job blob is empty")
   s.ensureWritable()
-  s.warpJobs[jobId] = blob
   if s.persistent:
-    s.logFile.writeWalRecord("WJ " & $jobId & " " & $blob.len & "\n" & blob & "\n")
+    s.writeStoreWalRecord("WJ " & $jobId & " " & $blob.len & "\n" & blob & "\n")
     s.flushMaybe(force = true)
+  s.warpJobs[jobId] = blob
 
 proc deleteWarpJob*(s: Store, jobId: uint64) =
   s.ensureWritable()
-  s.warpJobs.del jobId
   if s.persistent:
-    s.logFile.writeWalLine("WD " & $jobId)
+    s.writeStoreWalLine("WD " & $jobId)
     s.flushMaybe(force = true)
+  s.warpJobs.del jobId
 
 proc putUniverseSyncEvent*(s: Store, eventId: uint64, blob: string) =
   ## KoutenDB layer が解釈する universe sync event snapshot を保存する。
@@ -3712,11 +3766,11 @@ proc putUniverseSyncEvent*(s: Store, eventId: uint64, blob: string) =
   if blob.len == 0:
     raise newException(ValueError, "universe sync event blob is empty")
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalRecord("UJ " & $eventId & " " & $blob.len & "\n" & blob & "\n")
+    s.flushMaybe(force = true)
   s.universeSyncEvents[eventId] = blob
   s.nextUniverseSyncId = max(s.nextUniverseSyncId, eventId)
-  if s.persistent:
-    s.logFile.writeWalRecord("UJ " & $eventId & " " & $blob.len & "\n" & blob & "\n")
-    s.flushMaybe(force = true)
 
 proc setNextUniverseSyncId*(s: Store, nextId: uint64) =
   ## Persist the source outbox sequence independent of currently live events.
@@ -3724,17 +3778,17 @@ proc setNextUniverseSyncId*(s: Store, nextId: uint64) =
   if nextId <= s.nextUniverseSyncId:
     return
   s.ensureWritable()
-  s.nextUniverseSyncId = nextId
   if s.persistent:
-    s.logFile.writeWalLine("UQ " & $nextId)
+    s.writeStoreWalLine("UQ " & $nextId)
     s.flushMaybe(force = true)
+  s.nextUniverseSyncId = nextId
 
 proc deleteUniverseSyncEvent*(s: Store, eventId: uint64) =
   s.ensureWritable()
-  s.universeSyncEvents.del eventId
   if s.persistent:
-    s.logFile.writeWalLine("UD " & $eventId)
+    s.writeStoreWalLine("UD " & $eventId)
     s.flushMaybe(force = true)
+  s.universeSyncEvents.del eventId
 
 proc pruneAppliedUniverseSyncEvents*(s: Store, maxKeep: int): int =
   ## Bound the target-side idempotency set. Choose maxKeep large enough for the
@@ -3746,17 +3800,19 @@ proc pruneAppliedUniverseSyncEvents*(s: Store, maxKeep: int): int =
   for eventKey in s.appliedUniverseSyncOrder:
     if s.appliedUniverseSyncEvents.getOrDefault(eventKey, false):
       compactedOrder.add eventKey
-  s.appliedUniverseSyncOrder = compactedOrder
-  while s.appliedUniverseSyncOrder.len > maxKeep:
-    let eventKey = s.appliedUniverseSyncOrder[0]
-    s.appliedUniverseSyncOrder.delete(0)
-    if s.appliedUniverseSyncEvents.getOrDefault(eventKey, false):
-      s.appliedUniverseSyncEvents.del eventKey
-      inc result
-      if s.persistent:
-        s.logFile.writeWalRecord("UX " & $eventKey.len & "\n" & eventKey & "\n")
-  if result > 0 and s.persistent:
+  let removeCount = max(0, compactedOrder.len - maxKeep)
+  if s.persistent:
+    for i in 0 ..< removeCount:
+      let eventKey = compactedOrder[i]
+      s.writeStoreWalRecord("UX " & $eventKey.len & "\n" & eventKey & "\n")
+  if removeCount > 0 and s.persistent:
     s.flushMaybe(force = true)
+  for i in 0 ..< removeCount:
+    s.appliedUniverseSyncEvents.del compactedOrder[i]
+  if removeCount > 0:
+    compactedOrder.delete(0 .. removeCount - 1)
+  s.appliedUniverseSyncOrder = compactedOrder
+  result = removeCount
 
 proc markUniverseSyncEventApplied*(s: Store, eventKey: string) =
   if eventKey.len == 0:
@@ -3764,11 +3820,11 @@ proc markUniverseSyncEventApplied*(s: Store, eventKey: string) =
   if s.appliedUniverseSyncEvents.getOrDefault(eventKey, false):
     return
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalRecord("UA " & $eventKey.len & "\n" & eventKey & "\n")
+    s.flushMaybe(force = true)
   s.appliedUniverseSyncEvents[eventKey] = true
   s.appliedUniverseSyncOrder.add eventKey
-  if s.persistent:
-    s.logFile.writeWalRecord("UA " & $eventKey.len & "\n" & eventKey & "\n")
-    s.flushMaybe(force = true)
   discard s.pruneAppliedUniverseSyncEvents(AppliedUniverseSyncRetention)
 
 proc isUniverseSyncEventApplied*(s: Store, eventKey: string): bool =
@@ -3795,7 +3851,7 @@ proc upsert*(s: Store, p: Particle, origin = 0'u32,
   var walOffset = -1'i64
   if s.persistent:
     walOffset = s.logFile.getFilePos()
-    s.logFile.writeParticleRecord("", 0, effective)
+    s.writeStoreParticleRecord("", 0, effective)
     s.flushMaybe()
   s.applyOp(TxOp(kind: txUpsert, p: effective, walOffset: walOffset,
                  segmentOffset: -1'i64, segmentBody: ""))
@@ -3809,11 +3865,11 @@ proc putForwarder*(s: Store, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
   let forwarderKey = key(oldParent, oldSeq)
   if forwarderKey in s.forwarders and s.forwarders[forwarderKey] == f:
     return
-  s.forwarders[forwarderKey] = f
   if s.persistent:
-    s.logFile.writeWalLine("F " & $oldParent & " " & $oldSeq & " " & $f.newParent & " " &
+    s.writeStoreWalLine("F " & $oldParent & " " & $oldSeq & " " & $f.newParent & " " &
                            $f.newSeq & " " & $f.newTWrite & " " & $f.expiresAt)
     s.flushMaybe()
+  s.forwarders[forwarderKey] = f
 
 proc remove*(s: Store, parent: uint64, seq: uint32,
              origin = 0'u32): bool {.discardable.} =
@@ -3838,7 +3894,7 @@ proc remove*(s: Store, parent: uint64, seq: uint32,
   if k in s.tombstones and tombstone.version <= s.tombstones[k].version:
     return false
   if s.persistent:
-    s.logFile.writeTombstoneRecord("", 0, tombstone)
+    s.writeStoreTombstoneRecord("", 0, tombstone)
     s.flushMaybe()
   s.applyOp(TxOp(kind: txRemove, tombstone: tombstone))
   true
@@ -3859,14 +3915,14 @@ proc applyTombstone*(s: Store, tombstone: Tombstone): bool {.discardable.} =
       if not merged.mergeTombstoneMetadata(effective):
         return false
       if s.persistent:
-        s.logFile.writeTombstoneRecord("", 0, merged)
+        s.writeStoreTombstoneRecord("", 0, merged)
         s.flushMaybe()
       s.tombstones[k] = merged
       return true
   if k in s.itemVersions and effective.version <= s.itemVersions[k]:
     return false
   if s.persistent:
-    s.logFile.writeTombstoneRecord("", 0, effective)
+    s.writeStoreTombstoneRecord("", 0, effective)
     s.flushMaybe()
   s.applyOp(TxOp(kind: txRemove, tombstone: effective))
   true
@@ -3874,10 +3930,10 @@ proc applyTombstone*(s: Store, tombstone: Tombstone): bool {.discardable.} =
 proc evict*(s: Store, parent: uint64, seq: uint32) =
   ## Remove a transferred source copy without creating a logical delete.
   s.ensureWritable()
-  s.evictState(parent, seq)
   if s.persistent:
-    s.logFile.writeWalLine("D " & $parent & " " & $seq)
+    s.writeStoreWalLine("D " & $parent & " " & $seq)
     s.flushMaybe()
+  s.evictState(parent, seq)
 
 proc reclaimTombstone*(s: Store, parent: uint64, seq: uint32): bool
     {.discardable.} =
@@ -3887,10 +3943,10 @@ proc reclaimTombstone*(s: Store, parent: uint64, seq: uint32): bool
   let k = key(parent, seq)
   if k notin s.tombstones:
     return false
-  s.tombstones.del k
   if s.persistent:
-    s.logFile.writeWalLine("LG " & $parent & " " & $seq)
+    s.writeStoreWalLine("LG " & $parent & " " & $seq)
     s.flushMaybe()
+  s.tombstones.del k
   true
 proc contains*(s: Store, parent: uint64, seq: uint32): bool =
   let k = key(parent, seq)
@@ -4010,35 +4066,35 @@ proc commit*(tx: StoreTxn) =
   let s = tx.store
   s.ensureWritable()
   if s.persistent:
-    s.logFile.writeWalLine("T " & $tx.id)
+    s.writeStoreWalLine("T " & $tx.id)
     for i in 0 ..< tx.ops.len:
       var op = tx.ops[i]
       case op.kind
       of txRingMeta:
-        s.logFile.writeWalLine("XR " & $tx.id & " " & $op.ringKey & " " &
+        s.writeStoreWalLine("XR " & $tx.id & " " & $op.ringKey & " " &
                                $op.ringPeriod & " " & $op.ringHead)
       of txRingName:
-        s.logFile.writeWalRecord("XN " & $tx.id & " " & $op.ringNameKey & " " &
+        s.writeStoreWalRecord("XN " & $tx.id & " " & $op.ringNameKey & " " &
                                  $op.ringName.len & "\n" & op.ringName & "\n")
       of txUpsert:
         op.walOffset = s.logFile.getFilePos()
         op.segmentBody = particleRecordBody("XP", tx.id, op.p)
-        s.logFile.writeWalRecord(op.segmentBody)
+        s.writeStoreWalRecord(op.segmentBody)
         tx.ops[i] = op
       of txRemove:
-        s.logFile.writeTombstoneRecord("XL", tx.id, op.tombstone)
+        s.writeStoreTombstoneRecord("XL", tx.id, op.tombstone)
       of txForwarder:
-        s.logFile.writeWalLine("XF " & $tx.id & " " & $op.oldParent & " " &
+        s.writeStoreWalLine("XF " & $tx.id & " " & $op.oldParent & " " &
                                $op.oldSeq & " " & $op.f.newParent & " " &
                                $op.f.newSeq & " " & $op.f.newTWrite & " " &
                                $op.f.expiresAt)
       of txUniverseSyncEvent:
-        s.logFile.writeWalRecord("XUJ " & $tx.id & " " & $op.universeEventId &
+        s.writeStoreWalRecord("XUJ " & $tx.id & " " & $op.universeEventId &
                                  " " & $op.universeEventBlob.len & "\n" &
                                  op.universeEventBlob & "\n")
       of txUniverseSyncDelete:
-        s.logFile.writeWalLine("XUD " & $tx.id & " " & $op.universeDeleteEventId)
-    s.logFile.writeWalLine("C " & $tx.id)
+        s.writeStoreWalLine("XUD " & $tx.id & " " & $op.universeDeleteEventId)
+    s.writeStoreWalLine("C " & $tx.id)
     s.flushMaybe(force = true)
   s.applyOps(tx.ops)
   tx.committed = true
@@ -4067,19 +4123,19 @@ proc putClusterTxIntent*(s: Store, intent: ClusterTxIntent) =
     op.version =
       if op.version.isZero: s.nextMutationVersion()
       else: s.normalizeMutationVersion(op.version, op.tWrite)
-  s.clusterTx[effective.id] = effective
   if s.persistent:
-    s.logFile.writeWalLine("CT " & $effective.id)
+    s.writeStoreWalLine("CT " & $effective.id)
     for op in effective.ops:
-      s.logFile.writeClusterTxOp(effective.id, op)
-    s.logFile.writeWalLine("CC " & $effective.id)
+      s.writeStoreClusterTxOp(effective.id, op)
+    s.writeStoreWalLine("CC " & $effective.id)
     s.flushMaybe(force = true)
+  s.clusterTx[effective.id] = effective
 
 proc markClusterTxApplied*(s: Store, txid: uint64) =
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalLine("CA " & $txid)
+    s.flushMaybe()
   s.appliedClusterTx[txid] = true
   if txid in s.clusterTx:
     s.clusterTx[txid].applied = true
-  if s.persistent:
-    s.logFile.writeWalLine("CA " & $txid)
-    s.flushMaybe()
