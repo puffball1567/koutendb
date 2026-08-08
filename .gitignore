@@ -42,6 +42,7 @@ tests/tsegment_failpoints
 tests/tmaintenance_window
 tests/tcheckpoints
 tests/tmetrics
+tests/tupgrade_fixtures
 third_party/faiss/build/
 third_party/faiss/cmake-build-*/
 third_party/faiss/**/*.o
