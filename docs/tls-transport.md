@@ -92,3 +92,17 @@ scripts/cluster_tls_smoke.sh
 
 This test opens a local TCP listener. In restricted sandboxes it may need to run
 outside the sandbox.
+
+## Container Validation
+
+The heavier manual container matrix verifies TLS and authentication together
+with named-volume persistence, restart, container replacement, network
+interruption, credential rotation, authorization denial, audit persistence, and
+offline storage verification:
+
+```sh
+scripts/container_security_matrix.sh
+```
+
+See [Container Persistence and Security Validation](container-security-validation.md)
+for the complete matrix and the recorded local result.
