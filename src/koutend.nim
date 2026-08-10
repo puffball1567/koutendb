@@ -2090,7 +2090,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       else:
         sock.sendFrame("MISS")
     else:
-      let item = sv.st.items[(parent, seq)]
+      let item = sv.st.getParticle(parent, seq)
       var value = item.payload
       var codec = item.codec
       if parts[0] == "QRYID":
@@ -2135,7 +2135,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       else:
         sock.sendFrame("MISS")
     else:
-      let item = sv.st.items[(parent, seq)]
+      let item = sv.st.getParticle(parent, seq)
       var value = item.payload
       var codec = item.codec
       if parts[0] == "QRY":
@@ -2169,9 +2169,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         payload.add "0\n"
         continue
       let seq = parseUInt(h[1]).uint32
-      let k = (parent, seq)
-      if k in sv.st.items:
-        let value = sv.st.items[k].payload
+      if sv.st.contains(parent, seq):
+        let value = sv.st.getParticle(parent, seq).payload
         payload.add $value.len & "\n"
         payload.add value
       else:
