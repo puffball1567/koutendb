@@ -22,9 +22,9 @@ downstream AI/RAG or application logic.
 - [Use Case Recipes](use-case-recipes.md)
 - [Technical FAQ](technical-faq.md)
 - [Feature Status / Roadmap](koutendb-status.md)
-- [v0.12 Implementation And Validation Roadmap](v0.12-roadmap.md)
+- [v0.12 Implementation And Validation Record](v0.12-roadmap.md)
 - [Operational Trials](operational-trials.md)
-- [Soak Testing](soak-testing.md)
+- [72-Hour Strong-Durability Soak Result](soak-testing.md)
 - [Accelerated Churn Testing](accelerated-churn-testing.md)
 - [Benchmark Notes](koutendb-bench.md)
 - [Benchmark Comparison Tables](benchmark-comparison.md)
@@ -62,5 +62,6 @@ downstream AI/RAG or application logic.
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.12.0 Release Notes](github-release-v0.12.0.md)
 - [v0.11.0 Release Notes](github-release-v0.11.0.md)
 - [Historical v0.10 Roadmap](v0.10-roadmap.md)

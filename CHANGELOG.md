@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+## v0.12.0 - 2026-08-13
+
 ### Added
 
+- Added opt-in bounded automatic ring packing with ring, byte, elapsed-time,
+  maintenance-window, and stale-data limits plus shared plan/run/status APIs.
 - Added immutable generation checkpoints that seal a compact WAL and complete
   ring-local segment/index generations behind a checksummed manifest and
   completion marker.
@@ -12,6 +16,16 @@
   functions.
 - Added corruption, symlink, overlap, retention, empty-store, CLI, and C ABI
   checkpoint coverage.
+- Added Prometheus and OpenMetrics output for requests, persistence, segment
+  layout, maintenance, capacity guardrails, checkpoints, and fallback reasons.
+- Added stable maintenance and fallback reason codes without unbounded
+  ring-name or error-text metric labels.
+- Added accelerated churn, process-crash, concurrency/backpressure,
+  storage-failure, upgrade-fixture, container-security, and external-driver
+  validation matrices.
+- Added a final 72-hour three-node, disk-backed, strong-durability gate that
+  completed 4,213,187 mixed operations with zero client errors and exact
+  source-to-restored checkpoint equality.
 
 ### Fixed / Hardened
 
@@ -28,6 +42,15 @@
   reservations with cross-process file locks. Checkpoint restore holds a
   stable sibling guard across verification, directory publication, and
   rollback, so an active or concurrently opened target cannot be replaced.
+- WAL write and flush failures poison the affected Store handle, reject later
+  mutations, and cannot publish a failed record into in-memory state.
+- Torn final WAL records recover to the last checksummed boundary, while
+  derived segment, index, and manifest damage rebuilds from authoritative WAL.
+- Accepted sockets use bounded receive/send deadlines, connection admission is
+  observable, and oversized ring-list pages fail within a fixed limit.
+- Cluster Nim API writes persist ring names correctly across reopen.
+- Upgrade validation covers immutable v0.10.1 and v0.11.0 stores, legacy
+  segment layouts, current packing, checkpoints, restore, and JSONL migration.
 
 ## v0.11.0 - 2026-08-04
 
