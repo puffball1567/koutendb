@@ -146,6 +146,18 @@ jobs:
       - name: Run cluster wire fuzz smoke
         run: scripts/cluster_wire_fuzz_smoke.sh
 
+      - name: Run disk-backed server maintenance and pagination smoke
+        run: scripts/auto_pack_server_smoke.sh
+
+      - name: Run process crash publication matrix
+        run: scripts/process_crash_matrix.sh
+
+      - name: Run concurrency and backpressure matrix
+        run: scripts/concurrency_backpressure_smoke.sh
+
+      - name: Run storage failure matrix
+        run: scripts/storage_failure_matrix.sh
+
       - name: Run recovery smoke
         run: scripts/recovery_smoke.sh
 

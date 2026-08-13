@@ -6,8 +6,9 @@
 ##   OS クラッシュでは直近バッチを失い得る（歯止め: §16）。durStrong は
 ##   write boundary で fsync する。
 ## - compact は生存レコードだけで WAL を再構築する。backup/restore は
-##   compact 済み WAL を別ディレクトリへ退避・復元する。完全な snapshot
-##   世代管理や fsync 付き checkpoint は今後の運用ノブ。
+##   compact 済み WAL を別ディレクトリへ退避・復元する。
+## - checkpoint は WAL と ring segment/index の完全な一世代を checksum
+##   manifest で固定し、directory rename で公開・復元する。
 ##
 ## 現行 WAL は `!KOUTENDB-WAL 2` の magic/version 行から始まり、各論理
 ## レコードを `@ <len> <crc32>\n<body>` で包む。body は下記の長さ接頭辞
@@ -46,13 +47,20 @@
 ##   S <ringKey> <nextSeq>\n                            次の ring-local seq
 ##   M <maxTWrite>\n                                    最大 write timestamp
 
-import std/[algorithm, tables, os, streams, strutils, monotimes, times, posix,
-            json, tempfiles, math]
+import std/[algorithm, tables, sets, locks, os, streams, strutils, monotimes,
+            times, posix, json, tempfiles, math, sequtils]
 import nimsodium
 import ./[payload, mutation]
 
 export payload
 export mutation
+
+when defined(koutenTestStorageFailures):
+  type
+    TestWalFailure* = enum
+      twfNone,
+      twfDiskFull,
+      twfShortWrite
 
 type
   StoreDurability* = enum
@@ -63,7 +71,17 @@ type
     records*: int
     rings*: int
     bytes*: int64
+    indexBytes*: int64
     removedFiles*: int
+
+  SegmentPackLimitKind* = enum
+    splBytes
+    splElapsed
+
+  SegmentPackLimitError* = object of CatchableError
+    ## A bounded pack stopped before publishing a new generation. The old
+    ## complete generation remains active.
+    limitKind*: SegmentPackLimitKind
 
   StoreSegmentRingReport* = object
     ring*: uint64
@@ -77,15 +95,31 @@ type
     indexBytes*: int64
     packRecommended*: bool
 
+  StoreSegmentFallbackReason* = enum
+    ssfrPointRead
+    ssfrRingScan
+    ssfrWindowRead
+
   StoreSegmentReport* = object
     diskBacked*: bool
     segmentHits*: uint64
     walFallbacks*: uint64
+    walFallbackReasons*: array[StoreSegmentFallbackReason, uint64]
     rings*: seq[StoreSegmentRingReport]
     recommendedRings*: int
     totalSegmentBytes*: int64
     totalIndexBytes*: int64
     maxGeneration*: uint64
+
+  StoreSegmentMetrics* = object
+    hits*: uint64
+    walFallbacks*: uint64
+    walFallbackReasons*: array[StoreSegmentFallbackReason, uint64]
+    segmentBytes*: int64
+    indexBytes*: int64
+    activeGenerations*: int
+    staleRecords*: int
+    recommendedRings*: int
 
   Particle* = object
     parent*: uint64
@@ -221,10 +255,46 @@ type
     source*: string
     destination*: string
 
+  StoreCheckpointFile* = object
+    path*: string
+    kind*: string
+    bytes*: int64
+    checksum*: string
+    ring*: uint64
+    generation*: uint64
+
+  StoreCheckpointStatus* = object
+    format*: string
+    id*: string
+    path*: string
+    createdAt*: float
+    sourceWalHighWater*: int64
+    snapshotWalBytes*: int64
+    complete*: bool
+    verified*: bool
+    reasonCode*: string
+    reason*: string
+    items*: int
+    tombstones*: int
+    rings*: int
+    files*: seq[StoreCheckpointFile]
+
+  StoreCheckpointCleanupStats* = object
+    root*: string
+    kept*: int
+    removed*: seq[string]
+    invalid*: seq[string]
+
   MutationState* = object
     found*: bool
     deleted*: bool
     version*: MutationVersion
+
+  DataDirLock = object
+    fd: cint
+    guardFd: cint
+    identity: string
+    held: bool
 
   Store* = ref object
     items*: Table[(uint64, uint32), Particle]
@@ -274,10 +344,15 @@ type
     segmentReadStreams: Table[uint64, FileStream]
     segmentReadHits: uint64
     segmentWalFallbacks: uint64
+    segmentWalFallbackReasons: array[StoreSegmentFallbackReason, uint64]
     when defined(koutenTestFailpoints):
       segmentPackFailAfterSegmentReplace: bool
       segmentPackFailBeforeManifest: bool
-    lockFd: cint
+      segmentPackDelayMs: int
+    when defined(koutenTestStorageFailures):
+      testWalFailure: TestWalFailure
+      testWalShortBytes: int
+    dataDirLock: DataDirLock
     persistent: bool
     diskBacked*: bool
     durability*: StoreDurability
@@ -292,9 +367,43 @@ const
   WalMagicLine = "!KOUTENDB-WAL 2"
   WalRecordTag = "@"
   EncryptedBackupMagic = "KOUTENDB-BACKUP-SECRETBOX-V1\n"
+  CheckpointFormat = "koutendb-checkpoint-v1"
+  CheckpointManifestName = "checkpoint.json"
+  CheckpointCompleteName = "checkpoint.complete"
+  CheckpointChecksumAlgorithm = "blake2b-chain-v1"
+  CheckpointChecksumChunkBytes = 1024 * 1024
   AppliedUniverseSyncRetention =
     when defined(koutenTestSmallLimits): 3
     else: 100_000
+
+when defined(koutenTestFailpoints):
+  var checkpointRestoreFailAfterExchange = false
+  var checkpointRestoreFailAfterPublish = false
+
+  proc failCheckpointRestoreAfterExchangeForTest*(enabled: bool) =
+    checkpointRestoreFailAfterExchange = enabled
+
+  proc failCheckpointRestoreAfterPublishForTest*(enabled: bool) =
+    checkpointRestoreFailAfterPublish = enabled
+
+when defined(koutenTestCrashPoints):
+  proc processCrashPoint(name: string) =
+    ## Test-only process boundary. The smoke runner waits for the marker and
+    ## sends SIGKILL, so recovery observes real process termination rather
+    ## than an exception unwinding open files and cleanup handlers.
+    if getEnv("KOUTEN_TEST_CRASH_POINT") != name:
+      return
+    let readyPath = getEnv("KOUTEN_TEST_CRASH_READY")
+    if readyPath.len == 0:
+      raise newException(IOError,
+        "KOUTEN_TEST_CRASH_READY is required for crash-point tests")
+    writeFile(readyPath, name & "\n")
+    while true:
+      sleep(1000)
+
+var dataDirRegistryLock: Lock
+var openDataDirs = initHashSet[string]()
+initLock(dataDirRegistryLock)
 
 type
   WalCorruptionError = object of CatchableError
@@ -519,6 +628,25 @@ proc evictState(s: Store, parent: uint64, seq: uint32) =
       s.itemsByRing[parent] = entries
   s.forwarders.del k
 
+proc insertItemKeyBySeq(s: Store, parent: uint64,
+                        itemKey: (uint64, uint32)) =
+  ## itemsByRing is the lightweight logical access path used by bounded ring
+  ## reads. Keep it ordered independently from WAL/segment physical order so
+  ## cursor pagination never needs to sort or scan payload records.
+  var entries = s.itemsByRing.getOrDefault(parent, @[])
+  var low = 0
+  var high = entries.len
+  while low < high:
+    let middle = low + (high - low) div 2
+    if entries[middle][1] < itemKey[1]:
+      low = middle + 1
+    else:
+      high = middle
+  if low < entries.len and entries[low] == itemKey:
+    return
+  entries.insert(itemKey, low)
+  s.itemsByRing[parent] = entries
+
 proc mergeTombstoneMetadata(current: var Tombstone,
                             incoming: Tombstone): bool =
   for node in incoming.acknowledgedNodes:
@@ -557,7 +685,7 @@ proc applyOp(s: Store, op: TxOp) =
     let oldHasVector = s.itemHasVector.getOrDefault(k, false)
     let newHasVector = p.vec.len > 0
     if k notin s.items and k notin s.itemOffsets:
-      s.itemsByRing.mgetOrPut(p.parent, @[]).add k
+      s.insertItemKeyBySeq(p.parent, k)
     if oldHasVector != newHasVector:
       if newHasVector:
         inc s.vectorCount
@@ -1025,6 +1153,7 @@ proc segmentParticleOrWal(s: Store, parent: uint64, seq: uint32,
   except CatchableError:
     s.itemSegmentOffsets.del key(parent, seq)
     inc s.segmentWalFallbacks
+    inc s.segmentWalFallbackReasons[ssfrPointRead]
     return s.readParticleAt(walOffset)
 
 proc openSegmentReadStream(s: Store, ring: uint64): FileStream =
@@ -1077,6 +1206,7 @@ iterator particlesByRing*(s: Store, ring: uint64): Particle =
         # for this read if a segment cannot be fully verified.
         fromSegment.setLen(0)
         inc s.segmentWalFallbacks
+        inc s.segmentWalFallbackReasons[ssfrRingScan]
       finally:
         segmentStream.close()
     if segmentUsable:
@@ -1146,6 +1276,7 @@ proc particlesByRingWindow*(s: Store, ring: uint64, limit: int,
             # stream for every item.
             s.itemSegmentOffsets.del k
             inc s.segmentWalFallbacks
+            inc s.segmentWalFallbackReasons[ssfrWindowRead]
             if k notin s.itemOffsets:
               raise
             if walStream == nil:
@@ -1169,6 +1300,36 @@ proc ringLiveCount*(s: Store, ring: uint64): int =
   ## itemsByRing is updated together with live state on upsert/delete replay,
   ## so this does not touch payload files.
   s.itemsByRing.getOrDefault(ring, @[]).len
+
+proc itemKeysByRingPage*(s: Store, ring: uint64, afterSeq: int64,
+                         limit: int): tuple[
+                           items: seq[(uint64, uint32)], hasMore: bool] =
+  ## Select a logical cursor page from seq-ordered metadata. Segment/WAL
+  ## physical order is intentionally irrelevant, and no payload is read while
+  ## locating the page boundary.
+  if limit <= 0:
+    return
+  let keys = s.itemsByRing.getOrDefault(ring, @[])
+  var low = 0
+  var high = keys.len
+  while low < high:
+    let middle = low + (high - low) div 2
+    if keys[middle][1].int64 <= afterSeq:
+      low = middle + 1
+    else:
+      high = middle
+  var index = low
+  while index < keys.len and result.items.len < limit:
+    let itemKey = keys[index]
+    inc index
+    if itemKey in s.items or itemKey in s.itemOffsets:
+      result.items.add itemKey
+  while index < keys.len:
+    let itemKey = keys[index]
+    inc index
+    if itemKey in s.items or itemKey in s.itemOffsets:
+      result.hasMore = true
+      break
 
 iterator allParticles*(s: Store): Particle =
   for ring in s.itemsByRing.keys:
@@ -1272,12 +1433,27 @@ proc closeRingSegmentHandles(s: Store, ring: uint64) =
       s.segmentReadStreams[ring].close()
     s.segmentReadStreams.del ring
 
-proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} =
+proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
+                      maxElapsedMs = 0'i64): SegmentPackStats {.discardable.} =
   ## Merge only one ring into a new complete segment generation.  The
   ## manifest is switched last, making an interrupted pack select either the
   ## old complete generation or the new complete generation, never a mix.
   if not s.diskBacked or not s.persistent or s.segmentDir.len == 0:
     return
+  if maxBytes < 0:
+    raise newException(ValueError, "maxBytes must be >= 0")
+  if maxElapsedMs < 0:
+    raise newException(ValueError, "maxElapsedMs must be >= 0")
+  let startedAt = getMonoTime()
+
+  template checkElapsedLimit() =
+    if maxElapsedMs > 0 and
+        (getMonoTime() - startedAt).inMilliseconds >= maxElapsedMs:
+      var err = newException(SegmentPackLimitError,
+        "segment pack elapsed-time budget exhausted")
+      err.limitKind = splElapsed
+      raise err
+
   s.flushDiskBackedLog()
   let oldGeneration = s.segmentGenerations.getOrDefault(ring, 0'u64)
   if oldGeneration == uint64.high:
@@ -1297,19 +1473,36 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
     if keys.len > 0:
       wal = s.openWalReadStream()
     for k in keys:
+      checkElapsedLimit()
+      when defined(koutenTestFailpoints):
+        if s.segmentPackDelayMs > 0:
+          sleep(s.segmentPackDelayMs)
       if k notin s.itemOffsets:
         continue
       let body = wal.readParticleBodyAtStream(s.itemOffsets[k])
       let framed = walRecord(body)
+      let indexLine = "P " & $k[0] & " " & $k[1] & " " &
+                      $s.itemOffsets[k] & " " & $segment.getFilePos() & "\n"
+      checkElapsedLimit()
+      if maxBytes > 0 and
+          result.bytes + result.indexBytes + framed.len.int64 +
+            indexLine.len.int64 > maxBytes:
+        var err = newException(SegmentPackLimitError,
+          "segment pack byte budget exhausted")
+        err.limitKind = splBytes
+        raise err
       let segmentOffset = segment.getFilePos()
       segment.write(framed)
-      index.write("P " & $k[0] & " " & $k[1] & " " & $s.itemOffsets[k] &
-                  " " & $segmentOffset & "\n")
+      index.write(indexLine)
+      when defined(koutenTestCrashPoints):
+        processCrashPoint("segment-output")
       offsets[k] = segmentOffset
       inc result.records
       result.bytes += framed.len.int64
+      result.indexBytes += indexLine.len.int64
     segment.syncFile()
     index.syncFile()
+    checkElapsedLimit()
   except CatchableError:
     segment.close()
     index.close()
@@ -1321,11 +1514,15 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
   index.close()
   if wal != nil: wal.close()
   replaceFileAtomic(tmpSegment, newSegment)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("segment-after-data-publish")
   when defined(koutenTestFailpoints):
     if s.segmentPackFailAfterSegmentReplace:
       raise newException(IOError,
         "test segment pack failure after segment replacement")
   replaceFileAtomic(tmpIndex, newIndex)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("segment-before-manifest")
   when defined(koutenTestFailpoints):
     if s.segmentPackFailBeforeManifest:
       raise newException(IOError, "test segment pack failure before manifest")
@@ -1333,6 +1530,8 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
   s.segmentGenerations[ring] = newGeneration
   try:
     s.writeSegmentManifest()
+    when defined(koutenTestCrashPoints):
+      processCrashPoint("segment-after-manifest")
   except CatchableError:
     s.segmentGenerations[ring] = oldGeneration
     raise
@@ -1341,7 +1540,7 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
   for k, offset in offsets:
     s.itemSegmentOffsets[k] = offset
   s.segmentRecordCounts[ring] = result.records
-  result.rings = if result.records > 0: 1 else: 0
+  result.rings = 1
   let activeSegment = s.segmentPath(ring, newGeneration)
   let activeIndex = s.segmentIndexPath(ring, newGeneration)
   let ringPrefix = toHex(ring, 16)
@@ -1351,6 +1550,8 @@ proc packRingSegment*(s: Store, ring: uint64): SegmentPackStats {.discardable.} 
          path.endsWith(".tmp")):
       removeFile(path)
       inc result.removedFiles
+      when defined(koutenTestCrashPoints):
+        processCrashPoint("segment-cleanup")
   syncDir(s.segmentDir)
 
 when defined(koutenTestFailpoints):
@@ -1359,6 +1560,11 @@ when defined(koutenTestFailpoints):
 
   proc failSegmentPackBeforeManifestForTest*(s: Store; enabled: bool) =
     s.segmentPackFailBeforeManifest = enabled
+
+  proc delaySegmentPackForTest*(s: Store; milliseconds: int) =
+    if milliseconds < 0:
+      raise newException(ValueError, "segment pack test delay must be >= 0")
+    s.segmentPackDelayMs = milliseconds
 
 proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
                     minStaleRecords = 256): StoreSegmentReport =
@@ -1371,9 +1577,21 @@ proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
   result.diskBacked = s.diskBacked
   result.segmentHits = s.segmentReadHits
   result.walFallbacks = s.segmentWalFallbacks
+  result.walFallbackReasons = s.segmentWalFallbackReasons
   var rings: seq[uint64] = @[]
+  var seen = initTable[uint64, bool]()
   for ring in s.itemsByRing.keys:
-    rings.add ring
+    if not seen.getOrDefault(ring, false):
+      rings.add ring
+      seen[ring] = true
+  for ring in s.segmentRecordCounts.keys:
+    if not seen.getOrDefault(ring, false):
+      rings.add ring
+      seen[ring] = true
+  for ring in s.segmentGenerations.keys:
+    if not seen.getOrDefault(ring, false):
+      rings.add ring
+      seen[ring] = true
   rings.sort()
   for ring in rings:
     let live = s.ringLiveCount(ring)
@@ -1401,6 +1619,38 @@ proc segmentReport*(s: Store; staleRatioThreshold = 0.25;
     result.totalSegmentBytes += segmentBytes
     result.totalIndexBytes += indexBytes
     result.maxGeneration = max(result.maxGeneration, generation)
+
+proc segmentMetrics*(s: Store; staleRatioThreshold = 0.25;
+                     minStaleRecords = 256): StoreSegmentMetrics =
+  ## Low-cost aggregate metrics. This intentionally avoids walking every live
+  ## record so a monitoring scrape cannot become a full data scan.
+  if staleRatioThreshold < 0 or staleRatioThreshold > 1:
+    raise newException(ValueError, "staleRatioThreshold must be between 0 and 1")
+  if minStaleRecords < 0:
+    raise newException(ValueError, "minStaleRecords must be >= 0")
+  result.hits = s.segmentReadHits
+  result.walFallbacks = s.segmentWalFallbacks
+  result.walFallbackReasons = s.segmentWalFallbackReasons
+  if not s.diskBacked or s.segmentDir.len == 0:
+    return
+  var rings = initHashSet[uint64]()
+  for ring in s.itemsByRing.keys: rings.incl ring
+  for ring in s.segmentRecordCounts.keys: rings.incl ring
+  for ring in s.segmentGenerations.keys: rings.incl ring
+  for ring in rings:
+    let generation = s.segmentGenerations.getOrDefault(ring, 0'u64)
+    if generation > 0:
+      inc result.activeGenerations
+    let records = s.segmentRecordCounts.getOrDefault(ring, 0)
+    let stale = max(0, records - s.ringLiveCount(ring))
+    let ratio = if records == 0: 0.0 else: float(stale) / float(records)
+    result.staleRecords += stale
+    if stale >= minStaleRecords and ratio >= staleRatioThreshold:
+      inc result.recommendedRings
+    let segmentPath = s.segmentPath(ring)
+    let indexPath = s.segmentIndexPath(ring)
+    if fileExists(segmentPath): result.segmentBytes += getFileSize(segmentPath)
+    if fileExists(indexPath): result.indexBytes += getFileSize(indexPath)
 
 proc readClusterTxOp(fs: Stream, parts: seq[string], firstData: int): ClusterTxOp =
   var data = firstData
@@ -1467,24 +1717,56 @@ proc writeFileDurable(path, data: string) =
   finally:
     file.close()
 
-proc acquireDataDirLock(dir: string): cint =
-  when defined(windows):
-    return -1
+proc segmentMaintenanceStatusPath*(s: Store): string =
+  if not s.persistent or s.logPath.len == 0:
+    return ""
+  s.logPath.parentDir / "segment-maintenance.json"
+
+proc writeSegmentMaintenanceStatus*(s: Store, data: string) =
+  ## Publish scheduler state atomically. A crash can leave the temporary file,
+  ## but readers only observe the previous or next complete status document.
+  let path = s.segmentMaintenanceStatusPath()
+  if path.len == 0:
+    return
+  let tmp = path & ".tmp"
+  writeFileDurable(tmp, data)
+  replaceFileAtomic(tmp, path)
+  syncDir(path.parentDir)
+
+proc readSegmentMaintenanceStatus*(s: Store): string =
+  let path = s.segmentMaintenanceStatusPath()
+  if path.len > 0 and fileExists(path):
+    readFile(path)
   else:
-    let lockPath = dir / ".kouten.lock"
-    result = posix.open(lockPath.cstring, posix.O_RDWR or posix.O_CREAT, 0o600)
+    ""
+
+proc unregisterDataDir(identity: string) =
+  acquire(dataDirRegistryLock)
+  try:
+    openDataDirs.excl identity
+  finally:
+    release(dataDirRegistryLock)
+
+proc dataDirGuardPath(identity: string): string =
+  ## Unlike the legacy lock inside the data directory, this path does not move
+  ## when checkpoint restore atomically replaces the directory.
+  identity & ".kouten-dir.lock"
+
+when not defined(windows):
+  proc acquireFileLock(path, dir: string): cint =
+    result = posix.open(path.cstring, posix.O_RDWR or posix.O_CREAT, 0o600)
     if result < 0:
-      raise newException(IOError, "cannot open data directory lock: " & lockPath)
+      raise newException(IOError, "cannot open data directory lock: " & path)
     var fl = posix.Tflock(l_type: posix.F_WRLCK.cshort,
                           l_whence: posix.SEEK_SET.cshort,
                           l_start: 0,
                           l_len: 0)
     if posix.fcntl(result, posix.F_SETLK, addr fl) != 0:
       discard posix.close(result)
+      result = -1
       raise newException(IOError, "data directory is already open: " & dir)
 
-proc releaseDataDirLock(fd: cint) =
-  when not defined(windows):
+  proc releaseFileLock(fd: var cint) =
     if fd < 0:
       return
     var fl = posix.Tflock(l_type: posix.F_UNLCK.cshort,
@@ -1493,6 +1775,42 @@ proc releaseDataDirLock(fd: cint) =
                           l_len: 0)
     discard posix.fcntl(fd, posix.F_SETLK, addr fl)
     discard posix.close(fd)
+    fd = -1
+
+proc acquireDataDirLock(dir: string): DataDirLock =
+  ## POSIX record locks are process-scoped, so they do not reject a second
+  ## Store handle in the same process. Reserve the canonical directory in a
+  ## process-local registry as well as taking the cross-process file lock.
+  let identity = expandFilename(dir)
+  acquire(dataDirRegistryLock)
+  try:
+    if identity in openDataDirs:
+      raise newException(IOError, "data directory is already open: " & dir)
+    openDataDirs.incl identity
+  finally:
+    release(dataDirRegistryLock)
+
+  result = DataDirLock(fd: -1, guardFd: -1, identity: identity, held: true)
+  try:
+    when not defined(windows):
+      result.guardFd = acquireFileLock(dataDirGuardPath(identity), dir)
+      result.fd = acquireFileLock(dir / ".kouten.lock", dir)
+  except CatchableError:
+    when not defined(windows):
+      releaseFileLock(result.fd)
+      releaseFileLock(result.guardFd)
+    unregisterDataDir(identity)
+    result.held = false
+    raise
+
+proc releaseDataDirLock(dataDirLock: var DataDirLock) =
+  if not dataDirLock.held:
+    return
+  when not defined(windows):
+    releaseFileLock(dataDirLock.fd)
+    releaseFileLock(dataDirLock.guardFd)
+  unregisterDataDir(dataDirLock.identity)
+  dataDirLock = DataDirLock(fd: -1, guardFd: -1)
 
 proc backupKey(passphrase: string): SecretBoxKey =
   if passphrase.len == 0:
@@ -1925,17 +2243,60 @@ when defined(koutenTestFailpoints):
   proc poisonWritesForTest*(s: Store, message = "test write failure") =
     s.markWriteFailed(message)
 
+when defined(koutenTestStorageFailures):
+  proc failNextWalWriteForTest*(s: Store, failure: TestWalFailure;
+                                shortBytes = 7) =
+    if failure == twfShortWrite and shortBytes <= 0:
+      raise newException(ValueError, "shortBytes must be positive")
+    s.testWalFailure = failure
+    s.testWalShortBytes = shortBytes
+
+proc writeStoreWalRecord(s: Store, body: string) =
+  s.ensureWritable()
+  try:
+    when defined(koutenTestStorageFailures):
+      let failure = s.testWalFailure
+      s.testWalFailure = twfNone
+      case failure
+      of twfDiskFull:
+        raise newException(IOError, "No space left on device (injected)")
+      of twfShortWrite:
+        let framed = walRecord(body)
+        let written = min(s.testWalShortBytes, framed.len)
+        s.logFile.write(framed[0 ..< written])
+        s.logFile.flushFile()
+        raise newException(IOError, "short WAL write (injected)")
+      of twfNone:
+        discard
+    s.logFile.writeWalRecord(body)
+  except CatchableError:
+    s.markWriteFailed(getCurrentExceptionMsg())
+    raise
+
+proc writeStoreWalLine(s: Store, line: string) =
+  s.writeStoreWalRecord(lineRecord(line))
+
+proc writeStoreParticleRecord(s: Store, tag: string, txid: uint64,
+                              p: Particle) =
+  s.writeStoreWalRecord(particleRecordBody(tag, txid, p))
+
+proc writeStoreTombstoneRecord(s: Store, tag: string, txid: uint64,
+                               tombstone: Tombstone) =
+  s.writeStoreWalLine(tombstoneRecordBody(tag, txid, tombstone))
+
+proc writeStoreClusterTxOp(s: Store, txid: uint64, op: ClusterTxOp) =
+  s.writeStoreWalRecord(clusterTxOpBody(txid, op))
+
 proc openStore*(dir: string, durability: StoreDurability = durBuffered,
                 diskBacked = false, mutationOrigin = 1'u32): Store =
   ## dir == "" ならメモリのみ。指定時は dir/kouten.log に追記・起動時に再生。
   result = Store(lastFlush: getMonoTime(), nextTxId: 1,
-                 lockFd: -1,
                  durability: durability,
                  diskBacked: diskBacked,
                  mutationOrigin: mutationOrigin)
   if dir.len > 0:
     createDir(dir)
-    result.lockFd = acquireDataDirLock(dir)
+    result.dataDirLock = acquireDataDirLock(dir)
     let path = dir / "kouten.log"
     if diskBacked:
       result.segmentDir = dir / "segments"
@@ -1945,11 +2306,17 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
       result.replay(path)
       result.logPath = path
       result.persistent = true
-      if diskBacked and not newLog and result.itemOffsets.len > 0:
-        # Existing v0.10 stores have no sidecar index, so they take one
-        # migration rebuild.  Subsequent opens reuse validated ring segments.
-        if not result.loadSegmentManifest() or
-            not result.loadRingSegmentIndexes():
+      if diskBacked and not newLog:
+        if dirExists(result.segmentDir):
+          # Empty generations are meaningful after every record in a ring is
+          # deleted, so restore the manifest even when the WAL has no live
+          # item offsets.
+          if not result.loadSegmentManifest() or
+              not result.loadRingSegmentIndexes():
+            result.rebuildRingSegments()
+        elif result.itemOffsets.len > 0:
+          # Existing v0.10 stores have no sidecar index, so they take one
+          # migration rebuild. Subsequent opens reuse validated ring segments.
           result.rebuildRingSegments()
       result.logFile = open(path, fmAppend)
       if newLog:
@@ -1958,8 +2325,7 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
       if durability == durStrong:
         syncDir(dir)
     except CatchableError:
-      releaseDataDirLock(result.lockFd)
-      result.lockFd = -1
+      releaseDataDirLock(result.dataDirLock)
       raise
 
 proc setGalaxy*(s: Store, galaxy: string) =
@@ -1971,10 +2337,10 @@ proc setGalaxy*(s: Store, galaxy: string) =
       raise newException(ValueError,
         "data dir belongs to galaxy '" & s.galaxy & "', not '" & galaxy & "'")
     return
-  s.galaxy = galaxy
   if s.persistent:
-    s.logFile.writeWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
+    s.writeStoreWalRecord("G " & $galaxy.len & "\n" & galaxy & "\n")
     s.flushMaybe(force = true)
+  s.galaxy = galaxy
 
 proc clusterTxPending*(s: Store): int
 
@@ -2015,12 +2381,12 @@ proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
   if s.placementEpoch != 0 and s.universeSyncEvents.len > 0:
     raise newException(ValueError,
       "placement topology changes require zero pending Universe sync events")
+  if s.persistent:
+    s.writeStoreWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
+    s.flushMaybe(force = true)
   s.placementEpoch = epoch
   s.placementNodes = nodes
   s.placementVirtualArcs = virtualArcs
-  if s.persistent:
-    s.logFile.writeWalLine("PM " & $epoch & " " & $nodes & " " & $virtualArcs)
-    s.flushMaybe(force = true)
 
 proc setMaintenanceDrained*(s: Store, drained: bool) =
   ## Persist the operator-controlled quiet point used by backup and explicit
@@ -2031,7 +2397,7 @@ proc setMaintenanceDrained*(s: Store, drained: bool) =
     return
   s.ensureWritable()
   if s.persistent:
-    s.logFile.writeWalLine("MD " & $(if drained: 1 else: 0))
+    s.writeStoreWalLine("MD " & $(if drained: 1 else: 0))
     s.flushMaybe(force = true)
   s.maintenanceDrained = drained
 
@@ -2093,8 +2459,7 @@ proc close*(s: Store) =
         raise
     s.logFile.close()
     s.persistent = false
-  releaseDataDirLock(s.lockFd)
-  s.lockFd = -1
+  releaseDataDirLock(s.dataDirLock)
 
 proc writeSnapshotFile(s: Store, path: string) =
   var file = open(path, fmWrite)
@@ -2267,6 +2632,713 @@ proc snapshotStatsFromFile(path, source: string): StoreBackupStats =
   var s = Store(lastFlush: getMonoTime(), nextTxId: 1)
   s.replay(path, repair = false)
   result = s.snapshotStats(path, source)
+
+proc checkpointChecksum(path: string): string =
+  var file = open(path, fmRead)
+  var buffer = newString(CheckpointChecksumChunkBytes)
+  var state = genericHash("KOUTENDB-CHECKPOINT-CHECKSUM-V1\0")
+  var total = 0'i64
+  var chunkIndex = 0'i64
+  try:
+    while true:
+      let read = file.readChars(buffer.toOpenArray(0, buffer.high))
+      if read == 0:
+        break
+      let chunkHash = genericHash(buffer[0 ..< read])
+      state = genericHash("KOUTENDB-CHECKPOINT-CHUNK-V1\0" & state &
+                          chunkHash & "\0" & $chunkIndex & "\0" & $read)
+      total += read.int64
+      inc chunkIndex
+  finally:
+    file.close()
+  CheckpointChecksumAlgorithm & ":" &
+    genericHashHex("KOUTENDB-CHECKPOINT-FINAL-V1\0" & state & "\0" &
+                   $chunkIndex & "\0" & $total)
+
+proc checkpointIdValid(id: string): bool =
+  if id.len == 0 or id.len > 128 or id == "." or id == ".." or
+      id.startsWith(".tmp-"):
+    return false
+  for c in id:
+    if not (c in {'a'..'z'} or c in {'A'..'Z'} or c in {'0'..'9'} or
+            c in {'-', '_', '.'}):
+      return false
+  true
+
+proc newCheckpointId(): string =
+  let millis = int64(floor(epochTime() * 1000.0))
+  "cp-" & $millis & "-" &
+    strutils.toHex(randomBytes(6)).toLowerAscii()
+
+proc checkpointRelativePathValid(path: string): bool =
+  if path.len == 0 or path.isAbsolute or '\\' in path:
+    return false
+  let parts = path.split('/')
+  if parts.anyIt(it.len == 0 or it == "." or it == ".."):
+    return false
+  path == "kouten.log" or path == "segments/manifest" or
+    (parts.len == 2 and parts[0] == "segments" and
+     (parts[1].endsWith(".seg") or parts[1].endsWith(".idx")))
+
+proc normalizedAbsolute(path: string): string =
+  let absolute = absolutePath(path).normalizedPath()
+  var existing = absolute
+  var suffix: seq[string] = @[]
+  while not fileExists(existing) and not dirExists(existing) and
+      not symlinkExists(existing):
+    let parent = existing.parentDir
+    if parent == existing:
+      break
+    suffix.insert(existing.extractFilename, 0)
+    existing = parent
+  result =
+    if fileExists(existing) or dirExists(existing) or symlinkExists(existing):
+      expandFilename(existing)
+    else:
+      existing
+  for component in suffix:
+    result = result / component
+  result.normalizePath()
+
+proc pathContains(parent, child: string): bool =
+  let normalizedParent = normalizedAbsolute(parent)
+  let normalizedChild = normalizedAbsolute(child)
+  normalizedChild == normalizedParent or
+    normalizedChild.startsWith(normalizedParent & DirSep)
+
+proc pathsOverlap(a, b: string): bool =
+  pathContains(a, b) or pathContains(b, a)
+
+proc syncPath(path: string) =
+  var file = open(path, fmAppend)
+  try:
+    file.syncFile()
+  finally:
+    file.close()
+
+proc copyFileDurable(src, dst: string) =
+  createDir(dst.parentDir)
+  copyFile(src, dst)
+  syncPath(dst)
+
+proc moveDirAtomic(src, dst: string) =
+  when defined(windows):
+    moveDir(src, dst)
+  else:
+    if cRename(src.cstring, dst.cstring) != 0:
+      raiseOSError(osLastError())
+
+when defined(linux):
+  {.emit: """
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#ifndef RENAME_EXCHANGE
+#define RENAME_EXCHANGE (1 << 1)
+#endif
+static int kouten_rename_exchange(const char *left, const char *right) {
+  return (int)syscall(SYS_renameat2, AT_FDCWD, left,
+                      AT_FDCWD, right, RENAME_EXCHANGE);
+}
+""".}
+  proc cRenameExchange(left, right: cstring): cint
+    {.importc: "kouten_rename_exchange", nodecl.}
+
+proc exchangeDirsAtomic(left, right: string) =
+  ## Existing-directory restore requires one indivisible namespace change.
+  ## A two-rename fallback can leave the target path absent after a crash, so
+  ## unsupported platforms fail closed and can restore into a fresh path.
+  when defined(linux):
+    if cRenameExchange(left.cstring, right.cstring) != 0:
+      raiseOSError(osLastError())
+  else:
+    raise newException(IOError,
+      "atomic checkpoint overwrite is not supported on this platform; " &
+      "restore into a new data directory")
+
+proc sealCheckpointSegments(s: Store) =
+  ## A freshly rebuilt checkpoint starts with legacy generation-zero files.
+  ## Promote all complete files together and publish one manifest last, so the
+  ## checkpoint never relies on the implicit legacy layout.
+  if not s.diskBacked or s.segmentDir.len == 0 or
+      not dirExists(s.segmentDir):
+    return
+  s.closeSegmentFiles()
+  s.closeSegmentIndexFiles()
+  s.closeSegmentReadStreams()
+  var rings: seq[uint64] = @[]
+  for ring in s.segmentRecordCounts.keys:
+    rings.add ring
+  rings.sort()
+  for ring in rings:
+    let oldSegment = s.segmentPath(ring, 0)
+    let oldIndex = s.segmentIndexPath(ring, 0)
+    if not fileExists(oldSegment) or not fileExists(oldIndex):
+      raise newException(IOError,
+        "checkpoint segment generation is incomplete for ring " & $ring)
+    oldSegment.syncPath()
+    oldIndex.syncPath()
+    let newSegment = s.segmentPath(ring, 1)
+    let newIndex = s.segmentIndexPath(ring, 1)
+    replaceFileAtomic(oldSegment, newSegment)
+    replaceFileAtomic(oldIndex, newIndex)
+    s.segmentGenerations[ring] = 1
+  if rings.len > 0:
+    s.writeSegmentManifest()
+  syncDir(s.segmentDir)
+
+proc checkpointFileNode(file: StoreCheckpointFile): JsonNode =
+  result = %*{
+    "path": file.path,
+    "kind": file.kind,
+    "bytes": $file.bytes,
+    "checksum": file.checksum
+  }
+  if file.ring != 0 or file.kind in ["segment", "segment-index"]:
+    result["ring"] = %($file.ring)
+    result["generation"] = %($file.generation)
+
+proc checkpointFiles(checkpointDir: string): seq[StoreCheckpointFile] =
+  let wal = checkpointDir / "kouten.log"
+  if not fileExists(wal):
+    raise newException(IOError, "checkpoint WAL is missing")
+  result.add StoreCheckpointFile(
+    path: "kouten.log", kind: "wal", bytes: getFileSize(wal),
+    checksum: checkpointChecksum(wal))
+  let segmentDir = checkpointDir / "segments"
+  let manifest = segmentDir / "manifest"
+  if not fileExists(manifest):
+    if dirExists(segmentDir):
+      for kind, path in walkDir(segmentDir):
+        if kind in {pcFile, pcLinkToFile}:
+          raise newException(IOError,
+            "checkpoint segment files exist without a manifest: " & path)
+    return
+  result.add StoreCheckpointFile(
+    path: "segments/manifest", kind: "segment-manifest",
+    bytes: getFileSize(manifest), checksum: checkpointChecksum(manifest))
+  let rows = readFile(manifest).splitLines()
+  if rows.len == 0 or rows[0] != "!KOUTENDB-SEGMENTS 1":
+    raise newException(IOError, "invalid checkpoint segment manifest")
+  var seen = initTable[uint64, bool]()
+  for i in 1 ..< rows.len:
+    let line = rows[i].strip()
+    if line.len == 0:
+      continue
+    let parts = line.splitWhitespace()
+    if parts.len != 2:
+      raise newException(IOError, "invalid checkpoint segment manifest row")
+    let ring = parseBiggestUInt(parts[0]).uint64
+    let generation = parseBiggestUInt(parts[1]).uint64
+    if generation == 0 or seen.getOrDefault(ring, false):
+      raise newException(IOError, "invalid checkpoint segment generation")
+    seen[ring] = true
+    let segmentName = segmentFileName(ring, generation)
+    let indexName = segmentIndexFileName(ring, generation)
+    let segment = segmentDir / segmentName
+    let index = segmentDir / indexName
+    if not fileExists(segment) or not fileExists(index):
+      raise newException(IOError,
+        "checkpoint segment generation is incomplete for ring " & $ring)
+    result.add StoreCheckpointFile(
+      path: "segments/" & segmentName, kind: "segment",
+      bytes: getFileSize(segment), checksum: checkpointChecksum(segment),
+      ring: ring, generation: generation)
+    result.add StoreCheckpointFile(
+      path: "segments/" & indexName, kind: "segment-index",
+      bytes: getFileSize(index), checksum: checkpointChecksum(index),
+      ring: ring, generation: generation)
+
+proc checkpointManifest(status: StoreCheckpointStatus): string =
+  var files = newJArray()
+  for file in status.files:
+    files.add checkpointFileNode(file)
+  $(%*{
+    "format": CheckpointFormat,
+    "id": status.id,
+    "complete": true,
+    "createdAt": status.createdAt,
+    "sourceWalHighWater": $status.sourceWalHighWater,
+    "snapshotWalBytes": $status.snapshotWalBytes,
+    "stats": {
+      "items": status.items,
+      "tombstones": status.tombstones,
+      "rings": status.rings
+    },
+    "files": files
+  })
+
+proc parseCheckpointManifest(checkpointDir: string): StoreCheckpointStatus =
+  result.path = checkpointDir
+  let manifestPath = checkpointDir / CheckpointManifestName
+  let completePath = checkpointDir / CheckpointCompleteName
+  if symlinkExists(checkpointDir) or symlinkExists(manifestPath) or
+      symlinkExists(completePath):
+    raise newException(IOError, "checkpoint symlinks are not allowed")
+  if not fileExists(manifestPath):
+    raise newException(IOError, "checkpoint manifest is missing")
+  if not fileExists(completePath):
+    raise newException(IOError, "checkpoint completion marker is missing")
+  if readFile(completePath).strip() != checkpointChecksum(manifestPath):
+    raise newException(IOError, "checkpoint manifest checksum mismatch")
+  let node = parseJson(readFile(manifestPath))
+  if node.isNil or node.kind != JObject or not node.hasKey("format") or
+      node["format"].kind != JString or
+      node["format"].getStr() != CheckpointFormat:
+    raise newException(IOError, "unsupported checkpoint manifest format")
+  result.format = node["format"].getStr()
+  if not node.hasKey("id") or node["id"].kind != JString:
+    raise newException(IOError, "invalid checkpoint identity")
+  result.id = node["id"].getStr()
+  if not checkpointIdValid(result.id):
+    raise newException(IOError, "invalid checkpoint identity")
+  if not node.hasKey("complete") or node["complete"].kind != JBool:
+    raise newException(IOError, "checkpoint completion state is missing")
+  result.complete = node["complete"].getBool()
+  if not result.complete:
+    raise newException(IOError, "checkpoint is not complete")
+  if not node.hasKey("createdAt") or
+      node["createdAt"].kind notin {JFloat, JInt}:
+    raise newException(IOError, "invalid checkpoint creation time")
+  result.createdAt =
+    if node["createdAt"].kind == JFloat: node["createdAt"].getFloat()
+    else: node["createdAt"].getInt().float
+  if result.createdAt < 0 or
+      result.createdAt.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(IOError, "invalid checkpoint creation time")
+  if not node.hasKey("sourceWalHighWater") or
+      node["sourceWalHighWater"].kind != JString or
+      not node.hasKey("snapshotWalBytes") or
+      node["snapshotWalBytes"].kind != JString:
+    raise newException(IOError, "invalid checkpoint WAL bounds")
+  try:
+    result.sourceWalHighWater =
+      parseBiggestInt(node["sourceWalHighWater"].getStr()).int64
+    result.snapshotWalBytes =
+      parseBiggestInt(node["snapshotWalBytes"].getStr()).int64
+  except CatchableError:
+    raise newException(IOError, "invalid checkpoint WAL bounds")
+  if result.sourceWalHighWater < 0 or result.snapshotWalBytes < 0:
+    raise newException(IOError, "invalid checkpoint WAL bounds")
+  if not node.hasKey("stats") or node["stats"].kind != JObject:
+    raise newException(IOError, "checkpoint stats are missing")
+  let stats = node["stats"]
+  for field in ["items", "tombstones", "rings"]:
+    if not stats.hasKey(field) or stats[field].kind != JInt:
+      raise newException(IOError, "invalid checkpoint stats")
+  result.items = stats["items"].getInt()
+  result.tombstones = stats["tombstones"].getInt()
+  result.rings = stats["rings"].getInt()
+  if result.items < 0 or result.tombstones < 0 or result.rings < 0:
+    raise newException(IOError, "invalid checkpoint stats")
+  if not node.hasKey("files") or node["files"].kind != JArray or
+      node["files"].len == 0:
+    raise newException(IOError, "checkpoint file inventory is missing")
+  let files = node["files"]
+  var seen = initTable[string, bool]()
+  for entry in files:
+    if entry.kind != JObject:
+      raise newException(IOError, "invalid checkpoint file entry")
+    for field in ["path", "kind", "bytes", "checksum"]:
+      if not entry.hasKey(field) or entry[field].kind != JString:
+        raise newException(IOError, "invalid checkpoint file entry")
+    let relative = entry["path"].getStr()
+    if not checkpointRelativePathValid(relative) or
+        seen.getOrDefault(relative, false):
+      raise newException(IOError, "invalid checkpoint file path: " & relative)
+    seen[relative] = true
+    var file = StoreCheckpointFile(
+      path: relative,
+      kind: entry["kind"].getStr(),
+      checksum: entry["checksum"].getStr())
+    try:
+      file.bytes = parseBiggestInt(entry["bytes"].getStr()).int64
+      if entry.hasKey("ring"):
+        if entry["ring"].kind != JString or
+            not entry.hasKey("generation") or
+            entry["generation"].kind != JString:
+          raise newException(ValueError, "invalid ring generation")
+        file.ring = parseBiggestUInt(entry["ring"].getStr()).uint64
+        file.generation =
+          parseBiggestUInt(entry["generation"].getStr()).uint64
+      elif entry.hasKey("generation"):
+        raise newException(ValueError, "generation without ring")
+    except CatchableError:
+      raise newException(IOError,
+        "invalid checkpoint file metadata: " & relative)
+    if file.bytes < 0 or
+        not file.checksum.startsWith(CheckpointChecksumAlgorithm & ":"):
+      raise newException(IOError,
+        "invalid checkpoint file metadata: " & relative)
+    case relative
+    of "kouten.log":
+      if file.kind != "wal":
+        raise newException(IOError, "checkpoint WAL kind is invalid")
+    of "segments/manifest":
+      if file.kind != "segment-manifest":
+        raise newException(IOError,
+          "checkpoint segment manifest kind is invalid")
+    else:
+      if file.generation == 0:
+        raise newException(IOError,
+          "checkpoint segment generation must be positive")
+      let expectedKind =
+        if relative.endsWith(".seg"): "segment" else: "segment-index"
+      let expectedName =
+        if expectedKind == "segment":
+          segmentFileName(file.ring, file.generation)
+        else:
+          segmentIndexFileName(file.ring, file.generation)
+      if file.kind != expectedKind or
+          relative != "segments/" & expectedName:
+        raise newException(IOError,
+          "checkpoint segment metadata does not match its path: " & relative)
+    result.files.add file
+
+proc validateCheckpointContents(checkpointDir: string): StoreCheckpointStatus =
+  result = parseCheckpointManifest(checkpointDir)
+  var inventory = initTable[string, StoreCheckpointFile]()
+  for file in result.files:
+    let path = checkpointDir / file.path
+    if symlinkExists(path):
+      raise newException(IOError,
+        "checkpoint file symlinks are not allowed: " & file.path)
+    if not fileExists(path):
+      raise newException(IOError, "checkpoint file is missing: " & file.path)
+    if getFileSize(path) != file.bytes:
+      raise newException(IOError, "checkpoint file size mismatch: " & file.path)
+    if checkpointChecksum(path) != file.checksum:
+      raise newException(IOError, "checkpoint checksum mismatch: " & file.path)
+    inventory[file.path] = file
+  if "kouten.log" notin inventory or inventory["kouten.log"].kind != "wal":
+    raise newException(IOError, "checkpoint WAL inventory is missing")
+  let wal = checkpointDir / "kouten.log"
+  if getFileSize(wal) != result.snapshotWalBytes:
+    raise newException(IOError, "checkpoint snapshot WAL size mismatch")
+  let stats = snapshotStatsFromFile(wal, checkpointDir)
+  if stats.items != result.items or stats.tombstones != result.tombstones or
+      stats.ringMeta != result.rings:
+    raise newException(IOError, "checkpoint logical statistics mismatch")
+
+  let segmentDir = checkpointDir / "segments"
+  if symlinkExists(segmentDir):
+    raise newException(IOError,
+      "checkpoint segment directory symlinks are not allowed")
+  if "segments/manifest" in inventory:
+    var verifier = Store(lastFlush: getMonoTime(), nextTxId: 1,
+                         diskBacked: true, persistent: true,
+                         logPath: wal, segmentDir: segmentDir)
+    verifier.replay(wal, repair = false)
+    if not verifier.loadSegmentManifest() or
+        not verifier.loadRingSegmentIndexes():
+      raise newException(IOError, "checkpoint segment index validation failed")
+    if verifier.itemSegmentOffsets.len != verifier.itemOffsets.len:
+      raise newException(IOError, "checkpoint segment coverage is incomplete")
+    for k, offset in verifier.itemSegmentOffsets:
+      let stream = newFileStream(verifier.segmentPath(k[0]), fmRead)
+      if stream.isNil:
+        raise newException(IOError, "cannot open checkpoint segment")
+      try:
+        let particle = stream.readParticleAtStream(offset)
+        if particle.parent != k[0] or particle.seq != k[1] or
+            particle.version != verifier.itemVersions.getOrDefault(k):
+          raise newException(IOError,
+            "checkpoint segment does not match WAL revision")
+      finally:
+        stream.close()
+    verifier.closeSegmentReadStreams()
+    for kind, path in walkDir(segmentDir):
+      if kind in {pcFile, pcLinkToFile}:
+        let relative = "segments/" & path.extractFilename
+        if relative notin inventory:
+          raise newException(IOError,
+            "checkpoint contains an unreferenced segment file: " & relative)
+  elif dirExists(segmentDir):
+    for kind, path in walkDir(segmentDir):
+      if kind in {pcFile, pcLinkToFile}:
+        raise newException(IOError,
+          "checkpoint contains segments without an inventory: " & path)
+  result.verified = true
+  result.reasonCode = "verified"
+  result.reason = "verified"
+
+proc checkpointReasonCode*(reason: string): string =
+  ## Bounded machine-readable classification for checkpoint diagnostics.
+  ## Human-readable error details remain in `reason`.
+  let value = reason.toLowerAscii()
+  if value == "verified": "verified"
+  elif value.startsWith("restored"): "restored"
+  elif "symlink" in value: "symlink-rejected"
+  elif "manifest is missing" in value: "manifest-missing"
+  elif "completion marker is missing" in value: "completion-marker-missing"
+  elif "manifest checksum mismatch" in value: "manifest-checksum-mismatch"
+  elif "unsupported checkpoint manifest format" in value: "unsupported-format"
+  elif "checkpoint identity" in value: "invalid-identity"
+  elif "creation time" in value: "invalid-created-at"
+  elif "wal bounds" in value: "invalid-wal-bounds"
+  elif "checkpoint stats" in value or "logical statistics" in value:
+    "logical-stats-invalid"
+  elif "file inventory" in value or "wal inventory" in value:
+    "inventory-missing"
+  elif "file entry" in value or "file metadata" in value or
+      "file path" in value or "kind is invalid" in value or
+      "generation" in value:
+    "inventory-invalid"
+  elif "file is missing" in value: "file-missing"
+  elif "size mismatch" in value: "file-size-mismatch"
+  elif "checksum mismatch" in value: "file-checksum-mismatch"
+  elif "segment index validation failed" in value:
+    "segment-index-invalid"
+  elif "segment coverage is incomplete" in value:
+    "segment-coverage-incomplete"
+  elif "segment does not match wal revision" in value:
+    "segment-revision-mismatch"
+  elif "unreferenced segment file" in value or
+      "segments without an inventory" in value:
+    "unreferenced-file"
+  elif "not complete" in value or "completion state" in value:
+    "incomplete"
+  else: "verification-failed"
+
+proc checkpointStatus*(checkpointDir: string): StoreCheckpointStatus =
+  ## Inspect one immutable checkpoint without mutating or repairing it.
+  result.path = checkpointDir
+  try:
+    result = validateCheckpointContents(checkpointDir)
+  except CatchableError:
+    result.verified = false
+    result.complete = false
+    result.reason = getCurrentExceptionMsg()
+    result.reasonCode = checkpointReasonCode(result.reason)
+
+proc verifyCheckpoint*(checkpointDir: string): StoreCheckpointStatus =
+  result = checkpointStatus(checkpointDir)
+  if not result.verified:
+    raise newException(IOError, result.reason)
+
+proc createCheckpoint*(s: Store; root = ""; id = ""):
+    StoreCheckpointStatus =
+  ## Build a self-contained compact WAL and its matching ring-local sidecars,
+  ## then publish the checksum manifest and directory last.
+  if not s.persistent or s.logPath.len == 0:
+    raise newException(ValueError, "checkpoint requires a persistent store")
+  let checkpointId = if id.len > 0: id else: newCheckpointId()
+  if not checkpointIdValid(checkpointId):
+    raise newException(ValueError, "invalid checkpoint identity")
+  let sourceDir = s.logPath.parentDir
+  let checkpointRoot = if root.len > 0: root else: sourceDir & ".checkpoints"
+  if pathsOverlap(sourceDir, checkpointRoot):
+    raise newException(ValueError,
+      "checkpoint root must be outside the source data directory")
+  createDir(checkpointRoot)
+  let finalDir = checkpointRoot / checkpointId
+  let stageDir = checkpointRoot / (".tmp-" & checkpointId)
+  if dirExists(finalDir) or fileExists(finalDir) or symlinkExists(finalDir):
+    raise newException(IOError, "checkpoint already exists: " & checkpointId)
+  if dirExists(stageDir) or fileExists(stageDir) or symlinkExists(stageDir):
+    raise newException(IOError,
+      "checkpoint staging directory already exists: " & stageDir)
+  s.sync()
+  let sourceHighWater = s.logSize().int64
+  createDir(stageDir)
+  let stageGuardPath = dataDirGuardPath(expandFilename(stageDir))
+  try:
+    s.writeSnapshotFile(stageDir / "kouten.log")
+    var staged = openStore(stageDir, durability = durStrong, diskBacked = true)
+    try:
+      staged.sealCheckpointSegments()
+    finally:
+      staged.close()
+    let lockPath = stageDir / ".kouten.lock"
+    if fileExists(lockPath):
+      removeFile(lockPath)
+    if fileExists(stageGuardPath):
+      removeFile(stageGuardPath)
+    let stats = snapshotStatsFromFile(stageDir / "kouten.log", stageDir)
+    var status = StoreCheckpointStatus(
+      format: CheckpointFormat,
+      id: checkpointId,
+      path: stageDir,
+      createdAt: epochTime(),
+      sourceWalHighWater: sourceHighWater,
+      snapshotWalBytes: getFileSize(stageDir / "kouten.log"),
+      complete: true,
+      items: stats.items,
+      tombstones: stats.tombstones,
+      rings: stats.ringMeta,
+      files: checkpointFiles(stageDir))
+    writeFileDurable(stageDir / CheckpointManifestName,
+                     checkpointManifest(status))
+    writeFileDurable(stageDir / CheckpointCompleteName,
+      checkpointChecksum(stageDir / CheckpointManifestName) & "\n")
+    discard validateCheckpointContents(stageDir)
+    syncDir(stageDir)
+    when defined(koutenTestCrashPoints):
+      processCrashPoint("checkpoint-before-publish")
+    moveDirAtomic(stageDir, finalDir)
+    when defined(koutenTestCrashPoints):
+      processCrashPoint("checkpoint-after-publish")
+    syncDir(checkpointRoot)
+    result = verifyCheckpoint(finalDir)
+  except CatchableError:
+    if dirExists(stageDir):
+      removeDir(stageDir)
+    if fileExists(stageGuardPath):
+      try:
+        removeFile(stageGuardPath)
+      except CatchableError:
+        discard
+    raise
+
+proc listCheckpoints*(root: string): seq[StoreCheckpointStatus] =
+  if root.len == 0 or not dirExists(root):
+    return
+  var paths: seq[string] = @[]
+  for kind, path in walkDir(root):
+    if kind in {pcDir, pcLinkToDir} and
+        not path.extractFilename.startsWith(".tmp-"):
+      paths.add path
+  paths.sort()
+  for path in paths:
+    result.add checkpointStatus(path)
+  result.sort(proc(a, b: StoreCheckpointStatus): int =
+    result = cmp(b.createdAt, a.createdAt)
+    if result == 0:
+      result = cmp(b.id, a.id))
+
+proc cleanupCheckpoints*(root: string; keep = 2):
+    StoreCheckpointCleanupStats =
+  ## Corrupt checkpoints are retained for diagnosis. At least one verified
+  ## checkpoint is always retained, regardless of caller input.
+  if root.len == 0:
+    raise newException(ValueError, "checkpoint root is required")
+  if keep < 1:
+    raise newException(ValueError,
+      "checkpoint cleanup must retain at least one verified generation")
+  result.root = root
+  let statuses = listCheckpoints(root)
+  var verified: seq[StoreCheckpointStatus] = @[]
+  for status in statuses:
+    if status.verified:
+      verified.add status
+    else:
+      result.invalid.add status.path.extractFilename
+  result.kept = min(keep, verified.len)
+  for i in keep ..< verified.len:
+    removeDir(verified[i].path)
+    result.removed.add verified[i].id
+  if result.removed.len > 0:
+    syncDir(root)
+
+proc restoreCheckpoint*(checkpointDir, targetDir: string;
+                        overwrite = false): StoreCheckpointStatus =
+  ## Verify first, stage every referenced file, verify the staged copy, then
+  ## atomically exchange the whole data directory. No partial target is served.
+  if checkpointDir.len == 0 or targetDir.len == 0:
+    raise newException(ValueError,
+      "checkpoint and target directories are required")
+  let sourceStatus = verifyCheckpoint(checkpointDir)
+  if pathsOverlap(checkpointDir, targetDir):
+    raise newException(ValueError,
+      "checkpoint and target data directories must not overlap")
+  if symlinkExists(targetDir):
+    raise newException(IOError,
+      "checkpoint restore target must not be a symlink")
+  createDir(targetDir.parentDir)
+  let nonce = strutils.toHex(randomBytes(5)).toLowerAscii()
+  let stageDir = targetDir & ".checkpoint-stage-" & nonce
+  let previousDir = targetDir & ".checkpoint-previous-" & nonce
+  var targetLock: DataDirLock
+  var removePlaceholder = false
+  var targetExisted = false
+  if dirExists(targetDir):
+    if not overwrite:
+      raise newException(IOError, "target data directory already exists: " & targetDir)
+    targetExisted = true
+    targetLock = acquireDataDirLock(targetDir)
+  elif fileExists(targetDir):
+    raise newException(IOError, "target path is not a directory: " & targetDir)
+  else:
+    # Materialize the identity long enough to take both the stable sibling
+    # guard and the legacy in-directory lock. The empty placeholder is then
+    # removed while the stable guard remains held across publication.
+    createDir(targetDir)
+    targetLock = acquireDataDirLock(targetDir)
+    removePlaceholder = true
+  var previousPublished = false
+  var targetPublished = false
+  try:
+    if removePlaceholder:
+      removeDir(targetDir)
+    if dirExists(stageDir) or fileExists(stageDir) or
+        symlinkExists(stageDir) or dirExists(previousDir) or
+        fileExists(previousDir) or symlinkExists(previousDir):
+      raise newException(IOError, "checkpoint restore staging collision")
+    createDir(stageDir)
+    for file in sourceStatus.files:
+      copyFileDurable(checkpointDir / file.path, stageDir / file.path)
+    copyFileDurable(checkpointDir / CheckpointManifestName,
+                    stageDir / CheckpointManifestName)
+    copyFileDurable(checkpointDir / CheckpointCompleteName,
+                    stageDir / CheckpointCompleteName)
+    discard validateCheckpointContents(stageDir)
+    if targetExisted:
+      exchangeDirsAtomic(stageDir, targetDir)
+      targetPublished = true
+      when defined(koutenTestFailpoints):
+        if checkpointRestoreFailAfterExchange:
+          raise newException(IOError,
+            "test checkpoint restore failure after atomic exchange")
+      moveDirAtomic(stageDir, previousDir)
+      previousPublished = true
+    else:
+      moveDirAtomic(stageDir, targetDir)
+      targetPublished = true
+    syncDir(targetDir.parentDir)
+    when defined(koutenTestFailpoints):
+      if checkpointRestoreFailAfterPublish:
+        raise newException(IOError,
+          "test checkpoint restore failure after publication")
+    let restoredStatus = validateCheckpointContents(targetDir)
+    if restoredStatus.items != sourceStatus.items or
+        restoredStatus.tombstones != sourceStatus.tombstones or
+        restoredStatus.rings != sourceStatus.rings:
+      raise newException(IOError,
+        "restored checkpoint logical statistics mismatch")
+    removeFile(targetDir / CheckpointManifestName)
+    removeFile(targetDir / CheckpointCompleteName)
+    syncDir(targetDir)
+    result = sourceStatus
+    result.path = targetDir
+    result.reasonCode = "restored"
+    result.reason = "restored"
+    if dirExists(previousDir):
+      try:
+        removeDir(previousDir)
+        syncDir(targetDir.parentDir)
+        previousPublished = false
+      except CatchableError:
+        result.reasonCode = "restored-cleanup-pending"
+        result.reason = "restored; previous target cleanup pending at " &
+                        previousDir
+  except CatchableError:
+    if targetPublished and targetExisted:
+      let previousPath =
+        if previousPublished: previousDir
+        else: stageDir
+      if dirExists(targetDir) and dirExists(previousPath):
+        exchangeDirsAtomic(targetDir, previousPath)
+        syncDir(targetDir.parentDir)
+    elif targetPublished and dirExists(targetDir):
+      removeDir(targetDir)
+      syncDir(targetDir.parentDir)
+    if dirExists(stageDir):
+      removeDir(stageDir)
+    if dirExists(previousDir):
+      removeDir(previousDir)
+    raise
+  finally:
+    releaseDataDirLock(targetLock)
 
 proc sameParticleRevision(current, candidate: Particle): bool =
   current.parent == candidate.parent and
@@ -2447,7 +3519,11 @@ proc backup*(s: Store, dstDir: string): StoreBackupStats =
   if s.persistent:
     s.flushMaybe(force = true)
   s.writeSnapshotFile(tmp)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("backup-before-publish")
   replaceFileAtomic(tmp, dst)
+  when defined(koutenTestCrashPoints):
+    processCrashPoint("backup-after-publish")
   syncDir(dstDir)
   result = s.snapshotStats(dst, s.logPath)
 
@@ -2579,11 +3655,11 @@ proc putRingMeta*(s: Store, ringKey: uint64, period, head: float) =
       s.ringMeta[ringKey] == (period: period, head: head):
     return
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalLine("R " & $ringKey & " " & $period & " " & $head)
+    s.flushMaybe()
   s.applyOp(TxOp(kind: txRingMeta, ringKey: ringKey,
                  ringPeriod: period, ringHead: head))
-  if s.persistent:
-    s.logFile.writeWalLine("R " & $ringKey & " " & $period & " " & $head)
-    s.flushMaybe()
 
 proc putRingName*(s: Store, ringKey: uint64, name: string) =
   if name.len == 0:
@@ -2591,32 +3667,32 @@ proc putRingName*(s: Store, ringKey: uint64, name: string) =
   s.ensureWritable()
   if s.ringNames.getOrDefault(ringKey, "") == name:
     return
-  s.ringNames[ringKey] = name
   if s.persistent:
-    s.logFile.writeWalRecord("N " & $ringKey & " " & $name.len & "\n" & name & "\n")
+    s.writeStoreWalRecord("N " & $ringKey & " " & $name.len & "\n" & name & "\n")
     s.flushMaybe()
+  s.ringNames[ringKey] = name
 
 proc putGalaxyDescription*(s: Store, description: string) =
   if s.galaxyDescription == description:
     return
   s.ensureWritable()
-  s.galaxyDescription = description
   if s.persistent:
-    s.logFile.writeWalRecord("GD " & $description.len & "\n" & description & "\n")
+    s.writeStoreWalRecord("GD " & $description.len & "\n" & description & "\n")
     s.flushMaybe(force = true)
+  s.galaxyDescription = description
 
 proc putRingDescription*(s: Store, ringKey: uint64, description: string) =
   if s.ringDescriptions.getOrDefault(ringKey, "") == description:
     return
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalRecord("RD " & $ringKey & " " & $description.len & "\n" &
+                             description & "\n")
+    s.flushMaybe(force = true)
   if description.len == 0:
     s.ringDescriptions.del ringKey
   else:
     s.ringDescriptions[ringKey] = description
-  if s.persistent:
-    s.logFile.writeWalRecord("RD " & $ringKey & " " & $description.len & "\n" &
-                             description & "\n")
-    s.flushMaybe(force = true)
 
 proc putRingPayloadProfile*(s: Store, ringKey: uint64,
                             profile: RingPayloadProfile) =
@@ -2624,15 +3700,15 @@ proc putRingPayloadProfile*(s: Store, ringKey: uint64,
       s.ringPayloadProfiles[ringKey] == profile:
     return
   s.ensureWritable()
-  s.ringPayloadProfiles[ringKey] = profile
+  let raw = $(%*{
+    "defaultCodec": profile.defaultCodec.payloadCodecName,
+    "charset": profile.charset,
+    "formatVersion": profile.formatVersion
+  })
   if s.persistent:
-    let raw = $(%*{
-      "defaultCodec": profile.defaultCodec.payloadCodecName,
-      "charset": profile.charset,
-      "formatVersion": profile.formatVersion
-    })
-    s.logFile.writeWalRecord("RP " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
+    s.writeStoreWalRecord("RP " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
     s.flushMaybe(force = true)
+  s.ringPayloadProfiles[ringKey] = profile
 
 proc putTimeOrbitProfile*(s: Store, ringKey: uint64,
                           profile: TimeOrbitProfile) =
@@ -2641,11 +3717,11 @@ proc putTimeOrbitProfile*(s: Store, ringKey: uint64,
     return
   s.ensureWritable()
   validateTimeOrbitProfile(profile)
-  s.ringTimeOrbitProfiles[ringKey] = profile
+  let raw = timeOrbitProfileJson(profile)
   if s.persistent:
-    let raw = timeOrbitProfileJson(profile)
-    s.logFile.writeWalRecord("TO " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
+    s.writeStoreWalRecord("TO " & $ringKey & " " & $raw.len & "\n" & raw & "\n")
     s.flushMaybe(force = true)
+  s.ringTimeOrbitProfiles[ringKey] = profile
 
 proc putStellarMap*(s: Store, stellar, blob: string) =
   if stellar.len == 0:
@@ -2654,17 +3730,17 @@ proc putStellarMap*(s: Store, stellar, blob: string) =
   if blob.len > 0 and s.stellarMaps.getOrDefault(stellar, "") == blob:
     return
   if blob.len == 0:
-    s.stellarMaps.del stellar
     if s.persistent:
       let raw = $(%*{"stellar": stellar, "deleted": true})
-      s.logFile.writeWalRecord("SM " & $raw.len & "\n" & raw & "\n")
+      s.writeStoreWalRecord("SM " & $raw.len & "\n" & raw & "\n")
       s.flushMaybe(force = true)
+    s.stellarMaps.del stellar
     return
   discard validateStellarMapBlob(stellar, blob)
-  s.stellarMaps[stellar] = blob
   if s.persistent:
-    s.logFile.writeWalRecord("SM " & $blob.len & "\n" & blob & "\n")
+    s.writeStoreWalRecord("SM " & $blob.len & "\n" & blob & "\n")
     s.flushMaybe(force = true)
+  s.stellarMaps[stellar] = blob
 
 proc putWarpJob*(s: Store, jobId: uint64, blob: string) =
   ## KoutenDB layer が解釈する warp job snapshot を保存する。
@@ -2672,17 +3748,17 @@ proc putWarpJob*(s: Store, jobId: uint64, blob: string) =
   if blob.len == 0:
     raise newException(ValueError, "warp job blob is empty")
   s.ensureWritable()
-  s.warpJobs[jobId] = blob
   if s.persistent:
-    s.logFile.writeWalRecord("WJ " & $jobId & " " & $blob.len & "\n" & blob & "\n")
+    s.writeStoreWalRecord("WJ " & $jobId & " " & $blob.len & "\n" & blob & "\n")
     s.flushMaybe(force = true)
+  s.warpJobs[jobId] = blob
 
 proc deleteWarpJob*(s: Store, jobId: uint64) =
   s.ensureWritable()
-  s.warpJobs.del jobId
   if s.persistent:
-    s.logFile.writeWalLine("WD " & $jobId)
+    s.writeStoreWalLine("WD " & $jobId)
     s.flushMaybe(force = true)
+  s.warpJobs.del jobId
 
 proc putUniverseSyncEvent*(s: Store, eventId: uint64, blob: string) =
   ## KoutenDB layer が解釈する universe sync event snapshot を保存する。
@@ -2690,11 +3766,11 @@ proc putUniverseSyncEvent*(s: Store, eventId: uint64, blob: string) =
   if blob.len == 0:
     raise newException(ValueError, "universe sync event blob is empty")
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalRecord("UJ " & $eventId & " " & $blob.len & "\n" & blob & "\n")
+    s.flushMaybe(force = true)
   s.universeSyncEvents[eventId] = blob
   s.nextUniverseSyncId = max(s.nextUniverseSyncId, eventId)
-  if s.persistent:
-    s.logFile.writeWalRecord("UJ " & $eventId & " " & $blob.len & "\n" & blob & "\n")
-    s.flushMaybe(force = true)
 
 proc setNextUniverseSyncId*(s: Store, nextId: uint64) =
   ## Persist the source outbox sequence independent of currently live events.
@@ -2702,17 +3778,17 @@ proc setNextUniverseSyncId*(s: Store, nextId: uint64) =
   if nextId <= s.nextUniverseSyncId:
     return
   s.ensureWritable()
-  s.nextUniverseSyncId = nextId
   if s.persistent:
-    s.logFile.writeWalLine("UQ " & $nextId)
+    s.writeStoreWalLine("UQ " & $nextId)
     s.flushMaybe(force = true)
+  s.nextUniverseSyncId = nextId
 
 proc deleteUniverseSyncEvent*(s: Store, eventId: uint64) =
   s.ensureWritable()
-  s.universeSyncEvents.del eventId
   if s.persistent:
-    s.logFile.writeWalLine("UD " & $eventId)
+    s.writeStoreWalLine("UD " & $eventId)
     s.flushMaybe(force = true)
+  s.universeSyncEvents.del eventId
 
 proc pruneAppliedUniverseSyncEvents*(s: Store, maxKeep: int): int =
   ## Bound the target-side idempotency set. Choose maxKeep large enough for the
@@ -2724,17 +3800,19 @@ proc pruneAppliedUniverseSyncEvents*(s: Store, maxKeep: int): int =
   for eventKey in s.appliedUniverseSyncOrder:
     if s.appliedUniverseSyncEvents.getOrDefault(eventKey, false):
       compactedOrder.add eventKey
-  s.appliedUniverseSyncOrder = compactedOrder
-  while s.appliedUniverseSyncOrder.len > maxKeep:
-    let eventKey = s.appliedUniverseSyncOrder[0]
-    s.appliedUniverseSyncOrder.delete(0)
-    if s.appliedUniverseSyncEvents.getOrDefault(eventKey, false):
-      s.appliedUniverseSyncEvents.del eventKey
-      inc result
-      if s.persistent:
-        s.logFile.writeWalRecord("UX " & $eventKey.len & "\n" & eventKey & "\n")
-  if result > 0 and s.persistent:
+  let removeCount = max(0, compactedOrder.len - maxKeep)
+  if s.persistent:
+    for i in 0 ..< removeCount:
+      let eventKey = compactedOrder[i]
+      s.writeStoreWalRecord("UX " & $eventKey.len & "\n" & eventKey & "\n")
+  if removeCount > 0 and s.persistent:
     s.flushMaybe(force = true)
+  for i in 0 ..< removeCount:
+    s.appliedUniverseSyncEvents.del compactedOrder[i]
+  if removeCount > 0:
+    compactedOrder.delete(0 .. removeCount - 1)
+  s.appliedUniverseSyncOrder = compactedOrder
+  result = removeCount
 
 proc markUniverseSyncEventApplied*(s: Store, eventKey: string) =
   if eventKey.len == 0:
@@ -2742,11 +3820,11 @@ proc markUniverseSyncEventApplied*(s: Store, eventKey: string) =
   if s.appliedUniverseSyncEvents.getOrDefault(eventKey, false):
     return
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalRecord("UA " & $eventKey.len & "\n" & eventKey & "\n")
+    s.flushMaybe(force = true)
   s.appliedUniverseSyncEvents[eventKey] = true
   s.appliedUniverseSyncOrder.add eventKey
-  if s.persistent:
-    s.logFile.writeWalRecord("UA " & $eventKey.len & "\n" & eventKey & "\n")
-    s.flushMaybe(force = true)
   discard s.pruneAppliedUniverseSyncEvents(AppliedUniverseSyncRetention)
 
 proc isUniverseSyncEventApplied*(s: Store, eventKey: string): bool =
@@ -2773,7 +3851,7 @@ proc upsert*(s: Store, p: Particle, origin = 0'u32,
   var walOffset = -1'i64
   if s.persistent:
     walOffset = s.logFile.getFilePos()
-    s.logFile.writeParticleRecord("", 0, effective)
+    s.writeStoreParticleRecord("", 0, effective)
     s.flushMaybe()
   s.applyOp(TxOp(kind: txUpsert, p: effective, walOffset: walOffset,
                  segmentOffset: -1'i64, segmentBody: ""))
@@ -2787,11 +3865,11 @@ proc putForwarder*(s: Store, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
   let forwarderKey = key(oldParent, oldSeq)
   if forwarderKey in s.forwarders and s.forwarders[forwarderKey] == f:
     return
-  s.forwarders[forwarderKey] = f
   if s.persistent:
-    s.logFile.writeWalLine("F " & $oldParent & " " & $oldSeq & " " & $f.newParent & " " &
+    s.writeStoreWalLine("F " & $oldParent & " " & $oldSeq & " " & $f.newParent & " " &
                            $f.newSeq & " " & $f.newTWrite & " " & $f.expiresAt)
     s.flushMaybe()
+  s.forwarders[forwarderKey] = f
 
 proc remove*(s: Store, parent: uint64, seq: uint32,
              origin = 0'u32): bool {.discardable.} =
@@ -2816,7 +3894,7 @@ proc remove*(s: Store, parent: uint64, seq: uint32,
   if k in s.tombstones and tombstone.version <= s.tombstones[k].version:
     return false
   if s.persistent:
-    s.logFile.writeTombstoneRecord("", 0, tombstone)
+    s.writeStoreTombstoneRecord("", 0, tombstone)
     s.flushMaybe()
   s.applyOp(TxOp(kind: txRemove, tombstone: tombstone))
   true
@@ -2837,14 +3915,14 @@ proc applyTombstone*(s: Store, tombstone: Tombstone): bool {.discardable.} =
       if not merged.mergeTombstoneMetadata(effective):
         return false
       if s.persistent:
-        s.logFile.writeTombstoneRecord("", 0, merged)
+        s.writeStoreTombstoneRecord("", 0, merged)
         s.flushMaybe()
       s.tombstones[k] = merged
       return true
   if k in s.itemVersions and effective.version <= s.itemVersions[k]:
     return false
   if s.persistent:
-    s.logFile.writeTombstoneRecord("", 0, effective)
+    s.writeStoreTombstoneRecord("", 0, effective)
     s.flushMaybe()
   s.applyOp(TxOp(kind: txRemove, tombstone: effective))
   true
@@ -2852,10 +3930,10 @@ proc applyTombstone*(s: Store, tombstone: Tombstone): bool {.discardable.} =
 proc evict*(s: Store, parent: uint64, seq: uint32) =
   ## Remove a transferred source copy without creating a logical delete.
   s.ensureWritable()
-  s.evictState(parent, seq)
   if s.persistent:
-    s.logFile.writeWalLine("D " & $parent & " " & $seq)
+    s.writeStoreWalLine("D " & $parent & " " & $seq)
     s.flushMaybe()
+  s.evictState(parent, seq)
 
 proc reclaimTombstone*(s: Store, parent: uint64, seq: uint32): bool
     {.discardable.} =
@@ -2865,10 +3943,10 @@ proc reclaimTombstone*(s: Store, parent: uint64, seq: uint32): bool
   let k = key(parent, seq)
   if k notin s.tombstones:
     return false
-  s.tombstones.del k
   if s.persistent:
-    s.logFile.writeWalLine("LG " & $parent & " " & $seq)
+    s.writeStoreWalLine("LG " & $parent & " " & $seq)
     s.flushMaybe()
+  s.tombstones.del k
   true
 proc contains*(s: Store, parent: uint64, seq: uint32): bool =
   let k = key(parent, seq)
@@ -2988,35 +4066,35 @@ proc commit*(tx: StoreTxn) =
   let s = tx.store
   s.ensureWritable()
   if s.persistent:
-    s.logFile.writeWalLine("T " & $tx.id)
+    s.writeStoreWalLine("T " & $tx.id)
     for i in 0 ..< tx.ops.len:
       var op = tx.ops[i]
       case op.kind
       of txRingMeta:
-        s.logFile.writeWalLine("XR " & $tx.id & " " & $op.ringKey & " " &
+        s.writeStoreWalLine("XR " & $tx.id & " " & $op.ringKey & " " &
                                $op.ringPeriod & " " & $op.ringHead)
       of txRingName:
-        s.logFile.writeWalRecord("XN " & $tx.id & " " & $op.ringNameKey & " " &
+        s.writeStoreWalRecord("XN " & $tx.id & " " & $op.ringNameKey & " " &
                                  $op.ringName.len & "\n" & op.ringName & "\n")
       of txUpsert:
         op.walOffset = s.logFile.getFilePos()
         op.segmentBody = particleRecordBody("XP", tx.id, op.p)
-        s.logFile.writeWalRecord(op.segmentBody)
+        s.writeStoreWalRecord(op.segmentBody)
         tx.ops[i] = op
       of txRemove:
-        s.logFile.writeTombstoneRecord("XL", tx.id, op.tombstone)
+        s.writeStoreTombstoneRecord("XL", tx.id, op.tombstone)
       of txForwarder:
-        s.logFile.writeWalLine("XF " & $tx.id & " " & $op.oldParent & " " &
+        s.writeStoreWalLine("XF " & $tx.id & " " & $op.oldParent & " " &
                                $op.oldSeq & " " & $op.f.newParent & " " &
                                $op.f.newSeq & " " & $op.f.newTWrite & " " &
                                $op.f.expiresAt)
       of txUniverseSyncEvent:
-        s.logFile.writeWalRecord("XUJ " & $tx.id & " " & $op.universeEventId &
+        s.writeStoreWalRecord("XUJ " & $tx.id & " " & $op.universeEventId &
                                  " " & $op.universeEventBlob.len & "\n" &
                                  op.universeEventBlob & "\n")
       of txUniverseSyncDelete:
-        s.logFile.writeWalLine("XUD " & $tx.id & " " & $op.universeDeleteEventId)
-    s.logFile.writeWalLine("C " & $tx.id)
+        s.writeStoreWalLine("XUD " & $tx.id & " " & $op.universeDeleteEventId)
+    s.writeStoreWalLine("C " & $tx.id)
     s.flushMaybe(force = true)
   s.applyOps(tx.ops)
   tx.committed = true
@@ -3045,19 +4123,19 @@ proc putClusterTxIntent*(s: Store, intent: ClusterTxIntent) =
     op.version =
       if op.version.isZero: s.nextMutationVersion()
       else: s.normalizeMutationVersion(op.version, op.tWrite)
-  s.clusterTx[effective.id] = effective
   if s.persistent:
-    s.logFile.writeWalLine("CT " & $effective.id)
+    s.writeStoreWalLine("CT " & $effective.id)
     for op in effective.ops:
-      s.logFile.writeClusterTxOp(effective.id, op)
-    s.logFile.writeWalLine("CC " & $effective.id)
+      s.writeStoreClusterTxOp(effective.id, op)
+    s.writeStoreWalLine("CC " & $effective.id)
     s.flushMaybe(force = true)
+  s.clusterTx[effective.id] = effective
 
 proc markClusterTxApplied*(s: Store, txid: uint64) =
   s.ensureWritable()
+  if s.persistent:
+    s.writeStoreWalLine("CA " & $txid)
+    s.flushMaybe()
   s.appliedClusterTx[txid] = true
   if txid in s.clusterTx:
     s.clusterTx[txid].applied = true
-  if s.persistent:
-    s.logFile.writeWalLine("CA " & $txid)
-    s.flushMaybe()

@@ -59,7 +59,7 @@ Release checklist: [release-checklist.md](./release-checklist.md)
 | C ABI | Done | ABI version / last error / put/get/retrieve/batch/atlas |
 | Python | Done | Native wire minimal |
 | Node.js / TypeScript / Bun | Partially published | npm `koutendb` v0.1.3. Bun remains experimental |
-| Rust | Published | crates.io `koutendb` v0.1.3; see the English canonical document for links |
+| Rust | Published | crates.io `koutendb` v0.1.5; see the English canonical document for links |
 | Go | Done | C ABI wrapper minimal |
 | PHP / Swift / Kotlin | Done | Docker smoke available |
 | C# / C++ | Done | OSS generic wrappers; Unity / Unreal official assets are separate candidates |

@@ -258,9 +258,12 @@ proc sendFrame*(sock: Socket, header: string, payload: string = "") =
   if fd in secureConns:
     let st = secureConns[fd]
     let ciphertext = encryptTransportFrame(plaintext, st.secretKey, st.challengeHex)
-    sock.send("SEC " & $ciphertext.len & "\n" & ciphertext)
+    # A socket-level send timeout must bound one frame. Nim's default of 100
+    # retries can otherwise turn a 10-second SO_SNDTIMEO into a many-minute
+    # stall when a peer stops reading.
+    sock.send("SEC " & $ciphertext.len & "\n" & ciphertext, maxRetries = 1)
   else:
-    sock.send(plaintext)
+    sock.send(plaintext, maxRetries = 1)
 
 proc vecBytes*(vec: seq[float32]): string =
   ## Wire vectors are canonical little-endian IEEE-754 float32 values.

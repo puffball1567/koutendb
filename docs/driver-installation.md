@@ -91,6 +91,29 @@ Thread-safety contract:
 - If a driver shares one handle across threads, serialize calls around that
   handle. Separate handles may be used independently.
 
+`kouten_open_dir` retains its existing buffered WAL behavior. Drivers that
+need strong durability or the ring-local disk read layout should use the
+additive `kouten_open_dir_options` call. The segment diagnostics and bounded
+maintenance calls return length-delimited JSON allocated by KoutenDB; release
+those buffers with `kouten_free` just like `kouten_get` results.
+
+The same additive ABI v2 surface includes immutable generation checkpoints:
+
+- `kouten_checkpoint_create_json`
+- `kouten_checkpoint_status_json`
+- `kouten_checkpoint_list_json`
+- `kouten_checkpoint_cleanup_json`
+- `kouten_checkpoint_restore_json`
+
+These functions return the same `koutendb.checkpoint-*.v1` JSON shapes as the
+Nim API and CLI. Creation requires a persistent embedded handle. The remaining
+functions operate on filesystem paths and still require `kouten_init()` before
+use. Returned buffers must be released with `kouten_free`.
+
+The current ABI version remains `2`. These functions are additive and do not
+change existing struct layouts or symbols, so drivers that require ABI v2 keep
+working while newer wrappers may bind the additional symbols explicitly.
+
 ## Python
 
 The Python driver is released as a separate native TCP wire driver:
@@ -156,7 +179,7 @@ await db.close();
 
 The Rust driver is published as a C ABI wrapper:
 
-- crates.io: [`koutendb` v0.1.3](https://crates.io/crates/koutendb)
+- crates.io: [`koutendb` v0.1.5](https://crates.io/crates/koutendb)
 - repository: [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust)
 
 Install it in a Rust project:

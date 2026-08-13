@@ -2,7 +2,11 @@
  * build: gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o bin/cabi_contract
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #include "koutendb.h"
 
 static int fail(const char *msg) {
@@ -219,6 +223,144 @@ int main(void) {
     return fail("oversized retrieve vector length should fail");
   err = kouten_last_error();
   if (!err || strstr(err, "vec_len") == NULL) return fail("last_error should mention retrieve vec_len");
+
+  kouten_id mutable_id;
+  if (kouten_put(db, "docs/mutable", "before", 6, &mutable_id) != KOUTEN_OK)
+    return fail("mutable put failed");
+  if (kouten_exists(db, mutable_id) != 1) return fail("exists should find live id");
+  if (kouten_update_codec(db, mutable_id, "{\"state\":\"after\"}", 17,
+                          KOUTEN_CODEC_JSON) != KOUTEN_OK)
+    return fail("update_codec failed");
+  int mutable_codec = -1;
+  void *mutable_value = kouten_get_codec(db, mutable_id, &read_len, &mutable_codec);
+  if (!mutable_value || mutable_codec != KOUTEN_CODEC_JSON ||
+      read_len != 17 || memcmp(mutable_value, "{\"state\":\"after\"}", 17) != 0)
+    return fail("updated value differs");
+  kouten_free(mutable_value);
+  if (kouten_remove(db, mutable_id) != KOUTEN_OK) return fail("remove failed");
+  if (kouten_exists(db, mutable_id) != 0) return fail("removed id still exists");
+  if (kouten_remove(db, mutable_id) != KOUTEN_ERR)
+    return fail("second remove should fail");
+
+  char data_dir[160];
+  snprintf(data_dir, sizeof(data_dir), "/tmp/koutendb-cabi-contract-%ld-%ld",
+           (long)getpid(), (long)time(NULL));
+  if (mkdir(data_dir, 0700) != 0) return fail("cannot create C ABI data dir");
+  void *disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
+  if (!disk_db) return fail("open_dir_options failed");
+  if (kouten_open_dir_options(1, data_dir, 2, 1) != NULL)
+    return fail("open_dir_options should reject invalid boolean options");
+
+  kouten_id maintenance_id;
+  if (kouten_put(disk_db, "maintenance/cabi", "first", 5,
+                 &maintenance_id) != KOUTEN_OK)
+    return fail("disk-backed put failed");
+
+  char *maintenance_json = kouten_segment_maintenance_plan_json(
+    disk_db, 0.0, 0, 1, 1048576, 1000, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"outcome\":\"dry-run\"") == NULL ||
+      strstr(maintenance_json, "\"selectedRings\":1") == NULL)
+    return fail("maintenance plan failed");
+  kouten_free(maintenance_json);
+
+  maintenance_json = kouten_segment_maintenance_run_json(
+    disk_db, 0.0, 0, 1, 1048576, 1000, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"outcome\":\"completed\"") == NULL ||
+      strstr(maintenance_json, "\"packedRings\":1") == NULL)
+    return fail("maintenance run failed");
+  kouten_free(maintenance_json);
+
+  maintenance_json = kouten_segment_maintenance_status_json(disk_db, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"outcome\":\"completed\"") == NULL)
+    return fail("maintenance status failed");
+  kouten_free(maintenance_json);
+
+  maintenance_json = kouten_segment_status_json(disk_db, 0.0, 0, &read_len);
+  if (!maintenance_json || strstr(maintenance_json, "\"diskBacked\":true") == NULL ||
+      strstr(maintenance_json, "\"generation\":\"1\"") == NULL)
+    return fail("segment status failed");
+  kouten_free(maintenance_json);
+
+  char *metrics_text = kouten_metrics_text(
+    disk_db, KOUTEN_METRICS_PROMETHEUS, &read_len);
+  if (!metrics_text || read_len == 0 ||
+      strstr(metrics_text, "# TYPE koutendb_items gauge") == NULL ||
+      strstr(metrics_text, "koutendb_segment_wal_fallback_reasons_total") == NULL ||
+      strstr(metrics_text, "ring=\"") != NULL)
+    return fail("Prometheus metrics contract failed");
+  kouten_free(metrics_text);
+  metrics_text = kouten_metrics_text(
+    disk_db, KOUTEN_METRICS_OPENMETRICS, &read_len);
+  if (!metrics_text || strstr(metrics_text, "# EOF\n") == NULL)
+    return fail("OpenMetrics contract failed");
+  kouten_free(metrics_text);
+  if (kouten_metrics_text(disk_db, 99, &read_len) != NULL)
+    return fail("metrics should reject an unknown format");
+  if (kouten_metrics_text(disk_db, KOUTEN_METRICS_PROMETHEUS, NULL) != NULL)
+    return fail("metrics should reject a NULL output length");
+
+  int recovered = -1;
+  if (kouten_segment_maintenance_recover(disk_db, &recovered) != KOUTEN_OK ||
+      recovered != 0)
+    return fail("maintenance recover result failed");
+  if (kouten_segment_maintenance_recover(disk_db, NULL) != KOUTEN_ERR)
+    return fail("maintenance recover should reject NULL output");
+  if (kouten_segment_maintenance_plan_json(
+        disk_db, 0.0, 0, 1, -1, 1000, &read_len) != NULL)
+    return fail("maintenance plan should reject a negative byte budget");
+
+  char checkpoint_root[200];
+  char checkpoint_dir[220];
+  char checkpoint_restore[200];
+  snprintf(checkpoint_root, sizeof(checkpoint_root), "%s-checkpoints", data_dir);
+  snprintf(checkpoint_dir, sizeof(checkpoint_dir), "%s/cabi-1", checkpoint_root);
+  snprintf(checkpoint_restore, sizeof(checkpoint_restore), "%s-restored", data_dir);
+  char *checkpoint_json = kouten_checkpoint_create_json(
+    disk_db, checkpoint_root, "cabi-1", &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"verified\":true") == NULL ||
+      strstr(checkpoint_json, "\"id\":\"cabi-1\"") == NULL)
+    return fail("checkpoint create failed");
+  kouten_free(checkpoint_json);
+
+  checkpoint_json = kouten_checkpoint_status_json(checkpoint_dir, &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"reason\":\"verified\"") == NULL ||
+      strstr(checkpoint_json, "\"reasonCode\":\"verified\"") == NULL)
+    return fail("checkpoint status failed");
+  kouten_free(checkpoint_json);
+  checkpoint_json = kouten_checkpoint_list_json(checkpoint_root, &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"count\":1") == NULL)
+    return fail("checkpoint list failed");
+  kouten_free(checkpoint_json);
+  metrics_text = kouten_checkpoint_metrics_text(
+    checkpoint_root, KOUTEN_METRICS_PROMETHEUS, &read_len);
+  if (!metrics_text ||
+      strstr(metrics_text, "koutendb_checkpoint_verified_generations") == NULL ||
+      strstr(metrics_text, "cabi-1") != NULL)
+    return fail("checkpoint metrics contract failed");
+  kouten_free(metrics_text);
+  if (kouten_checkpoint_cleanup_json(checkpoint_root, 0, &read_len) != NULL)
+    return fail("checkpoint cleanup should retain at least one generation");
+
+  checkpoint_json = kouten_checkpoint_restore_json(
+    checkpoint_dir, checkpoint_restore, 0, &read_len);
+  if (!checkpoint_json || strstr(checkpoint_json, "\"reason\":\"restored\"") == NULL)
+    return fail("checkpoint restore failed");
+  kouten_free(checkpoint_json);
+  void *restored_db = kouten_open_dir_options(1, checkpoint_restore, 1, 1);
+  if (!restored_db || kouten_exists(restored_db, maintenance_id) != 1)
+    return fail("restored checkpoint does not contain source data");
+  kouten_close(restored_db);
+
+  kouten_close(disk_db);
+  disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
+  if (!disk_db || kouten_exists(disk_db, maintenance_id) != 1)
+    return fail("disk-backed C ABI reopen failed");
+  kouten_close(disk_db);
+  char cleanup_command[640];
+  snprintf(cleanup_command, sizeof(cleanup_command),
+           "rm -rf -- '%s' '%s' '%s'", data_dir, checkpoint_root,
+           checkpoint_restore);
+  if (system(cleanup_command) != 0) return fail("cannot clean C ABI data dir");
 
   kouten_close(db);
   if (kouten_get(db, id, &read_len) != NULL)

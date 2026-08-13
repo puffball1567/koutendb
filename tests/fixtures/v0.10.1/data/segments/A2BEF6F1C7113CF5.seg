@@ -1,0 +1,38 @@
+P 11727081998006697205 0 60.0 2.05 0.76 56 0 json 1786149796179867 0 1
+{"kind":"event","sequence":0,"source":"upgrade-fixture"}
+P 11727081998006697205 1 60.0 2.05 0.77 56 0 json 1786149796185104 0 1
+{"kind":"event","sequence":1,"source":"upgrade-fixture"}
+P 11727081998006697205 2 60.0 2.05 0.78 56 0 json 1786149796190494 0 1
+{"kind":"event","sequence":2,"source":"upgrade-fixture"}
+P 11727081998006697205 3 60.0 2.05 0.79 56 0 json 1786149796195625 0 1
+{"kind":"event","sequence":3,"source":"upgrade-fixture"}
+P 11727081998006697205 4 60.0 2.05 0.8 56 0 json 1786149796201019 0 1
+{"kind":"event","sequence":4,"source":"upgrade-fixture"}
+P 11727081998006697205 6 60.0 2.05 0.8200000000000001 56 0 json 1786149796211427 0 1
+{"kind":"event","sequence":6,"source":"upgrade-fixture"}
+P 11727081998006697205 7 60.0 2.05 0.8300000000000001 56 0 json 1786149796216628 0 1
+{"kind":"event","sequence":7,"source":"upgrade-fixture"}
+P 11727081998006697205 8 60.0 2.05 0.8400000000000001 56 0 json 1786149796222071 0 1
+{"kind":"event","sequence":8,"source":"upgrade-fixture"}
+P 11727081998006697205 9 60.0 2.05 0.8500000000000001 56 0 json 1786149796227107 0 1
+{"kind":"event","sequence":9,"source":"upgrade-fixture"}
+P 11727081998006697205 10 60.0 2.05 0.8600000000000001 57 0 json 1786149796232417 0 1
+{"kind":"event","sequence":10,"source":"upgrade-fixture"}
+P 11727081998006697205 11 60.0 2.05 0.8700000000000001 57 0 json 1786149796237461 0 1
+{"kind":"event","sequence":11,"source":"upgrade-fixture"}
+P 11727081998006697205 12 60.0 2.05 0.8800000000000001 57 0 json 1786149796242775 0 1
+{"kind":"event","sequence":12,"source":"upgrade-fixture"}
+P 11727081998006697205 13 60.0 2.05 0.8900000000000001 57 0 json 1786149796247804 0 1
+{"kind":"event","sequence":13,"source":"upgrade-fixture"}
+P 11727081998006697205 14 60.0 2.05 0.9000000000000001 57 0 json 1786149796253139 0 1
+{"kind":"event","sequence":14,"source":"upgrade-fixture"}
+P 11727081998006697205 15 60.0 2.05 0.9100000000000001 57 0 json 1786149796258138 0 1
+{"kind":"event","sequence":15,"source":"upgrade-fixture"}
+P 11727081998006697205 16 60.0 2.05 0.9200000000000002 57 0 json 1786149796263480 0 1
+{"kind":"event","sequence":16,"source":"upgrade-fixture"}
+P 11727081998006697205 17 60.0 2.05 0.9300000000000002 57 0 json 1786149796268551 0 1
+{"kind":"event","sequence":17,"source":"upgrade-fixture"}
+P 11727081998006697205 18 60.0 2.05 0.9400000000000002 57 0 json 1786149796273919 0 1
+{"kind":"event","sequence":18,"source":"upgrade-fixture"}
+P 11727081998006697205 19 60.0 2.05 0.9500000000000002 57 0 json 1786149796278932 0 1
+{"kind":"event","sequence":19,"source":"upgrade-fixture"}

@@ -15,11 +15,16 @@ import std/[algorithm, math, selectors, net, os, strutils, times, monotimes,
 when not defined(windows):
   import std/posix
 import kouten/[core, store, select, wire, field, auth, vector_backend]
+import kouten/maintenance_window
+from koutendb import KoutenSegmentMaintenancePolicy,
+  defaultSegmentMaintenancePolicy, validateSegmentMaintenancePolicy,
+  runSegmentMaintenance, recoverInterruptedSegmentMaintenance
 
 const
   Grace = 1.0       # [s] 転送 ACK 後も尾流コピーを残す猶予
   TickMs = 100      # ハンドオフ判定の周期
   DefaultSlowTickSec = 10.0
+  DefaultAutoPackIntervalSec = 300.0
   MaxTransfersPerTick = 256   # cheap queue submissions; worker provides backpressure
   HandoffQueueCapacity = 1024
   HandoffTimeoutMs = 500      # worker-only timeout; never blocks foreground reads
@@ -37,8 +42,18 @@ const
   MaxWireBodyBytes = 64 * 1024 * 1024
   MaxWireVectorDim = MaxWireBodyBytes div sizeof(float32)
   MaxWireJsonDepth = 128
-  SocketReadTimeoutMs = 10_000
-  MaxActiveConnections = 1024
+  SocketReadTimeoutMs =
+    when defined(koutenTestBackpressure): 250
+    else: 10_000
+  SocketWriteTimeoutMs =
+    when defined(koutenTestBackpressure): 250
+    else: 10_000
+  MaxActiveConnections =
+    when defined(koutenTestBackpressure): 8
+    else: 1024
+  MaxListRingItems =
+    when defined(koutenTestBackpressure): 32
+    else: 10_000
   MaxRetrieveBudget =
     when defined(koutenTestSmallLimits): 4
     else: 1024
@@ -47,6 +62,13 @@ const
     else: 1_000_000
 
 type
+  AutoPackConfig = object
+    enabled: bool
+    intervalSec: float
+    window: MaintenanceWindow
+    windowText: string
+    policy: KoutenSegmentMaintenancePolicy
+
   HandoffTaskKind = enum
     htkTransfer, htkStop
 
@@ -160,6 +182,17 @@ type
     handoffQueueFull: uint64
     tombstonesReclaimed: uint64
     slowTickSec: float
+    autoPack: AutoPackConfig
+    autoPackLastAttempt: float
+    autoPackAttempts: uint64
+    autoPackCompleted: uint64
+    autoPackPartial: uint64
+    autoPackInterrupted: uint64
+    autoPackFailed: uint64
+    autoPackNoWork: uint64
+    autoPackRings: uint64
+    autoPackBytes: uint64
+    autoPackLastElapsedMs: int64
     running: bool
     draining: bool
     drainStartedAt: float
@@ -187,6 +220,7 @@ type
     authzDenied: uint64
     drainRejectedWrites: uint64
     connectionsAccepted: uint64
+    connectionsRejected: uint64
     activeConnections: int
     universeApplyApplied: uint64
     universeApplySkipped: uint64
@@ -472,6 +506,12 @@ proc jsonIntOpt(node: JsonNode, key: string, default: int): int =
   else:
     default
 
+proc jsonInt64Opt(node: JsonNode, key: string, default: int64): int64 =
+  if node.kind == JObject and node.hasKey(key):
+    node[key].getBiggestInt().int64
+  else:
+    default
+
 proc jsonFloatOpt(node: JsonNode, key: string, default: float): float =
   if node.kind == JObject and node.hasKey(key):
     node[key].getFloat()
@@ -542,7 +582,9 @@ proc parseUserRule(node: JsonNode): tuple[user: string, rule: UserRule] =
     raise newException(ValueError, "config role password must not be empty")
 
 proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
-                      slowTickSec: var float, authUser, authPassword,
+                      slowTickSec: var float, diskBacked: var bool,
+                      autoPack: var AutoPackConfig,
+                      authUser, authPassword,
                       authPasswordFile, authTokenFile, authSecretKey,
                       authSecretKeyFile, tlsCertFile, tlsKeyFile, tlsCaFile,
                       tlsServerName: var string,
@@ -562,6 +604,39 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
   dataDir = jsonStringOpt(cfg, "dataDir", dataDir)
   slowTickSec = jsonFloatOpt(cfg, "slowTick", slowTickSec)
   slowTickSec = jsonFloatOpt(cfg, "slow-tick", slowTickSec)
+  diskBacked = jsonBoolOpt(cfg, "diskBacked", diskBacked)
+  diskBacked = jsonBoolOpt(cfg, "disk-backed", diskBacked)
+  autoPack.enabled = jsonBoolOpt(cfg, "autoPack", autoPack.enabled)
+  autoPack.enabled = jsonBoolOpt(cfg, "auto-pack", autoPack.enabled)
+  autoPack.intervalSec = jsonFloatOpt(cfg, "autoPackInterval",
+                                      autoPack.intervalSec)
+  autoPack.intervalSec = jsonFloatOpt(cfg, "auto-pack-interval",
+                                      autoPack.intervalSec)
+  autoPack.windowText = jsonStringOpt(cfg, "autoPackWindow",
+                                      autoPack.windowText)
+  autoPack.windowText = jsonStringOpt(cfg, "auto-pack-window",
+                                      autoPack.windowText)
+  autoPack.policy.staleRatioThreshold = jsonFloatOpt(
+    cfg, "autoPackStaleRatio", autoPack.policy.staleRatioThreshold)
+  autoPack.policy.staleRatioThreshold = jsonFloatOpt(
+    cfg, "auto-pack-stale-ratio", autoPack.policy.staleRatioThreshold)
+  autoPack.policy.minStaleRecords = jsonIntOpt(
+    cfg, "autoPackMinStaleRecords", autoPack.policy.minStaleRecords)
+  autoPack.policy.minStaleRecords = jsonIntOpt(
+    cfg, "auto-pack-min-stale-records", autoPack.policy.minStaleRecords)
+  autoPack.policy.maxRings = jsonIntOpt(
+    cfg, "autoPackMaxRings", autoPack.policy.maxRings)
+  autoPack.policy.maxRings = jsonIntOpt(
+    cfg, "auto-pack-max-rings", autoPack.policy.maxRings)
+  autoPack.policy.maxBytes = jsonInt64Opt(
+    cfg, "autoPackMaxBytes", autoPack.policy.maxBytes)
+  autoPack.policy.maxBytes = jsonInt64Opt(
+    cfg, "auto-pack-max-bytes", autoPack.policy.maxBytes)
+  autoPack.policy.maxElapsedMs = jsonInt64Opt(
+    cfg, "autoPackMaxElapsedMs", autoPack.policy.maxElapsedMs)
+  autoPack.policy.maxElapsedMs = jsonInt64Opt(
+    cfg, "auto-pack-max-elapsed-ms", autoPack.policy.maxElapsedMs)
+  autoPack.window = parseMaintenanceWindow(autoPack.windowText)
   authUser = jsonStringOpt(cfg, "user", authUser)
   authUser = jsonStringOpt(cfg, "username", authUser)
   authPassword = jsonStringOpt(cfg, "password", authPassword)
@@ -751,13 +826,19 @@ proc validateJsonDepth(raw: string, maxDepth: int) =
       else:
         discard
 
-proc setSocketReadTimeout(sock: Socket, timeoutMs: int) =
+proc setSocketTimeouts(sock: Socket, readTimeoutMs, writeTimeoutMs: int) =
   when defined(windows):
     discard
   else:
-    var tv = posix.Timeval(tv_sec: posix.Time(timeoutMs div 1000),
-                           tv_usec: posix.Suseconds((timeoutMs mod 1000) * 1000))
+    var tv = posix.Timeval(tv_sec: posix.Time(readTimeoutMs div 1000),
+                           tv_usec: posix.Suseconds(
+                             (readTimeoutMs mod 1000) * 1000))
     discard posix.setsockopt(sock.getFd, SOL_SOCKET, SO_RCVTIMEO,
+                             addr tv, SockLen(sizeof(tv)))
+    tv = posix.Timeval(tv_sec: posix.Time(writeTimeoutMs div 1000),
+                       tv_usec: posix.Suseconds(
+                         (writeTimeoutMs mod 1000) * 1000))
+    discard posix.setsockopt(sock.getFd, SOL_SOCKET, SO_SNDTIMEO,
                              addr tv, SockLen(sizeof(tv)))
 
 proc denyRingName(sv: Server, sock: Socket, name: string) =
@@ -1139,6 +1220,32 @@ proc rebuildFieldState(sv: Server) =
 proc slowTick(sv: Server) =
   sv.fs.clusterTick(sv.st)
   discard sv.fs.captureTick(sv.st, epochTime())
+
+proc autoPackTick(sv: Server) =
+  if not sv.autoPack.enabled or not sv.autoPack.window.isOpenNow():
+    return
+  let current = epochTime()
+  if sv.autoPackLastAttempt > 0 and
+      current - sv.autoPackLastAttempt < sv.autoPack.intervalSec:
+    return
+  sv.autoPackLastAttempt = current
+  inc sv.autoPackAttempts
+  try:
+    discard sv.st.recoverInterruptedSegmentMaintenance()
+    let maintenance = sv.st.runSegmentMaintenance(sv.autoPack.policy)
+    sv.autoPackLastElapsedMs = maintenance.elapsedMs
+    sv.autoPackRings += maintenance.packedRings.uint64
+    sv.autoPackBytes += maintenance.bytesRewritten.uint64
+    case maintenance.outcome
+    of "completed": inc sv.autoPackCompleted
+    of "partial": inc sv.autoPackPartial
+    of "interrupted": inc sv.autoPackInterrupted
+    of "failed": inc sv.autoPackFailed
+    of "no-work": inc sv.autoPackNoWork
+    else: discard
+  except CatchableError:
+    inc sv.autoPackFailed
+    inc sv.errorResponses
 
 proc visibleVectorCount(sv: Server, sock: Socket): int =
   if not sv.authzEnabled:
@@ -1918,17 +2025,17 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let ringKey = parseBiggestUInt(parts[1]).uint64
     if not sv.requireRingKey(sock, ringKey):
       return true
-    var n = 0
-    for k in sv.st.itemsByRing.getOrDefault(ringKey, @[]):
-      if k in sv.st.items:
-        inc n
-    sock.sendFrame("COUNT " & $n)
+    sock.sendFrame("COUNT " & $sv.st.ringLiveCount(ringKey))
   of "LISTR":
     requireParts(parts, "LISTR", 4)
     let ringKey = parseBiggestUInt(parts[1]).uint64
     let limit = parseInt(parts[2])
     let cursorLen = parseInt(parts[3])
     discard checkedWireLen(cursorLen, "cursorLen")
+    if limit < 0 or limit > MaxListRingItems:
+      sock.drainBytes(cursorLen)
+      raise newException(ValueError,
+        "LISTR limit must be between 0 and " & $MaxListRingItems)
     if not sv.ringKeyAllowed(sock, ringKey):
       sock.drainBytes(cursorLen)
       sv.denyRingKey(sock, ringKey)
@@ -1938,13 +2045,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     var rows: seq[Particle] = @[]
     var nextCursor = "_"
     if limit > 0:
-      for k in sv.st.itemsByRing.getOrDefault(ringKey, @[]):
-        if k[1].int64 <= afterSeq or k notin sv.st.items:
-          continue
-        if rows.len >= limit:
-          nextCursor = $(rows[^1].seq)
-          break
-        rows.add sv.st.items[k]
+      let page = sv.st.itemKeysByRingPage(ringKey, afterSeq, limit)
+      for k in page.items:
+        rows.add sv.st.getParticle(k[0], k[1])
+      if page.hasMore and rows.len > 0:
+        nextCursor = $(rows[^1].seq)
     sock.sendFrame("LVAL " & $rows.len & " " & nextCursor)
     for p in rows:
       sock.sendFrame("ITEM " & $p.seq & " " & $p.tWrite & " " & $p.parent & " " &
@@ -1985,7 +2090,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       else:
         sock.sendFrame("MISS")
     else:
-      let item = sv.st.items[(parent, seq)]
+      let item = sv.st.getParticle(parent, seq)
       var value = item.payload
       var codec = item.codec
       if parts[0] == "QRYID":
@@ -2030,7 +2135,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       else:
         sock.sendFrame("MISS")
     else:
-      let item = sv.st.items[(parent, seq)]
+      let item = sv.st.getParticle(parent, seq)
       var value = item.payload
       var codec = item.codec
       if parts[0] == "QRY":
@@ -2064,9 +2169,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         payload.add "0\n"
         continue
       let seq = parseUInt(h[1]).uint32
-      let k = (parent, seq)
-      if k in sv.st.items:
-        let value = sv.st.items[k].payload
+      if sv.st.contains(parent, seq):
+        let value = sv.st.getParticle(parent, seq).payload
         payload.add $value.len & "\n"
         payload.add value
       else:
@@ -2194,6 +2298,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
   of "METRICS":
     if not sv.requireRole(sock, roleAdmin):
       return true
+    let segment = sv.st.segmentMetrics()
     sock.sendFrame("OK " &
                    "node " & $sv.myId & " " &
                    "uptimeSec " & $(int(epochTime() - sv.startedAt)) & " " &
@@ -2205,6 +2310,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "drainRejectedWrites " & $sv.drainRejectedWrites & " " &
                    "drainStartedAt " & $(int(sv.drainStartedAt)) & " " &
                    "connectionsAccepted " & $sv.connectionsAccepted & " " &
+                   "connectionsRejected " & $sv.connectionsRejected & " " &
                    "activeConnections " & $sv.activeConnections & " " &
                    "items " & $sv.st.count & " " &
                    "tombstones " & $sv.st.tombstones.len & " " &
@@ -2247,6 +2353,31 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "retrieveGlobalRequests " & $sv.retrieveGlobalRequests & " " &
                    "retrievePhysicalVisited " & $sv.retrievePhysicalVisited & " " &
                    "retrieveCandidatesScored " & $sv.retrieveCandidatesScored & " " &
+                   "autoPackEnabled " & $(if sv.autoPack.enabled: 1 else: 0) & " " &
+                   "autoPackAttempts " & $sv.autoPackAttempts & " " &
+                   "autoPackCompleted " & $sv.autoPackCompleted & " " &
+                   "autoPackPartial " & $sv.autoPackPartial & " " &
+                   "autoPackInterrupted " & $sv.autoPackInterrupted & " " &
+                   "autoPackFailed " & $sv.autoPackFailed & " " &
+                   "autoPackNoWork " & $sv.autoPackNoWork & " " &
+                   "autoPackRings " & $sv.autoPackRings & " " &
+                   "autoPackBytes " & $sv.autoPackBytes & " " &
+                   "autoPackLastElapsedMs " & $sv.autoPackLastElapsedMs & " " &
+                   "segmentHits " & $segment.hits & " " &
+                   "segmentWalFallbacks " & $segment.walFallbacks & " " &
+                   "segmentWalFallbackPointRead " &
+                     $segment.walFallbackReasons[ssfrPointRead] & " " &
+                   "segmentWalFallbackRingScan " &
+                     $segment.walFallbackReasons[ssfrRingScan] & " " &
+                   "segmentWalFallbackWindowRead " &
+                     $segment.walFallbackReasons[ssfrWindowRead] & " " &
+                   "segmentBytes " & $segment.segmentBytes & " " &
+                   "segmentIndexBytes " & $segment.indexBytes & " " &
+                   "segmentActiveGenerations " &
+                     $segment.activeGenerations & " " &
+                   "segmentStaleRecords " & $segment.staleRecords & " " &
+                   "segmentRecommendedRings " &
+                     $segment.recommendedRings & " " &
                    "persistent " & $(if sv.st.isPersistent: 1 else: 0) & " " &
                    "durabilityStrong " &
                      $(if sv.st.durability == durStrong: 1 else: 0) & " " &
@@ -2317,7 +2448,16 @@ proc printUsage() =
   echo "Options:"
   echo "  --config=FILE                 Load server defaults from JSON"
   echo "  --data=DIR                    Enable WAL-backed persistence"
+  echo "  --disk-backed                 Enable ring-local segment read layout"
   echo "  --slow-tick=SECONDS           Background maintenance interval"
+  echo "  --auto-pack                   Enable bounded automatic ring packing"
+  echo "  --auto-pack-interval=SECONDS  Minimum time between maintenance runs (default 300)"
+  echo "  --auto-pack-window=HH:MM-HH:MM UTC maintenance window"
+  echo "  --auto-pack-stale-ratio=F     Stale ratio threshold (default 0.25)"
+  echo "  --auto-pack-min-stale-records=N  Minimum stale records (default 256)"
+  echo "  --auto-pack-max-rings=N       Maximum rings per run (default 1)"
+  echo "  --auto-pack-max-bytes=N       Maximum rewritten bytes per run (default 67108864)"
+  echo "  --auto-pack-max-elapsed-ms=N  Maximum elapsed time per run (default 1000)"
   echo "  --placement-epoch=N           Monotonic physical placement topology epoch"
   echo "  --virtual-arcs-per-node=N     Virtual arcs per node (default 64)"
   echo "  --start-drained               Persist read-only drain before activation"
@@ -2354,6 +2494,10 @@ proc main() =
   var peersStr = ""
   var dataDir = ""
   var slowTickSec = DefaultSlowTickSec
+  var diskBacked = false
+  var autoPack = AutoPackConfig(
+    intervalSec: DefaultAutoPackIntervalSec,
+    policy: defaultSegmentMaintenancePolicy())
   var authUser = ""
   var authPassword = ""
   var authPasswordFile = ""
@@ -2380,6 +2524,7 @@ proc main() =
 
   if configPath.len > 0:
     loadServerConfig(configPath, id, peersStr, dataDir, slowTickSec,
+                     diskBacked, autoPack,
                      authUser, authPassword, authPasswordFile, authTokenFile,
                      authSecretKey, authSecretKeyFile, tlsCertFile, tlsKeyFile,
                      tlsCaFile, tlsServerName, tlsInsecureSkipVerify, users,
@@ -2394,6 +2539,21 @@ proc main() =
       of "peers": peersStr = val
       of "data": dataDir = val
       of "slow-tick": slowTickSec = parseFloat(val)
+      of "disk-backed": diskBacked = true
+      of "auto-pack": autoPack.enabled = true
+      of "auto-pack-interval": autoPack.intervalSec = parseFloat(val)
+      of "auto-pack-window":
+        autoPack.windowText = val
+        autoPack.window = parseMaintenanceWindow(val)
+      of "auto-pack-stale-ratio":
+        autoPack.policy.staleRatioThreshold = parseFloat(val)
+      of "auto-pack-min-stale-records":
+        autoPack.policy.minStaleRecords = parseInt(val)
+      of "auto-pack-max-rings": autoPack.policy.maxRings = parseInt(val)
+      of "auto-pack-max-bytes":
+        autoPack.policy.maxBytes = parseBiggestInt(val).int64
+      of "auto-pack-max-elapsed-ms":
+        autoPack.policy.maxElapsedMs = parseBiggestInt(val).int64
       of "user": authUser = val
       of "password": authPassword = val
       of "password-file": authPasswordFile = val
@@ -2464,12 +2624,26 @@ proc main() =
   doAssert id >= 0 and id < peers.len, "--id と --peers を指定（id は peers 内の自分の位置）"
   if virtualArcsPerNode <= 0:
     raise newException(ValueError, "--virtual-arcs-per-node must be positive")
+  if slowTickSec <= 0:
+    raise newException(ValueError, "--slow-tick must be positive")
+  if autoPack.intervalSec <= 0:
+    raise newException(ValueError, "--auto-pack-interval must be positive")
+  validateSegmentMaintenancePolicy(autoPack.policy)
+  if autoPack.enabled and dataDir.len == 0:
+    raise newException(ValueError, "--auto-pack requires --data")
+  if autoPack.enabled and not diskBacked:
+    raise newException(ValueError, "--auto-pack requires --disk-backed")
+  if autoPack.enabled and (autoPack.policy.maxRings <= 0 or
+      autoPack.policy.maxBytes <= 0 or autoPack.policy.maxElapsedMs <= 0):
+    raise newException(ValueError,
+      "automatic packing requires positive ring, byte, and elapsed limits")
 
   let sv = Server(myId: id, peers: peers,
                   tbl: virtualArcTable(placementEpoch, uint16(peers.len),
                                        virtualArcsPerNode),
                   virtualArcsPerNode: virtualArcsPerNode,
                   st: openStore(dataDir, durability = durability,
+                                diskBacked = diskBacked,
                                 mutationOrigin = uint32(id + 1)),
                   dataDir: dataDir,
                   fs: newFieldState(),
@@ -2481,6 +2655,7 @@ proc main() =
                                              tlsServerName = tlsServerName,
                                              tlsInsecureSkipVerify = tlsInsecureSkipVerify),
                   slowTickSec: slowTickSec,
+                  autoPack: autoPack,
                   running: true,
                   authUser: authUser,
                   authPassword: authPassword,
@@ -2512,6 +2687,8 @@ proc main() =
                                  certFile = sv.tlsCertFile,
                                  keyFile = sv.tlsKeyFile)
   sv.st.setGalaxy(galaxy)
+  if diskBacked:
+    discard sv.st.recoverInterruptedSegmentMaintenance()
   if startDrained or
       (sv.st.placementEpoch == 0 and placementEpoch > 1 and peers.len > 1):
     sv.st.setMaintenanceDrained(true)
@@ -2552,6 +2729,13 @@ proc main() =
        " restored=", sv.st.count,
        " slowTick=", sv.slowTickSec, "s",
        " durability=", (if durability == durStrong: "strong" else: "buffered"),
+       (if diskBacked: " diskBacked=on" else: " diskBacked=off"),
+       (if autoPack.enabled:
+          " autoPack=on interval=" & $autoPack.intervalSec & "s" &
+          (if autoPack.windowText.len > 0:
+             " window=" & autoPack.windowText & "Z"
+           else: " window=all-day")
+        else: " autoPack=off"),
        (if galaxy.len > 0: " galaxy=" & galaxy else: " galaxy=<none>"),
        (if users.len > 0: " authz=role-ring-prefix"
         elif allowedRingPrefixes.len > 0: " authz=ring-prefix"
@@ -2580,10 +2764,16 @@ proc main() =
         listener.accept(client)
         if conns.len >= MaxActiveConnections:
           inc sv.errorResponses
+          inc sv.connectionsRejected
+          if not sv.tlsEnabled:
+            try:
+              client.sendFrame("ERR overloaded")
+            except CatchableError:
+              discard
           client.close()
           continue
         client.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
-        client.setSocketReadTimeout(SocketReadTimeoutMs)
+        client.setSocketTimeouts(SocketReadTimeoutMs, SocketWriteTimeoutMs)
         when defined(ssl):
           if sv.tlsEnabled:
             try:
@@ -2630,6 +2820,7 @@ proc main() =
     if float((nowM - lastSlowTick).inMilliseconds) / 1000.0 >= sv.slowTickSec:
       sv.slowTick()
       sv.applyClusterTxTick()
+      sv.autoPackTick()
       sv.st.sync()
       lastSlowTick = nowM
   sv.st.sync()

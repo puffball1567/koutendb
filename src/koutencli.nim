@@ -40,7 +40,7 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-rust",
       packageName: "koutendb",
       installHint: "cargo add koutendb",
-      notes: "Published on crates.io as koutendb v0.1.3. Wraps the KoutenDB C ABI."
+      notes: "Published on crates.io as koutendb v0.1.5. Wraps the KoutenDB C ABI."
     ),
     DriverInfo(
       name: "node",
@@ -931,15 +931,27 @@ proc runHealth(peers, username, password, authToken, secretKey, galaxy: string,
 
 proc runMetrics(peers, username, password, authToken, secretKey, galaxy: string,
                 tls: bool, tlsCaFile, tlsServerName: string,
-                tlsInsecureSkipVerify: bool) =
+                tlsInsecureSkipVerify: bool, outputFormat: string) =
   var db = connect(peers, username = username, password = password,
                    authToken = authToken, secretKey = secretKey, galaxy = galaxy,
                    tls = tls, tlsCaFile = tlsCaFile,
                    tlsServerName = tlsServerName,
                    tlsInsecureSkipVerify = tlsInsecureSkipVerify)
-  for line in db.metrics():
-    echo line
+  let output = db.metricsText(parseKoutenMetricsFormat(outputFormat))
+  stdout.write(output)
+  if output.len == 0 or output[^1] != '\n':
+    stdout.write("\n")
   db.close()
+
+proc runCheckpointMetrics(root, outputFormat: string) =
+  if root.len == 0:
+    raise newException(ValueError,
+      "checkpoint-metrics requires --checkpoint-root=DIR")
+  let output = checkpointMetricsText(
+    root, parseKoutenMetricsFormat(outputFormat))
+  stdout.write(output)
+  if output.len == 0 or output[^1] != '\n':
+    stdout.write("\n")
 
 proc runShutdown(peers, username, password, authToken, secretKey, galaxy: string,
                  tls: bool, tlsCaFile, tlsServerName: string,
@@ -2099,31 +2111,7 @@ proc runSegmentStatus(dataDir: string; staleRatio: float;
       echo &"segmentRingPackRecommended{{ringKey=\"{ring.ringKey}\"}} {int(ring.packRecommended)}"
     return
   if jsonFormat:
-    var rings = newJArray()
-    for ring in report.rings:
-      rings.add %*{
-        "ring": ring.ring,
-        "ringKey": $ring.ringKey,
-        "generation": $ring.generation,
-        "liveRecords": ring.liveRecords,
-        "coveredRecords": ring.coveredRecords,
-        "segmentRecords": ring.segmentRecords,
-        "staleRecords": ring.staleRecords,
-        "staleRatio": ring.staleRatio,
-        "segmentBytes": ring.segmentBytes,
-        "indexBytes": ring.indexBytes,
-        "packRecommended": ring.packRecommended
-      }
-    echo pretty(%*{
-      "diskBacked": report.diskBacked,
-      "recommendedRings": report.recommendedRings,
-      "totalSegmentBytes": report.totalSegmentBytes,
-      "totalIndexBytes": report.totalIndexBytes,
-      "maxGeneration": $report.maxGeneration,
-      "segmentHits": $report.segmentHits,
-      "walFallbacks": $report.walFallbacks,
-      "rings": rings
-    })
+    echo pretty(segmentStatusJson(report))
     return
   echo &"segment-status OK recommended={report.recommendedRings} segmentBytes={report.totalSegmentBytes} indexBytes={report.totalIndexBytes} maxGeneration={report.maxGeneration}"
   for ring in report.rings:
@@ -2140,6 +2128,125 @@ proc runPackRecommended(dataDir: string; durability: KoutenDurability;
                                                 effectiveMaxRings)
   db.close()
   echo &"pack-recommended OK records={stats.records} rings={stats.rings} bytes={stats.bytes} removedFiles={stats.removedFiles}"
+
+proc printSegmentMaintenance(result: KoutenSegmentMaintenanceResult;
+                             policy: KoutenSegmentMaintenancePolicy;
+                             jsonFormat: bool) =
+  if jsonFormat:
+    echo pretty(segmentMaintenanceJson(result, policy))
+    return
+  echo &"segment-maintenance {result.outcome} selected={result.selectedRings} packed={result.packedRings} records={result.recordsRewritten} bytes={result.bytesRewritten} elapsedMs={result.elapsedMs} stopReason={result.stopReason}"
+  for decision in result.decisions:
+    echo &"ring={decision.ring} selected={decision.selected} recommended={decision.recommended} reason={decision.reason} stale={decision.staleRecords} staleRatio={decision.staleRatio:.6f} estimatedBytes={decision.estimatedBytes} rewrittenBytes={decision.bytesRewritten} error={decision.error}"
+
+proc runSegmentMaintenance(dataDir: string; durability: KoutenDurability;
+                           staleRatio: float; minStaleRecords, maxRings: int;
+                           maxBytes, maxElapsedMs: int64; dryRun,
+                           jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError,
+      "segment maintenance requires --data=DIR")
+  let policy = KoutenSegmentMaintenancePolicy(
+    staleRatioThreshold: staleRatio,
+    minStaleRecords: minStaleRecords,
+    maxRings: maxRings,
+    maxBytes: maxBytes,
+    maxElapsedMs: maxElapsedMs)
+  var db = open(dataDir = dataDir, durability = durability, diskBacked = true)
+  var result: KoutenSegmentMaintenanceResult
+  try:
+    if not dryRun:
+      discard db.recoverInterruptedSegmentMaintenance()
+    result = db.runSegmentMaintenance(policy, dryRun = dryRun)
+  finally:
+    db.close()
+  printSegmentMaintenance(result, policy, jsonFormat)
+
+proc runSegmentMaintenanceStatus(dataDir: string; jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError, "maintenance-status requires --data=DIR")
+  var db = open(dataDir = dataDir, diskBacked = true)
+  var status: JsonNode
+  try:
+    discard db.recoverInterruptedSegmentMaintenance()
+    status = db.segmentMaintenanceStatus()
+  finally:
+    db.close()
+  if status.kind == JNull:
+    if jsonFormat: echo "null"
+    else: echo "maintenance-status no-record"
+  elif jsonFormat:
+    echo pretty(status)
+  else:
+    let outcome = status{"outcome"}.getStr()
+    let startedAt = status{"startedAt"}.getFloat()
+    let finishedAt = status{"finishedAt"}.getFloat()
+    let packedRings = status{"packedRings"}.getInt()
+    let stopReason = status{"stopReason"}.getStr()
+    echo &"maintenance-status {outcome} startedAt={startedAt} finishedAt={finishedAt} packed={packedRings} stopReason={stopReason}"
+
+proc printCheckpointStatus(status: CheckpointStatus; jsonFormat: bool) =
+  if jsonFormat:
+    echo pretty(checkpointStatusJson(status))
+  else:
+    echo &"checkpoint {status.reason} id={status.id} verified={status.verified} complete={status.complete} items={status.items} tombstones={status.tombstones} rings={status.rings} walHighWater={status.sourceWalHighWater} snapshotBytes={status.snapshotWalBytes} path={status.path}"
+
+proc runCheckpointCreate(dataDir, checkpointRoot, checkpointId: string;
+                         durability: KoutenDurability; jsonFormat: bool) =
+  if dataDir.len == 0:
+    raise newException(ValueError, "checkpoint-create requires --data=DIR")
+  var db = open(dataDir = dataDir, durability = durability,
+                diskBacked = true)
+  var status: CheckpointStatus
+  try:
+    status = db.createCheckpoint(checkpointRoot, checkpointId)
+  finally:
+    db.close()
+  printCheckpointStatus(status, jsonFormat)
+
+proc runCheckpointStatus(checkpointPath: string; jsonFormat: bool) =
+  if checkpointPath.len == 0:
+    raise newException(ValueError,
+      "checkpoint-status requires --checkpoint=DIR")
+  printCheckpointStatus(checkpointStatus(checkpointPath), jsonFormat)
+
+proc runCheckpointVerify(checkpointPath: string; jsonFormat: bool) =
+  if checkpointPath.len == 0:
+    raise newException(ValueError,
+      "checkpoint-verify requires --checkpoint=DIR")
+  printCheckpointStatus(verifyCheckpoint(checkpointPath), jsonFormat)
+
+proc runCheckpointList(checkpointRoot: string; jsonFormat: bool) =
+  if checkpointRoot.len == 0:
+    raise newException(ValueError,
+      "checkpoint-list requires --checkpoint-root=DIR")
+  let statuses = listCheckpoints(checkpointRoot)
+  if jsonFormat:
+    echo pretty(checkpointListJson(checkpointRoot, statuses))
+  else:
+    echo &"checkpoint-list count={statuses.len} root={checkpointRoot}"
+    for status in statuses:
+      printCheckpointStatus(status, false)
+
+proc runCheckpointCleanup(checkpointRoot: string; keep: int;
+                          jsonFormat: bool) =
+  if checkpointRoot.len == 0:
+    raise newException(ValueError,
+      "checkpoint-clean requires --checkpoint-root=DIR")
+  let stats = cleanupCheckpoints(checkpointRoot, keep)
+  if jsonFormat:
+    echo pretty(checkpointCleanupJson(stats))
+  else:
+    echo &"checkpoint-clean kept={stats.kept} removed={stats.removed.len} invalid={stats.invalid.len} root={stats.root}"
+
+proc runCheckpointRestore(checkpointPath, dataDir: string; overwrite: bool;
+                          jsonFormat: bool) =
+  if checkpointPath.len == 0 or dataDir.len == 0:
+    raise newException(ValueError,
+      "checkpoint-restore requires --checkpoint=DIR --data=DIR")
+  let status = restoreCheckpoint(checkpointPath, dataDir,
+                                 overwrite = overwrite)
+  printCheckpointStatus(status, jsonFormat)
 
 proc runLocality(dataDir: string, metricsFormat: bool) =
   if dataDir.len == 0:
@@ -3093,12 +3200,23 @@ proc printHelp() =
   echo "  kouten ring-profile --data=DIR --ring=RING [--codec=raw|json|nif|bif] [--charset=UTF-8] [--format-version=VERSION]"
   echo "  kouten shell [--data=DIR | --peers=host:port,...]"
   echo "  kouten atlas [--data=DIR | --peers=host:port,...]"
-  echo "  kouten health|metrics|rings|drain|resume|snapshot --peers=host:port,..."
+  echo "  kouten health|rings|drain|resume|snapshot --peers=host:port,..."
+  echo "  kouten metrics --peers=host:port,... [--format=key-value|prometheus|openmetrics]"
   echo "  kouten driver list|info|install [LANG] [--manifest-path=FILE] [--execute]"
   echo "  kouten compact --data=DIR"
   echo "  kouten pack-ring --data=DIR --ring=RING [--durability=buffered|strong]"
   echo "  kouten segment-status --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--metrics|--json]"
   echo "  kouten pack-recommended --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=N]"
+  echo "  kouten maintenance-plan --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]"
+  echo "  kouten maintenance-run --data=DIR [--stale-ratio=0.25] [--min-stale-records=256] [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]"
+  echo "  kouten maintenance-status --data=DIR [--json]"
+  echo "  kouten checkpoint-create --data=DIR [--checkpoint-root=DIR] [--checkpoint-id=ID] [--durability=buffered|strong] [--json]"
+  echo "  kouten checkpoint-status --checkpoint=DIR [--json]"
+  echo "  kouten checkpoint-verify --checkpoint=DIR [--json]"
+  echo "  kouten checkpoint-list --checkpoint-root=DIR [--json]"
+  echo "  kouten checkpoint-clean --checkpoint-root=DIR [--keep=N] [--json]"
+  echo "  kouten checkpoint-metrics --checkpoint-root=DIR [--format=key-value|prometheus|openmetrics]"
+  echo "  kouten checkpoint-restore --checkpoint=DIR --data=DIR [--overwrite] [--json]"
   echo "  kouten locality --data=DIR [--metrics]"
   echo "  kouten backup --data=DIR --backup=DIR [--durability=buffered|strong]"
   echo "  kouten restore --backup=DIR --data=DIR [--overwrite] [--durability=buffered|strong]"
@@ -3136,10 +3254,13 @@ proc main() =
   var outPath = ""
   var inPath = ""
   var checkpointPath = ""
+  var checkpointRoot = ""
+  var checkpointId = ""
   var payload = ""
   var codecName = "auto"
   var charset = ""
   var formatVersion = ""
+  var outputFormat = "key-value"
   var view = "auto"
   var idArg = ""
   var nearRingBase = ""
@@ -3180,6 +3301,8 @@ proc main() =
   var maxItems = -1
   var maxRings = -1
   var maxRingsSet = false
+  var maintenanceMaxBytes = 64'i64 * 1024 * 1024
+  var maintenanceMaxElapsedMs = 1000'i64
   var username = ""
   var password = ""
   var passwordFile = ""
@@ -3211,6 +3334,7 @@ proc main() =
   var payloadBytes = 100
   var importBatchSize = 1000
   var checkpointEvery = DefaultScaleInCheckpointEvery
+  var checkpointKeep = 2
   var retryLimit = DefaultScaleInRetryLimit
   var retryDelayMs = DefaultScaleInRetryDelayMs
   var maxTransfers = 0
@@ -3299,10 +3423,13 @@ proc main() =
       of "out": outPath = val
       of "in": inPath = val
       of "checkpoint": checkpointPath = val
+      of "checkpoint-root": checkpointRoot = val
+      of "checkpoint-id": checkpointId = val
       of "payload": payload = val
       of "codec": codecName = val
       of "charset": charset = val
       of "format-version": formatVersion = val
+      of "format": outputFormat = val
       of "view": view = val
       of "id": idArg = val
       of "near": nearRingBase = val
@@ -3380,6 +3507,9 @@ proc main() =
       of "max-rings":
         maxRings = parseInt(val)
         maxRingsSet = true
+      of "max-bytes": maintenanceMaxBytes = parseBiggestInt(val).int64
+      of "max-elapsed-ms":
+        maintenanceMaxElapsedMs = parseBiggestInt(val).int64
       of "execute": executeDriverInstall = true
       of "metrics": metricsFormat = true
       of "json": jsonFormat = true
@@ -3415,6 +3545,7 @@ proc main() =
       of "payload-bytes": payloadBytes = parseInt(val)
       of "batch-size": importBatchSize = parseInt(val)
       of "checkpoint-every": checkpointEvery = parseInt(val)
+      of "keep": checkpointKeep = parseInt(val)
       of "retry-limit": retryLimit = parseInt(val)
       of "retry-delay-ms": retryDelayMs = parseInt(val)
       of "max-transfers": maxTransfers = parseInt(val)
@@ -3509,7 +3640,9 @@ proc main() =
               tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
   of "metrics":
     runMetrics(peers, username, password, authToken, secretKey, galaxy, tls,
-               tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
+               tlsCaFile, tlsServerName, tlsInsecureSkipVerify, outputFormat)
+  of "checkpoint-metrics":
+    runCheckpointMetrics(checkpointRoot, outputFormat)
   of "shutdown":
     runShutdown(peers, username, password, authToken, secretKey, galaxy, tls,
                 tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
@@ -3559,6 +3692,31 @@ proc main() =
   of "pack-recommended": runPackRecommended(dataDir, durability, staleRatio,
                                               minStaleRecords, maxRings,
                                               maxRingsSet)
+  of "maintenance-plan":
+    runSegmentMaintenance(dataDir, durability, staleRatio, minStaleRecords,
+                          (if maxRingsSet: maxRings else: 1),
+                          maintenanceMaxBytes, maintenanceMaxElapsedMs,
+                          true, jsonFormat)
+  of "maintenance-run":
+    runSegmentMaintenance(dataDir, durability, staleRatio, minStaleRecords,
+                          (if maxRingsSet: maxRings else: 1),
+                          maintenanceMaxBytes, maintenanceMaxElapsedMs,
+                          false, jsonFormat)
+  of "maintenance-status":
+    runSegmentMaintenanceStatus(dataDir, jsonFormat)
+  of "checkpoint-create":
+    runCheckpointCreate(dataDir, checkpointRoot, checkpointId, durability,
+                        jsonFormat)
+  of "checkpoint-status":
+    runCheckpointStatus(checkpointPath, jsonFormat)
+  of "checkpoint-verify":
+    runCheckpointVerify(checkpointPath, jsonFormat)
+  of "checkpoint-list":
+    runCheckpointList(checkpointRoot, jsonFormat)
+  of "checkpoint-clean":
+    runCheckpointCleanup(checkpointRoot, checkpointKeep, jsonFormat)
+  of "checkpoint-restore":
+    runCheckpointRestore(checkpointPath, dataDir, overwrite, jsonFormat)
   of "locality": runLocality(dataDir, metricsFormat)
   of "backup": runBackup(dataDir, backupDir, durability)
   of "restore": runRestore(backupDir, dataDir, overwrite, durability)

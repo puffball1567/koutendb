@@ -21,14 +21,15 @@
 ## 永続化は open/サーバ起動時にディレクトリを渡すだけ:
 ## `koutendb.open(dataDir = "/var/lib/kouten")` / `koutend --data=DIR`
 
-import std/[algorithm, tables, hashes, json, times, strutils, os, net]
+import std/[algorithm, tables, hashes, json, times, monotimes, strutils, os, net]
 import kouten/[core, store, select, wire, field, vector_backend,
-              planner_backend, payload]
+              planner_backend, payload, metrics_format]
 
 export vector_backend
 export planner_backend
 export payload
 export select
+export metrics_format
 
 type
   KoutenDurability* = StoreDurability
@@ -136,6 +137,12 @@ type
     maxRingCount*: int
     maxRecordsPerRing*: int
 
+  KoutenGuardrailReason = enum
+    kgrPayloadBytes
+    kgrVectorDimension
+    kgrRingCount
+    kgrRecordsPerRing
+
   SearchProfile* = object
     ## 人間向けの retrieval tuning profile。
     ## RDB の optimizer hint を、KoutenDB では自然な語彙で表す。
@@ -207,6 +214,7 @@ type
     ringWriteAckModes: Table[uint64, WriteAckMode]
     ringApplyPolicies: Table[uint64, RingApplyPolicy]
     guardrails: KoutenGuardrails
+    guardrailDenials: array[KoutenGuardrailReason, uint64]
     ringChildren: Table[uint64, seq[uint64]]
     stellarMembers: Table[string, seq[string]]
     stellarByMember: Table[string, seq[string]]
@@ -416,6 +424,9 @@ type
   CompactStats* = StoreCompactStats
   BackupStats* = StoreBackupStats
   LocalityReport* = StoreLocalityReport
+  CheckpointFile* = StoreCheckpointFile
+  CheckpointStatus* = StoreCheckpointStatus
+  CheckpointCleanupStats* = StoreCheckpointCleanupStats
 
   KoutenSegmentRingStatus* = object
     ring*: string
@@ -434,11 +445,52 @@ type
     diskBacked*: bool
     segmentHits*: uint64
     walFallbacks*: uint64
+    walFallbackPointReads*: uint64
+    walFallbackRingScans*: uint64
+    walFallbackWindowReads*: uint64
     rings*: seq[KoutenSegmentRingStatus]
     recommendedRings*: int
     totalSegmentBytes*: int64
     totalIndexBytes*: int64
     maxGeneration*: uint64
+
+  KoutenSegmentMaintenancePolicy* = object
+    ## Zero means unlimited for each budget. Callers that schedule maintenance
+    ## should set at least one limit explicitly.
+    staleRatioThreshold*: float
+    minStaleRecords*: int
+    maxRings*: int
+    maxBytes*: int64
+    maxElapsedMs*: int64
+
+  KoutenSegmentMaintenanceDecision* = object
+    ring*: string
+    ringKey*: uint64
+    recommended*: bool
+    selected*: bool
+    reason*: string
+    staleRecords*: int
+    staleRatio*: float
+    estimatedBytes*: int64
+    recordsRewritten*: int
+    bytesRewritten*: int64
+    filesRemoved*: int
+    error*: string
+
+  KoutenSegmentMaintenanceResult* = object
+    dryRun*: bool
+    outcome*: string
+    startedAt*: float
+    finishedAt*: float
+    elapsedMs*: int64
+    recommendedRings*: int
+    selectedRings*: int
+    packedRings*: int
+    recordsRewritten*: int
+    bytesRewritten*: int64
+    filesRemoved*: int
+    stopReason*: string
+    decisions*: seq[KoutenSegmentMaintenanceDecision]
 
   KoutenOperationalCheck* = object
     name*: string
@@ -1091,6 +1143,9 @@ proc segmentStatus*(db: KoutenDb; staleRatioThreshold = 0.25;
   result.diskBacked = report.diskBacked
   result.segmentHits = report.segmentHits
   result.walFallbacks = report.walFallbacks
+  result.walFallbackPointReads = report.walFallbackReasons[ssfrPointRead]
+  result.walFallbackRingScans = report.walFallbackReasons[ssfrRingScan]
+  result.walFallbackWindowReads = report.walFallbackReasons[ssfrWindowRead]
   result.recommendedRings = report.recommendedRings
   result.totalSegmentBytes = report.totalSegmentBytes
   result.totalIndexBytes = report.totalIndexBytes
@@ -1103,6 +1158,427 @@ proc segmentStatus*(db: KoutenDb; staleRatioThreshold = 0.25;
       segmentRecords: ring.segmentRecords, staleRecords: ring.staleRecords,
       staleRatio: ring.staleRatio, segmentBytes: ring.segmentBytes,
       indexBytes: ring.indexBytes, packRecommended: ring.packRecommended)
+
+proc segmentStatusJson*(status: KoutenSegmentStatus): JsonNode =
+  ## Stable JSON boundary shared by the CLI and additive C ABI calls.
+  var rings = newJArray()
+  for ring in status.rings:
+    rings.add %*{
+      "ring": ring.ring,
+      "ringKey": $ring.ringKey,
+      "generation": $ring.generation,
+      "liveRecords": ring.liveRecords,
+      "coveredRecords": ring.coveredRecords,
+      "segmentRecords": ring.segmentRecords,
+      "staleRecords": ring.staleRecords,
+      "staleRatio": ring.staleRatio,
+      "segmentBytes": ring.segmentBytes,
+      "indexBytes": ring.indexBytes,
+      "packRecommended": ring.packRecommended
+    }
+  %*{
+    "diskBacked": status.diskBacked,
+    "recommendedRings": status.recommendedRings,
+    "totalSegmentBytes": status.totalSegmentBytes,
+    "totalIndexBytes": status.totalIndexBytes,
+    "maxGeneration": $status.maxGeneration,
+    "segmentHits": $status.segmentHits,
+    "walFallbacks": $status.walFallbacks,
+    "walFallbackReasons": {
+      "point-read-failed": $status.walFallbackPointReads,
+      "ring-scan-failed": $status.walFallbackRingScans,
+      "window-read-failed": $status.walFallbackWindowReads
+    },
+    "rings": rings
+  }
+
+proc defaultSegmentMaintenancePolicy*(): KoutenSegmentMaintenancePolicy =
+  ## Conservative defaults for one bounded maintenance pass. Automatic
+  ## scheduling remains disabled unless the server is configured for it.
+  KoutenSegmentMaintenancePolicy(
+    staleRatioThreshold: 0.25,
+    minStaleRecords: 256,
+    maxRings: 1,
+    maxBytes: 64'i64 * 1024 * 1024,
+    maxElapsedMs: 1000)
+
+proc validateSegmentMaintenancePolicy*(policy: KoutenSegmentMaintenancePolicy) =
+  if policy.staleRatioThreshold < 0 or policy.staleRatioThreshold > 1:
+    raise newException(KoutenValidationError,
+      "staleRatioThreshold must be between 0 and 1")
+  if policy.minStaleRecords < 0:
+    raise newException(KoutenValidationError, "minStaleRecords must be >= 0")
+  if policy.maxRings < 0:
+    raise newException(KoutenValidationError, "maxRings must be >= 0")
+  if policy.maxBytes < 0:
+    raise newException(KoutenValidationError, "maxBytes must be >= 0")
+  if policy.maxElapsedMs < 0:
+    raise newException(KoutenValidationError, "maxElapsedMs must be >= 0")
+
+proc planSegmentMaintenance*(st: Store;
+    policy = defaultSegmentMaintenancePolicy()):
+    KoutenSegmentMaintenanceResult =
+  ## Produce the exact count/byte-budget selection used by execution. Elapsed
+  ## time is enforced dynamically because it cannot be predicted by a dry run.
+  validateSegmentMaintenancePolicy(policy)
+  if not st.isPersistent or not st.diskBacked:
+    raise newException(KoutenValidationError,
+      "segment maintenance requires a persistent disk-backed store")
+  let report = st.segmentReport(policy.staleRatioThreshold,
+                                policy.minStaleRecords)
+  result.dryRun = true
+  result.outcome = "dry-run"
+  result.recommendedRings = report.recommendedRings
+  var selectedBytes = 0'i64
+  for ring in report.rings:
+    let estimatedBytes = ring.segmentBytes + ring.indexBytes
+    var decision = KoutenSegmentMaintenanceDecision(
+      ring: st.ringNames.getOrDefault(ring.ring, $ring.ring),
+      ringKey: ring.ring,
+      recommended: ring.packRecommended,
+      staleRecords: ring.staleRecords,
+      staleRatio: ring.staleRatio,
+      estimatedBytes: estimatedBytes)
+    if not ring.packRecommended:
+      if ring.staleRecords < policy.minStaleRecords:
+        decision.reason = "stale-records-below-minimum"
+      else:
+        decision.reason = "stale-ratio-below-threshold"
+    elif policy.maxRings > 0 and result.selectedRings >= policy.maxRings:
+      decision.reason = "ring-budget-exhausted"
+    elif policy.maxBytes > 0 and
+        estimatedBytes > policy.maxBytes - selectedBytes:
+      decision.reason = "byte-budget-exhausted"
+    else:
+      decision.selected = true
+      decision.reason = "selected"
+      inc result.selectedRings
+      selectedBytes += estimatedBytes
+    result.decisions.add decision
+  if result.selectedRings == 0:
+    result.outcome = "no-work"
+
+proc planSegmentMaintenance*(db: KoutenDb;
+    policy = defaultSegmentMaintenancePolicy()):
+    KoutenSegmentMaintenanceResult =
+  if db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      "cluster connection cannot maintain local segment layout")
+  db.st.planSegmentMaintenance(policy)
+
+proc segmentMaintenanceJson*(maintenance: KoutenSegmentMaintenanceResult;
+    policy: KoutenSegmentMaintenancePolicy): JsonNode =
+  var decisions = newJArray()
+  for decision in maintenance.decisions:
+    decisions.add %*{
+      "ring": decision.ring,
+      "ringKey": $decision.ringKey,
+      "recommended": decision.recommended,
+      "selected": decision.selected,
+      "reasonCode": decision.reason,
+      "reason": decision.reason,
+      "cleanupReasonCode":
+        (if decision.reason == "packed" and decision.filesRemoved > 0:
+           "inactive-generations-removed"
+         elif decision.reason == "packed": "no-inactive-generations"
+         else: "not-run"),
+      "staleRecords": decision.staleRecords,
+      "staleRatio": decision.staleRatio,
+      "estimatedBytes": decision.estimatedBytes,
+      "recordsRewritten": decision.recordsRewritten,
+      "bytesRewritten": decision.bytesRewritten,
+      "filesRemoved": decision.filesRemoved,
+      "error": decision.error
+    }
+  %*{
+    "schema": "koutendb.segment-maintenance.v1",
+    "outcome": maintenance.outcome,
+    "dryRun": maintenance.dryRun,
+    "startedAt": maintenance.startedAt,
+    "finishedAt": maintenance.finishedAt,
+    "elapsedMs": maintenance.elapsedMs,
+    "recommendedRings": maintenance.recommendedRings,
+    "selectedRings": maintenance.selectedRings,
+    "packedRings": maintenance.packedRings,
+    "recordsRewritten": maintenance.recordsRewritten,
+    "bytesRewritten": maintenance.bytesRewritten,
+    "filesRemoved": maintenance.filesRemoved,
+    "stopReasonCode": maintenance.stopReason,
+    "stopReason": maintenance.stopReason,
+    "policy": {
+      "staleRatioThreshold": policy.staleRatioThreshold,
+      "minStaleRecords": policy.minStaleRecords,
+      "maxRings": policy.maxRings,
+      "maxBytes": policy.maxBytes,
+      "maxElapsedMs": policy.maxElapsedMs
+    },
+    "decisions": decisions
+  }
+
+proc segmentMaintenanceStatus*(st: Store): JsonNode =
+  let raw = st.readSegmentMaintenanceStatus()
+  if raw.len == 0:
+    return newJNull()
+  try:
+    result = parseJson(raw)
+  except JsonParsingError as exc:
+    raise newException(KoutenOperationError,
+      "segment maintenance status is invalid: " & exc.msg)
+  if result.kind != JObject or
+      not result.hasKey("schema") or result["schema"].kind != JString or
+      result["schema"].getStr() != "koutendb.segment-maintenance.v1" or
+      not result.hasKey("outcome") or result["outcome"].kind != JString or
+      result["outcome"].getStr() notin
+        ["running", "completed", "partial", "interrupted", "failed", "no-work"]:
+    raise newException(KoutenOperationError,
+      "segment maintenance status has an unsupported schema or outcome")
+
+proc segmentMaintenanceStatus*(db: KoutenDb): JsonNode =
+  if db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      "cluster connection cannot inspect local maintenance status")
+  db.st.segmentMaintenanceStatus()
+
+proc recoverInterruptedSegmentMaintenance*(st: Store): bool =
+  ## Convert a durable running marker left by process termination into a
+  ## stable interrupted outcome. Segment generation recovery remains handled
+  ## by the manifest-last pack protocol.
+  let status = st.segmentMaintenanceStatus()
+  if status.kind != JObject or status{"outcome"}.getStr() != "running":
+    return false
+  status["outcome"] = %"interrupted"
+  status["stopReason"] = %"process-terminated"
+  status["finishedAt"] = %epochTime()
+  st.writeSegmentMaintenanceStatus(pretty(status))
+  true
+
+proc recoverInterruptedSegmentMaintenance*(db: KoutenDb): bool =
+  if db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      "cluster connection cannot recover local maintenance status")
+  db.st.recoverInterruptedSegmentMaintenance()
+
+proc runSegmentMaintenance*(st: Store;
+    policy = defaultSegmentMaintenancePolicy(); dryRun = false):
+    KoutenSegmentMaintenanceResult {.discardable.} =
+  ## Run one bounded maintenance pass. A byte/time interruption happens before
+  ## manifest publication, so the previously complete generation remains
+  ## active. Other selected rings are not attempted after an interruption or
+  ## failure.
+  result = st.planSegmentMaintenance(policy)
+  result.startedAt = epochTime()
+  if dryRun:
+    result.dryRun = true
+    result.finishedAt = epochTime()
+    return
+
+  if result.selectedRings == 0:
+    result.dryRun = false
+    result.finishedAt = epochTime()
+    st.writeSegmentMaintenanceStatus(
+      pretty(segmentMaintenanceJson(result, policy)))
+    return
+
+  result.dryRun = false
+  result.outcome = "completed"
+  var running = result
+  running.outcome = "running"
+  st.writeSegmentMaintenanceStatus(
+    pretty(segmentMaintenanceJson(running, policy)))
+  let startedMono = getMonoTime()
+  var stopped = false
+  for i in 0 ..< result.decisions.len:
+    if not result.decisions[i].selected:
+      continue
+    if stopped:
+      result.decisions[i].selected = false
+      result.decisions[i].reason = "not-run-after-stop"
+      continue
+    let elapsed = (getMonoTime() - startedMono).inMilliseconds
+    if policy.maxElapsedMs > 0 and elapsed >= policy.maxElapsedMs:
+      result.decisions[i].selected = false
+      result.decisions[i].reason = "elapsed-budget-exhausted"
+      result.stopReason = result.decisions[i].reason
+      result.outcome = if result.packedRings > 0: "partial" else: "interrupted"
+      stopped = true
+      continue
+    let remainingBytes =
+      if policy.maxBytes > 0: policy.maxBytes - result.bytesRewritten
+      else: 0'i64
+    let remainingMs =
+      if policy.maxElapsedMs > 0: policy.maxElapsedMs - elapsed
+      else: 0'i64
+    try:
+      let stats = st.packRingSegment(result.decisions[i].ringKey,
+                                     remainingBytes, remainingMs)
+      let rewritten = stats.bytes + stats.indexBytes
+      result.decisions[i].reason = "packed"
+      result.decisions[i].recordsRewritten = stats.records
+      result.decisions[i].bytesRewritten = rewritten
+      result.decisions[i].filesRemoved = stats.removedFiles
+      result.recordsRewritten += stats.records
+      result.bytesRewritten += rewritten
+      result.filesRemoved += stats.removedFiles
+      inc result.packedRings
+    except SegmentPackLimitError as exc:
+      result.decisions[i].reason =
+        if exc.limitKind == splBytes: "interrupted-byte-budget"
+        else: "interrupted-elapsed-budget"
+      result.decisions[i].error = exc.msg
+      result.stopReason = result.decisions[i].reason
+      result.outcome = if result.packedRings > 0: "partial" else: "interrupted"
+      stopped = true
+    except CatchableError as exc:
+      result.decisions[i].reason = "pack-failed"
+      result.decisions[i].error = exc.msg
+      result.stopReason = "pack-failed"
+      result.outcome = "failed"
+      stopped = true
+  result.elapsedMs = (getMonoTime() - startedMono).inMilliseconds
+  result.finishedAt = epochTime()
+  st.writeSegmentMaintenanceStatus(
+    pretty(segmentMaintenanceJson(result, policy)))
+
+proc runSegmentMaintenance*(db: KoutenDb;
+    policy = defaultSegmentMaintenancePolicy(); dryRun = false):
+    KoutenSegmentMaintenanceResult {.discardable.} =
+  if db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      "cluster connection cannot maintain local segment layout")
+  result = db.st.runSegmentMaintenance(policy, dryRun)
+  if dryRun:
+    return
+  db.audit("segment-maintenance", ok = result.outcome != "failed",
+           message = result.outcome, extra = %*{
+    "selectedRings": result.selectedRings,
+    "packedRings": result.packedRings,
+    "recordsRewritten": result.recordsRewritten,
+    "bytesRewritten": result.bytesRewritten,
+    "elapsedMs": result.elapsedMs,
+    "stopReason": result.stopReason
+  })
+
+proc checkpointStatusJson*(status: CheckpointStatus): JsonNode =
+  var files = newJArray()
+  for file in status.files:
+    var entry = %*{
+      "path": file.path,
+      "kind": file.kind,
+      "bytes": file.bytes,
+      "checksum": file.checksum
+    }
+    if file.kind in ["segment", "segment-index"]:
+      entry["ringKey"] = %($file.ring)
+      entry["generation"] = %($file.generation)
+    files.add entry
+  %*{
+    "schema": "koutendb.checkpoint-status.v1",
+    "format": status.format,
+    "id": status.id,
+    "path": status.path,
+    "createdAt": status.createdAt,
+    "sourceWalHighWater": $status.sourceWalHighWater,
+    "snapshotWalBytes": $status.snapshotWalBytes,
+    "complete": status.complete,
+    "verified": status.verified,
+    "reasonCode": status.reasonCode,
+    "reason": status.reason,
+    "items": status.items,
+    "tombstones": status.tombstones,
+    "rings": status.rings,
+    "files": files
+  }
+
+proc checkpointListJson*(root: string;
+                         statuses: openArray[CheckpointStatus]): JsonNode =
+  var entries = newJArray()
+  for status in statuses:
+    entries.add checkpointStatusJson(status)
+  %*{
+    "schema": "koutendb.checkpoint-list.v1",
+    "root": root,
+    "count": statuses.len,
+    "checkpoints": entries
+  }
+
+proc checkpointCleanupJson*(stats: CheckpointCleanupStats): JsonNode =
+  %*{
+    "schema": "koutendb.checkpoint-cleanup.v1",
+    "reasonCode": "cleanup-completed",
+    "root": stats.root,
+    "kept": stats.kept,
+    "removed": stats.removed,
+    "invalid": stats.invalid
+  }
+
+proc checkpointMetrics*(root: string): seq[string] =
+  ## Aggregate checkpoint health without checkpoint-ID labels. The bounded
+  ## shape is safe for regular Prometheus/OpenMetrics scrapes.
+  let statuses = listCheckpoints(root)
+  var verified = 0
+  var invalid = 0
+  var newestCreatedAt = 0.0
+  var newestVerified = 0
+  for status in statuses:
+    if status.verified: inc verified else: inc invalid
+    if status.createdAt >= newestCreatedAt:
+      newestCreatedAt = status.createdAt
+      newestVerified = if status.verified: 1 else: 0
+  # A damaged manifest may hide its creation time. In that case KoutenDB
+  # cannot prove that the newest generation is healthy, so report unhealthy.
+  if invalid > 0:
+    newestVerified = 0
+  let newestAge =
+    if newestCreatedAt > 0: max(0.0, epochTime() - newestCreatedAt)
+    else: 0.0
+  result.add "node 0 checkpointGenerations " & $statuses.len &
+             " checkpointVerifiedGenerations " & $verified &
+             " checkpointInvalidGenerations " & $invalid &
+             " checkpointNewestCreatedAtSec " & $newestCreatedAt &
+             " checkpointNewestAgeSec " & $newestAge &
+             " checkpointNewestVerified " & $newestVerified
+
+proc checkpointMetricsText*(root: string;
+                            format = kmfPrometheus): string =
+  formatMetricLines(checkpointMetrics(root), format)
+
+proc createCheckpoint*(db: KoutenDb; root = ""; id = ""):
+    CheckpointStatus =
+  if db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      "cluster connection cannot checkpoint remote stores")
+  result = db.st.createCheckpoint(root, id)
+  db.audit("checkpoint-create", extra = %*{
+    "checkpointId": result.id,
+    "path": result.path,
+    "sourceWalHighWater": $result.sourceWalHighWater,
+    "snapshotWalBytes": $result.snapshotWalBytes,
+    "items": result.items,
+    "rings": result.rings
+  })
+
+proc checkpointStatus*(checkpointDir: string): CheckpointStatus =
+  store.checkpointStatus(checkpointDir)
+
+proc verifyCheckpoint*(checkpointDir: string): CheckpointStatus =
+  store.verifyCheckpoint(checkpointDir)
+
+proc listCheckpoints*(root: string): seq[CheckpointStatus] =
+  store.listCheckpoints(root)
+
+proc cleanupCheckpoints*(root: string; keep = 2): CheckpointCleanupStats =
+  store.cleanupCheckpoints(root, keep)
+
+proc restoreCheckpoint*(checkpointDir, dataDir: string;
+                        overwrite = false): CheckpointStatus =
+  result = store.restoreCheckpoint(checkpointDir, dataDir, overwrite)
+  appendAudit(dataDir, "checkpoint-restore", extra = %*{
+    "checkpointId": result.id,
+    "source": checkpointDir,
+    "snapshotWalBytes": $result.snapshotWalBytes,
+    "items": result.items,
+    "rings": result.rings
+  })
 
 proc backup*(db: KoutenDb, dstDir: string): BackupStats =
   ## 現在の embedded Store 状態を compact 済み WAL として dstDir に退避する。
@@ -1571,6 +2047,7 @@ proc packRecommendedDiskBackedRings*(db: KoutenDb;
     result.records += stats.records
     result.rings += stats.rings
     result.bytes += stats.bytes
+    result.indexBytes += stats.indexBytes
     result.removedFiles += stats.removedFiles
     inc packed
 
@@ -1789,6 +2266,7 @@ proc checkPayloadGuardrails(db: KoutenDb, encoded: EncodedPayload,
                             vecLen: int) =
   let g = db.guardrails
   if g.maxPayloadBytes > 0 and encoded.data.len > g.maxPayloadBytes:
+    inc db.guardrailDenials[kgrPayloadBytes]
     db.audit("guardrail-denied", ok = false,
              message = "payload exceeds maxPayloadBytes",
              extra = %*{"maxPayloadBytes": g.maxPayloadBytes,
@@ -1796,6 +2274,7 @@ proc checkPayloadGuardrails(db: KoutenDb, encoded: EncodedPayload,
     raise newException(KoutenGuardrailError,
       "payload exceeds maxPayloadBytes " & $g.maxPayloadBytes)
   if g.maxVectorDim > 0 and vecLen > g.maxVectorDim:
+    inc db.guardrailDenials[kgrVectorDimension]
     db.audit("guardrail-denied", ok = false,
              message = "vector dimension exceeds maxVectorDim",
              extra = %*{"maxVectorDim": g.maxVectorDim,
@@ -1809,6 +2288,7 @@ proc checkWriteGuardrails(db: KoutenDb, encoded: EncodedPayload,
   let g = db.guardrails
   if g.maxRingCount > 0 and ring notin db.ringNames and
       db.ringNames.len >= g.maxRingCount:
+    inc db.guardrailDenials[kgrRingCount]
     db.audit("guardrail-denied", ok = false, ring = ring,
              message = "ring count exceeds maxRingCount",
              extra = %*{"maxRingCount": g.maxRingCount,
@@ -1818,6 +2298,7 @@ proc checkWriteGuardrails(db: KoutenDb, encoded: EncodedPayload,
   if g.maxRecordsPerRing > 0 and db.mode == mEmbedded and ring in db.ringNames:
     let key = db.ringNames[ring]
     if db.liveRecordsInEmbeddedRing(key) >= g.maxRecordsPerRing:
+      inc db.guardrailDenials[kgrRecordsPerRing]
       db.audit("guardrail-denied", ok = false, ring = ring,
                message = "ring records exceed maxRecordsPerRing",
                extra = %*{"maxRecordsPerRing": g.maxRecordsPerRing,
@@ -1851,9 +2332,13 @@ proc put*(db: KoutenDb, encoded: EncodedPayload, ring: string = "default",
   of mCluster:
     # Stable physical ring owner. Logical orbit timing is independent.
     let node = int(db.tbl.placementOwner(key))
-    let (seq, tWrite) = db.client.putReq(node, key, ri.period, ri.headAngle,
-                                         encoded.data, normVec, encoded.codec)
-    result = KoutenId(parent: key, epoch: db.tbl.epoch, seq: seq, tWrite: tWrite)
+    let placed = db.client.putRingReq(node, ring, encoded.data, normVec,
+                                      encoded.codec)
+    if placed.parent != key:
+      raise newException(IOError,
+        "server returned a different ring key for " & ring)
+    result = KoutenId(parent: placed.parent, epoch: placed.epoch,
+                      seq: placed.seq, tWrite: placed.tWrite)
 
 proc put*(db: KoutenDb, payload: string, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
@@ -1988,12 +2473,13 @@ proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
     if g.maxRecordsPerRing > 0:
       let staged = tx.stagedRingWrites.getOrDefault(key, 0)
       if tx.db.liveRecordsInEmbeddedRing(key) + staged >= g.maxRecordsPerRing:
+        inc tx.db.guardrailDenials[kgrRecordsPerRing]
         tx.db.audit("guardrail-denied", ok = false, ring = ring,
                     message = "ring records exceed maxRecordsPerRing",
                     extra = %*{"maxRecordsPerRing": g.maxRecordsPerRing,
                                "records": tx.db.liveRecordsInEmbeddedRing(key),
                                "stagedRecords": staged})
-        raise newException(ValueError,
+        raise newException(KoutenGuardrailError,
           "ring records exceed maxRecordsPerRing " & $g.maxRecordsPerRing)
     if tx.db.st.ringNames.getOrDefault(key, "") != ring:
       tx.tx.putRingName(key, ring)
@@ -2438,9 +2924,9 @@ proc patch*(db: KoutenDb, id: KoutenId, patchDoc: JsonNode): JsonNode =
 
 proc countByRing*(db: KoutenDb, ring: string): int =
   ## ring 内の live record 数。cluster v1 は全ノード集計。
-  if ring notin db.ringNames:
+  if db.mode == mEmbedded and ring notin db.ringNames:
     return 0
-  let key = db.ringNames[ring]
+  let key = db.ringKeyForRead(ring)
   case db.mode
   of mEmbedded:
     for itemKey in db.st.itemsByRing.getOrDefault(key, @[]):
@@ -2454,17 +2940,19 @@ proc listByRing*(db: KoutenDb, ring: string, limit = 100,
                  cursor = ""): KoutenListPage =
   ## ring 内を seq 昇順で cursor pagination する。cursor は前回の nextCursor。
   ## cluster v1 は全ノードから集めて merge する。
-  if limit <= 0 or ring notin db.ringNames:
+  if limit <= 0 or (db.mode == mEmbedded and ring notin db.ringNames):
     return
-  let key = db.ringNames[ring]
+  let key = db.ringKeyForRead(ring)
   let afterSeq =
     if cursor.len == 0: -1'i64
     else: int64(parseBiggestInt(cursor))
   if db.mode == mCluster:
     var rows: seq[WireListItem] = @[]
+    var remoteHasMore = false
     for node in 0 ..< db.client.peers.len:
       let part = db.client.listRingReq(node, key, limit, cursor)
       rows.add part.items
+      remoteHasMore = remoteHasMore or part.nextCursor.len > 0
     rows.sort(proc(a, b: WireListItem): int = cmp(a.seq, b.seq))
     for row in rows:
       if row.seq.int64 <= afterSeq:
@@ -2476,21 +2964,21 @@ proc listByRing*(db: KoutenDb, ring: string, limit = 100,
         id: KoutenId(parent: row.parent, epoch: db.tbl.epoch, seq: row.seq,
                     tWrite: row.tWrite),
         payload: row.payload, codec: row.codec)
+    if result.nextCursor.len == 0 and remoteHasMore and result.items.len > 0:
+      result.nextCursor = $(result.items[^1].id.seq)
     return
-  var emitted = 0
-  var lastSeq = -1'i64
-  for p in db.st.particlesByRing(key):
-    if p.seq.int64 <= afterSeq:
-      continue
-    if emitted >= limit:
-      result.nextCursor = $lastSeq
-      break
+  # Segment physical order is optimized independently from logical cursor
+  # order. Use the seq-ordered metadata path so updates to old records cannot
+  # regress the cursor or duplicate rows across pages.
+  let page = db.st.itemKeysByRingPage(key, afterSeq, limit)
+  for itemKey in page.items:
+    let p = db.st.getParticle(itemKey[0], itemKey[1])
     result.items.add KoutenRecord(
       id: KoutenId(parent: p.parent, epoch: db.tbl.epoch, seq: p.seq,
                   tWrite: p.tWrite),
       payload: p.payload, codec: p.codec)
-    lastSeq = p.seq.int64
-    inc emitted
+  if page.hasMore and result.items.len > 0:
+    result.nextCursor = $(result.items[^1].id.seq)
 
 proc defaultReadOptions*(): KoutenReadOptions =
   KoutenReadOptions(
@@ -4491,19 +4979,51 @@ proc health*(db: KoutenDb): seq[string] =
       result.add db.client.healthReq(i)
 
 proc metrics*(db: KoutenDb): seq[string] =
-  ## 管理・監視用の簡易 metrics。Prometheus 形式化は次段階。
+  ## Backward-compatible key/value operational metrics.
   case db.mode
   of mEmbedded:
+    let segment = db.st.segmentMetrics()
     result.add "node 0 items " & $db.st.count &
                " rings " & $db.st.ringMeta.len &
                " forwarders " & $db.st.forwarders.len &
+               " walBytes " & $db.st.logSize &
+               " persistent " & $(if db.st.isPersistent: 1 else: 0) &
+               " durabilityStrong " &
+                 $(if db.st.durability == durStrong: 1 else: 0) &
                " clusterTxCommitted " & $db.st.clusterTxCommitted &
                " clusterTxApplied " & $db.st.clusterTxApplied &
                " clusterTxPending " & $db.st.clusterTxPending &
-               " universeSyncEvents " & $db.st.universeSyncEvents.len
+               " universeSyncEvents " & $db.st.universeSyncEvents.len &
+               " segmentHits " & $segment.hits &
+               " segmentWalFallbacks " & $segment.walFallbacks &
+               " segmentWalFallbackPointRead " &
+                 $segment.walFallbackReasons[ssfrPointRead] &
+               " segmentWalFallbackRingScan " &
+                 $segment.walFallbackReasons[ssfrRingScan] &
+               " segmentWalFallbackWindowRead " &
+                 $segment.walFallbackReasons[ssfrWindowRead] &
+               " segmentBytes " & $segment.segmentBytes &
+               " segmentIndexBytes " & $segment.indexBytes &
+               " segmentActiveGenerations " & $segment.activeGenerations &
+               " segmentStaleRecords " & $segment.staleRecords &
+               " segmentRecommendedRings " & $segment.recommendedRings &
+               " guardrailDeniedPayloadBytes " &
+                 $db.guardrailDenials[kgrPayloadBytes] &
+               " guardrailDeniedVectorDim " &
+                 $db.guardrailDenials[kgrVectorDimension] &
+               " guardrailDeniedRingCount " &
+                 $db.guardrailDenials[kgrRingCount] &
+               " guardrailDeniedRecordsPerRing " &
+                 $db.guardrailDenials[kgrRecordsPerRing]
   of mCluster:
     for i in 0 ..< db.client.peers.len:
       result.add db.client.metricsReq(i)
+
+proc metricsText*(db: KoutenDb;
+                  format = kmfPrometheus): string =
+  ## Prometheus/OpenMetrics projection with bounded labels. Use `metrics()`
+  ## when the legacy key/value contract is required.
+  formatMetricLines(db.metrics(), format)
 
 proc shutdownCluster*(db: KoutenDb): seq[string] =
   ## 運用・テスト用の graceful shutdown。認証導入までは信頼ネットワーク前提。

@@ -3,6 +3,11 @@
 These Compose files are small topology demos for KoutenDB. They are meant to
 show how the universe / galaxy model maps to running processes.
 
+The shared image builds both `koutend` and `koutencli` with TLS support. For the
+full named-volume, restart, network-interruption, TLS/auth, certificate, and
+authorization matrix, run `scripts/container_security_matrix.sh` and see
+[`docs/container-security-validation.md`](../../docs/container-security-validation.md).
+
 ## Single Galaxy
 
 ```sh

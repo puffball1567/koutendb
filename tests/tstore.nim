@@ -193,6 +193,22 @@ suite "store persistence":
       child.close()
       removeDir(dir)
 
+  test "persistent data dirs are locked within one process and by canonical path":
+    let root = createTempDir("kouten-store", "same-process-lock")
+    let dir = root / "data"
+    var st = openStore(dir)
+    expect IOError:
+      discard openStore(dir)
+    when not defined(windows):
+      let alias = root / "data-alias"
+      createSymlink(dir, alias)
+      expect IOError:
+        discard openStore(alias)
+    st.close()
+    var reopened = openStore(dir)
+    reopened.close()
+    removeDir(root)
+
   test "Particle vec は E レコードで復元される":
     let dir = createTempDir("kouten-store", "vec")
     var st = openStore(dir)
@@ -1151,6 +1167,7 @@ suite "store persistence":
     check reopened.itemSegmentOffsets.len == 0
     let fallbackReport = reopened.segmentReport()
     check fallbackReport.walFallbacks == 1
+    check fallbackReport.walFallbackReasons[ssfrPointRead] == 1
     reopened.close()
     removeDir(dir)
 
@@ -1178,6 +1195,7 @@ suite "store persistence":
     let report = reopened.segmentReport()
     check report.segmentHits == 0
     check report.walFallbacks == 1
+    check report.walFallbackReasons[ssfrRingScan] == 1
     reopened.close()
     removeDir(dir)
 
@@ -1225,6 +1243,32 @@ suite "store persistence":
     check reopened.itemSegmentOffsets.len == 2
     let report = reopened.segmentReport()
     check report.walFallbacks == 1
+    check report.walFallbackReasons[ssfrPointRead] == 1
+    reopened.close()
+    removeDir(dir)
+
+  test "ring metadata keeps sequence order for out-of-order first writes":
+    let dir = createTempDir("kouten-store", "ring-key-sequence-order")
+    let ring = 630'u64
+    var st = openStore(dir, diskBacked = true)
+    for sequence in [9'u32, 1'u32, 5'u32, 3'u32]:
+      st.upsert Particle(parent: ring, seq: sequence, period: 60.0, head: 0.0,
+                         tWrite: float(sequence), payload: "item-" & $sequence)
+    check st.itemsByRing[ring].mapIt(it[1]) ==
+      @[1'u32, 3'u32, 5'u32, 9'u32]
+    check st.particlesByRingWindow(ring, 10).mapIt(it.seq) ==
+      @[1'u32, 3'u32, 5'u32, 9'u32]
+    let firstPage = st.itemKeysByRingPage(ring, -1, 2)
+    check firstPage.items.mapIt(it[1]) == @[1'u32, 3'u32]
+    check firstPage.hasMore
+    let secondPage = st.itemKeysByRingPage(ring, 3, 2)
+    check secondPage.items.mapIt(it[1]) == @[5'u32, 9'u32]
+    check not secondPage.hasMore
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.itemsByRing[ring].mapIt(it[1]) ==
+      @[1'u32, 3'u32, 5'u32, 9'u32]
     reopened.close()
     removeDir(dir)
 

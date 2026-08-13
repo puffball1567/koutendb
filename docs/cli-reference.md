@@ -92,7 +92,7 @@ kouten get --config=/etc/koutendb/client.json --ring=docs/japan
 | Command | Purpose |
 |---|---|
 | `health` | Check cluster health. |
-| `metrics` | Emit server metrics. |
+| `metrics` | Emit server metrics. `--format=key-value|prometheus|openmetrics` selects the stable output contract; key/value remains the default. |
 | `rings` | Show ring summaries. |
 | `atlas` | Emit the galaxy/ring map. Works with `--data` or `--peers`. |
 | `drain` | Put cluster nodes into read-only maintenance mode. Requires admin auth. |
@@ -357,6 +357,16 @@ For scripts and reproducible examples, prefer the single-shot commands above.
 | `pack-ring` | `--data=DIR --ring=RING` | Merge one disk-backed ring into a new local segment generation. |
 | `segment-status` | `--data=DIR`; optional `--stale-ratio=F`, `--min-stale-records=N`, `--metrics`, `--json` | Inspect ring-local generations, stale ratios, bytes, and pack recommendations without rewriting data. |
 | `pack-recommended` | `--data=DIR`; optional `--stale-ratio=F`, `--min-stale-records=N`, `--max-rings=N` | Explicitly pack only rings selected by the current diagnostic. |
+| `maintenance-plan` | `--data=DIR`; bounded maintenance thresholds and budgets; optional `--json` | Dry-run the exact count/byte selection used by maintenance execution. |
+| `maintenance-run` | Same as `maintenance-plan` | Execute one bounded maintenance pass and durably record its outcome. |
+| `maintenance-status` | `--data=DIR`; optional `--json` | Read the last durable maintenance result and recover a stale `running` marker as `interrupted`. |
+| `checkpoint-create` | `--data=DIR`; optional `--checkpoint-root=DIR`, `--checkpoint-id=ID`, `--durability=buffered\|strong`, `--json` | Create, seal, publish, and verify one immutable WAL plus ring-segment generation. |
+| `checkpoint-status` | `--checkpoint=DIR`; optional `--json` | Inspect one checkpoint without raising for integrity failure. |
+| `checkpoint-verify` | `--checkpoint=DIR`; optional `--json` | Strictly verify one checkpoint and exit non-zero on failure. |
+| `checkpoint-list` | `--checkpoint-root=DIR`; optional `--json` | List verified and invalid generations, newest first. |
+| `checkpoint-clean` | `--checkpoint-root=DIR`; optional `--keep=N`, `--json` | Retain the newest verified generations and preserve invalid ones for diagnosis. `N` must be at least one. |
+| `checkpoint-metrics` | `--checkpoint-root=DIR`; optional `--format=key-value|prometheus|openmetrics` | Emit bounded aggregate checkpoint health without checkpoint-ID labels. |
+| `checkpoint-restore` | `--checkpoint=DIR --data=DIR`; optional `--overwrite`, `--json` | Verify and stage a complete generation, then atomically publish the target data directory. |
 | `locality` | `--data=DIR`; optional `--metrics` | Inspect physical WAL locality by ring. |
 | `backup` | `--data=DIR --backup=DIR` | Create backup. |
 | `restore` | `--backup=DIR --data=DIR` | Restore backup. |
@@ -375,6 +385,10 @@ exports through `--ring-field`, `--payload-field`, and `--vec-field`.
 `--batch-size=N` controls how many successfully parsed records are committed per
 WAL transaction during bulk load. See
 [Data Migration](data-migration.md).
+
+When `--checkpoint-root` is omitted from `checkpoint-create`, KoutenDB uses the
+data-directory sibling `DATA_DIR.checkpoints`. The root must not overlap the
+source data directory. See [Generation Checkpoints](generation-checkpoints.md).
 
 ## Recovery Commands
 
@@ -419,7 +433,14 @@ Recovery commands accept `--mirror`, `--universe-config`, `--universe`,
 | `verify --data=DIR [--segments] [--max-wal-bytes=N] [--max-segment-files=N] [--max-items=N] [--max-rings=N]` | Open/replay a persistent data directory and check WAL, metadata, locality, optional capacity thresholds, and optional segment rebuild health. |
 | `pack-ring --data=DIR --ring=RING [--durability=buffered|strong]` | Build a new complete disk-backed segment generation for one ring and atomically activate it through the segment manifest. |
 | `segment-status --data=DIR [--metrics|--json]` | Report active generation, live/covered/stale records, bytes, runtime segment hits/WAL fallbacks, and the current pack recommendation for every ring. |
-| `pack-recommended --data=DIR [--max-rings=N]` | Apply the same recommendation thresholds explicitly; no background pack is started automatically. |
+| `pack-recommended --data=DIR [--max-rings=N]` | Apply the same recommendation thresholds explicitly. |
+| `maintenance-plan --data=DIR [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]` | Explain which rings one bounded run would select or skip. |
+| `maintenance-run --data=DIR [--max-rings=1] [--max-bytes=67108864] [--max-elapsed-ms=1000] [--json]` | Execute the bounded plan. A limit interruption leaves the previous segment generation active. |
+| `maintenance-status --data=DIR [--json]` | Show the durable result, including stable per-ring reason codes. |
+| `checkpoint-create --data=DIR [--checkpoint-root=DIR] [--checkpoint-id=ID] [--json]` | Publish and verify a self-contained generation. |
+| `checkpoint-verify --checkpoint=DIR [--json]` | Reject missing, incomplete, corrupt, symlinked, or logically inconsistent generations. |
+| `checkpoint-clean --checkpoint-root=DIR [--keep=N] [--json]` | Apply fail-safe retention without deleting invalid evidence or the final verified generation. |
+| `checkpoint-restore --checkpoint=DIR --data=DIR [--overwrite] [--json]` | Restore through a verified staging directory and atomic directory replacement. |
 | `verify --backup=DIR` | Verify backup readability before restore. |
 | `verify --server-config=FILE` | Validate a `koutend` server JSON config before startup. |
 | `doctor --server-config=FILE --json` | Emit the same server config checks as JSON. |

@@ -5,9 +5,9 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
-Current release evidence: [v0.11.0 release notes](./github-release-v0.11.0.md)
+Current release evidence: [v0.12.0 release notes](./github-release-v0.12.0.md)
 
-Current next-release planning: [v0.12 roadmap](./v0.12-roadmap.md)
+Current persistence-cycle record: [v0.12 implementation and validation](./v0.12-roadmap.md)
 
 Historical planning reference: [v0.10 roadmap](./v0.10-roadmap.md)
 
@@ -56,11 +56,11 @@ Translations:
 | Drain / snapshot barrier | Foundation | `DRAIN`, `SNAPSHOT`, and `RESUME` provide an admin-only maintenance boundary for cluster nodes. Drain is persisted across restart, rejects new writes while preserving read access and wire framing, and is required by explicit scale-in. Snapshot flushes and reports item/ring/pending-tx/WAL state. Coordinator redundancy and managed backup orchestration are still planned |
 | Dump / import-jsonl | Done | NoSQL JSONL import rules. This is the stable human-readable migration boundary while the pre-v1.0 internal WAL format can still evolve |
 | Universe sync outbox | PoC | WAL-backed eventual sync event queue with idempotent apply, ack/prune, transaction-backed `putSynced`, prune-safe monotonic source ids, latest-only pending coalescing, delayed timestamp apply windows, retryAt / maxAttempts / dead-letter state, `kouten universe-export` / `universe-apply` JSONL handoff, one-shot `kouten universe-sync` between local data dirs, remote `--peers` delivery via `UAPPLY`, and `universe-status` operational counters. It is a durable scheduler boundary, not immediate global consistency |
-| Crash recovery tests | Partial | Torn WAL tail repair, versioned-WAL checksum mismatch refusal, mid-file WAL corruption refusal, compact interruption, partial commit cases |
+| Crash and storage-failure tests | Foundation | Torn WAL tail repair, checksum/mid-file corruption refusal, compact interruption, partial commit cases, nine real `SIGKILL` publication boundaries, injected disk-full/short writes, permission loss, missing generations, damaged manifests, and index-only corruption. Power-loss/device-controller fault coverage remains external validation work |
 | Strong durability / fsync knob | Done | `open(dataDir=..., durability=durStrong)` and `koutend --durability=strong`; store/API tests cover reopen, transaction, compact |
 | Core test suite | Done | `scripts/test_core.sh` runs orbital core, selection, field, store, and public API tests |
 | Full smoke suite | Done | `scripts/test_all_smoke.sh` runs core tests plus cluster tx, failure retry, authz, wire fuzz, recovery, and remote universe sync smoke; driver compatibility is opt-in |
-| Generation snapshot / checkpoint | Planned | Generational snapshot and checkpoint are pending; encrypted backup is available |
+| Generation snapshot / checkpoint | Foundation | Immutable `koutendb-checkpoint-v1` generations bind a compact WAL to complete ring segment/index generations through a checksummed manifest and completion marker. Creation, strict verification, listing, fail-safe retention, and atomic-directory restore are exposed through Nim, CLI, and additive C ABI v2 JSON functions. Continuous PITR and managed scheduling remain planned |
 | Kubernetes manifests | Planned | liveness/readiness, PVC, rolling restart |
 
 ## Cluster / Network
@@ -71,12 +71,12 @@ Translations:
 | Deterministic locate | Done | Logical `L(id,t)` remains available for orbital planning; physical `P(ringKey, topologyEpoch)` provides stable server ownership |
 | Handoff / forwarder | Foundation | Physical migration is explicit, version-checked, destination-topology-fenced, bounded per tick, retried after failure, and independent of logical orbit frequency. Fully automated membership orchestration is not done |
 | Driver-friendly wire | Done | `PUTR/GETID/QRYID`; `WIREVER` exposes the current protocol version and `CODECS` exposes payload formats. Compatibility policy is documented in `docs/protocol-compatibility.md` |
-| Health / metrics / rings | Done | CLI and wire protocol; metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, storage/ring counts, and physical/scored retrieval work |
+| Health / metrics / rings | Done | CLI and wire protocol; legacy key/value plus Prometheus/OpenMetrics text. Metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, storage/ring counts, physical/scored retrieval work, segment/WAL fallback reasons, maintenance state, and aggregate checkpoint health. Default labels exclude ring names and checkpoint IDs. |
 | Authn + secret key | Done | username/password/secret-key; unusable credential combinations fail at startup |
 | TLS | Done | Standard TLS transport for `koutend` and CLI/client connections when built with `-d:ssl`; `scripts/cluster_tls_smoke.sh` covers authenticated TLS, secret-key transport, JSON put/get, and plain-client rejection |
 | Authz / RBAC | PoC | `koutend --allow-ring=prefix[,prefix...]` and `--role=user:password:reader|writer|admin[:prefixes]`; `scripts/cluster_authz_smoke.sh` and `scripts/cluster_rbac_smoke.sh` cover prefix and role matrix behavior |
 | Wire fuzz smoke | Done | `scripts/cluster_wire_fuzz_smoke.sh` runs deterministic malformed-frame cases, including oversized headers and deep JSON, and verifies the cluster stays healthy |
-| Server resource guardrails | Partial | Accepted sockets have a body-read timeout and fixed active-connection cap; fuller request-deadline and per-query cost controls remain planned |
+| Server resource guardrails | Foundation | Accepted sockets have receive/send deadlines and a fixed active-connection cap; rejected admission has a dedicated counter and plain connections receive `ERR overloaded`. Ring-list pages and retrieval work are bounded. `scripts/concurrency_backpressure_smoke.sh` covers slow input/output, admission recovery, concurrent readers/writers, automatic maintenance, metrics/snapshot barriers, and offline reopen. Per-tenant quotas remain planned |
 | Embedded write guardrails | Foundation | Opt-in `KoutenGuardrails` can cap payload bytes, vector dimension, ring count, and records per ring for production trials; default zero values preserve existing behavior |
 | Bounded server retrieve | Done | `koutend` keeps only the current top candidates up to request budget. Ring-scoped retrieval routes to the calculated owner and walks the ring index; only global retrieval scans every node |
 | Dynamic membership / epoch migration | Foundation | Scale-out supports a write-quiesced, one-node-at-a-time restart into a higher persisted placement epoch. Persistent drain, topology-fenced admin migration, cluster-wide activation preflight, bounded handoff, and source retention prevent mixed-epoch write acknowledgement. Explicit stop-the-world scale-in adds durable checkpoints, version/tombstone and metadata preservation, and independent verification. Live-write topology changes, in-place/live scale-in, and discovery orchestration remain unsupported and fail closed |
@@ -93,7 +93,7 @@ Translations:
 | C ABI | Done | ABI version / last error / put/get/retrieve/batch/atlas plus additive codec-aware put/get calls; C ABI vectors are host-native float arrays, while TCP wire vectors are canonical little-endian float32 |
 | JavaScript / TypeScript | Published | npm [`koutendb` v0.1.3](https://www.npmjs.com/package/koutendb); repository [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js); Node-API C ABI wrapper with TypeScript API |
 | Bun | Partial | The npm package uses Node-API and includes Bun compatibility verification, but Bun support remains experimental |
-| Rust | Published | crates.io [`koutendb` v0.1.3](https://crates.io/crates/koutendb); repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust); C ABI wrapper |
+| Rust | Published | crates.io [`koutendb` v0.1.5](https://crates.io/crates/koutendb); repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust); C ABI wrapper |
 | Python | Published | PyPI [`koutendb` v0.1.3](https://pypi.org/project/koutendb/); repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python); native TCP wire driver |
 | Go | Done | C ABI wrapper minimal |
 | PHP | Published | Packagist [`koutendb/koutendb` v0.1.2](https://packagist.org/packages/koutendb/koutendb); repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php); FFI / C ABI wrapper with Docker smoke |
@@ -125,7 +125,7 @@ Translations:
 | Payload codec demos | Done | `examples/payload_codecs_demo.sh` covers embedded persistence and prepared selection; `examples/payload_codecs_cluster_demo.sh` covers codec negotiation and legacy wire-header compatibility |
 | Crash / failure case study | Partial | Store-level WAL tail repair, mid-file WAL corruption refusal, compact interruption, partial commit, and cluster owner crash/restart retry are covered |
 | Multi-node cloud case study | Planned | VM/AZ, latency, failover behavior |
-| Prometheus / Datadog exporter | Post-v0.1 candidate | Core exposes key/value metrics now; OpenMetrics / Datadog collector should be added outside the core server loop |
+| Prometheus / OpenMetrics output | Done | Nim, CLI, and additive C ABI surfaces share one bounded-label formatter. HTTP serving and vendor-specific collectors remain deployment concerns outside the database process. |
 | State boundary demo | Post-v0.1 candidate | browser/RN local-global state demo |
 
 ## Security / Safety
@@ -155,7 +155,7 @@ single v0.2.0 milestone.
 - Unreal official plugin
 - package publishing workflows for remaining language drivers
 - API reference documentation
-- Prometheus / OpenMetrics and Datadog metrics adapters
+- Datadog/CloudWatch deployment collectors and managed dashboards
 - Fault-tolerance improvements
 
 ## Managed Service Readiness Gaps
@@ -181,7 +181,7 @@ fully covered by the current concepts or code:
 | Secret rotation | `authProfiles` reference external secrets, but the server and drivers need an explicit rotation story for username/password/secret-key credentials. |
 | Point-in-time recovery / generation checkpoints | Backup/restore exists. Managed services normally require recoverable generations, restore-point selection, and verification before promotion. |
 | Managed drain / quiesce orchestration | The server has admin-only `DRAIN` / `SNAPSHOT` / `RESUME` primitives. Managed services still need rolling orchestration, promotion policy, and backup scheduling around those primitives. |
-| OpenMetrics / CloudWatch / Datadog adapters | KoutenDB exposes key/value metrics, but managed integrations need standard exporters or collectors. |
+| CloudWatch / Datadog managed integrations | KoutenDB emits Prometheus/OpenMetrics text, but provider-managed collection, dashboards, and alert policy remain deployment work. |
 | Quotas and capacity guardrails | Galaxy isolation exists, but managed multi-tenant operation needs limits for WAL bytes, item count, ring count, payload size, and connection pressure. |
 | Protocol / storage compatibility policy | Managed upgrades need clear compatibility rules for wire protocol, WAL records, snapshots, and drivers. |
 

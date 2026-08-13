@@ -55,6 +55,12 @@ vector, and codec metadata preserved. KoutenDB IDs are reissued in the target
 store; applications should not treat dump/import as an ID-preserving binary
 clone.
 
+The migration boundary is exercised by `scripts/upgrade_fixture_matrix.sh`.
+It opens stores produced by the tagged v0.10.1 and v0.11.0 releases, exports
+them with the current version, imports the JSONL into fresh stores, and compares
+the portable logical records including ring, payload, codec, and vector data.
+The same matrix separately verifies exact checkpoint restore behavior.
+
 ## External JSONL Imports
 
 For external document stores, provide routing fields:

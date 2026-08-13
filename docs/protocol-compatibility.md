@@ -14,6 +14,12 @@ Both are intentionally small. They are stable enough for local drivers and
 smoke tests, but KoutenDB does not yet claim long-term production compatibility
 across arbitrary mixed-version clusters.
 
+Additive C ABI functions may retain the current ABI version when existing
+struct layouts, calling conventions, and symbol behavior do not change. The
+v0.12 disk-backed open, CRUD completion, bounded-maintenance, and generation-
+checkpoint JSON functions follow this rule, preserving ABI v2 for already-
+published wrappers.
+
 ## Wire Protocol
 
 The wire protocol is a KoutenDB-specific text-header protocol with length-prefixed
@@ -173,6 +179,19 @@ human-readable migration across releases, use `kouten dump` and
 `kouten import-jsonl` rather than copying or editing WAL internals directly.
 See [Data Migration](data-migration.md) for the supported JSONL boundary.
 
+The repository keeps immutable v0.10.1 and v0.11.0 stores under
+`tests/fixtures/`. The upgrade matrix verifies their WAL replay and physical
+segment migration with the current code, then verifies JSONL and checkpoint
+recovery paths. These fixtures are a tested pre-v1 bridge for those releases;
+they do not turn the internal WAL into a permanent external file format.
+
+Generation checkpoints are versioned separately as
+`koutendb-checkpoint-v1`. They are immutable restore artifacts that bind one
+compact WAL to its ring segment/index files through a checksum inventory and a
+manifest completion marker. They are not the pre-v1 portable migration format:
+restore them with the same compatible KoutenDB release line, and use JSONL dump
+and import when crossing an unsupported storage-format boundary.
+
 ## Production Readiness Boundaries
 
 KoutenDB has username/password/secret-key auth, ring-prefix authorization, simple
@@ -182,7 +201,7 @@ the remaining gaps are still material:
 - certificate issuance, rotation, and expiry monitoring for TLS deployments;
 - richer role policy and audit logs;
 - cluster transaction coordinator redundancy;
-- explicit mixed-version upgrade tests for wire, WAL, snapshots, and drivers.
+- mixed-version live wire/driver tests and a documented rolling-upgrade policy.
 
 Until those land, expose `koutend` only on trusted networks or behind a tunnel /
 proxy that provides transport security.

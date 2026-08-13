@@ -1648,6 +1648,61 @@ suite "永続化":
     finally:
       removeDir(root)
 
+  test "disk-backed list pagination remains monotonic after old-seq updates":
+    let root = createTempDir("koutendb", "disk-backed-list-pagination")
+    let dir = root / "db"
+    const RecordCount = 700
+    const PageSize = 128
+
+    proc collectPages(db: KoutenDb): tuple[seqs: seq[uint32],
+                                            cursors: seq[int64]] =
+      var cursor = ""
+      for _ in 0 ..< 16:
+        let page = db.listByRing("docs/paged", limit = PageSize,
+                                 cursor = cursor)
+        for item in page.items:
+          result.seqs.add item.id.toRaw.seq
+        if page.nextCursor.len == 0:
+          return
+        result.cursors.add parseBiggestInt(page.nextCursor)
+        cursor = page.nextCursor
+      raise newException(AssertionDefect,
+        "ring pagination did not terminate within its page bound")
+
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      var ids: seq[KoutenId] = @[]
+      for i in 0 ..< RecordCount:
+        ids.add db.put(%*{"n": i, "revision": 0}, ring = "docs/paged")
+      discard db.packDiskBackedRing("docs/paged")
+
+      for i in 0 ..< 200:
+        db.update(ids[i], %*{"n": i, "revision": 1})
+      var deleted = initTable[uint32, bool]()
+      for i in countup(0, 680, 17):
+        deleted[ids[i].toRaw.seq] = true
+        db.remove(ids[i])
+
+      var expected: seq[uint32] = @[]
+      for id in ids:
+        if not deleted.getOrDefault(id.toRaw.seq, false):
+          expected.add id.toRaw.seq
+
+      let before = collectPages(db)
+      check before.seqs == expected
+      for i in 1 ..< before.cursors.len:
+        check before.cursors[i] > before.cursors[i - 1]
+      db.close()
+
+      var reopened = open(dataDir = dir, diskBacked = true)
+      let after = collectPages(reopened)
+      check after.seqs == expected
+      check after.cursors == before.cursors
+      check parseJson(reopened.get(ids[1]))["revision"].getInt() == 1
+      reopened.close()
+    finally:
+      removeDir(root)
+
   test "operationalVerify opens WAL and reports segment/locality health":
     let root = createTempDir("koutendb", "operational-verify")
     let dir = root / "db"
@@ -1776,6 +1831,203 @@ suite "永続化":
           float(uncapped.locality.totalParticleRecords),
         maxSegmentGeneration = uncapped.segmentStatus.maxGeneration.int64)
       check exact.ok
+    finally:
+      removeDir(root)
+
+  test "bounded segment maintenance shares planning execution and restart status":
+    let root = createTempDir("koutendb", "bounded-segment-maintenance")
+    let dir = root / "db"
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      var ids: seq[KoutenId] = @[]
+      for ring in ["maintenance/a", "maintenance/b"]:
+        let id = db.put(%*{"ring": ring, "value": 0}, ring = ring)
+        ids.add id
+        for i in 1 .. 6:
+          db.update(id, %*{"ring": ring, "value": i})
+      discard db.put(%*{"value": 0}, ring = "maintenance/cold")
+
+      var policy = defaultSegmentMaintenancePolicy()
+      policy.staleRatioThreshold = 0.5
+      policy.minStaleRecords = 4
+      policy.maxRings = 1
+      policy.maxBytes = 0
+      policy.maxElapsedMs = 0
+      let plan = db.planSegmentMaintenance(policy)
+      check plan.dryRun
+      check plan.outcome == "dry-run"
+      check plan.recommendedRings == 2
+      check plan.selectedRings == 1
+      check plan.decisions.countIt(it.selected and it.reason == "selected") == 1
+      check plan.decisions.countIt(it.reason == "ring-budget-exhausted") == 1
+      check plan.decisions.anyIt(
+        it.ring == "maintenance/cold" and
+        it.reason == "stale-records-below-minimum")
+
+      var bytePolicy = policy
+      bytePolicy.maxRings = 0
+      bytePolicy.maxBytes = plan.decisions.filterIt(it.selected)[0].estimatedBytes
+      let exactBytePlan = db.planSegmentMaintenance(bytePolicy)
+      check exactBytePlan.selectedRings >= 1
+      var firstRecommended = -1
+      for i, decision in exactBytePlan.decisions:
+        if decision.recommended:
+          firstRecommended = i
+          break
+      check firstRecommended >= 0
+      check exactBytePlan.decisions[firstRecommended].selected
+      bytePolicy.maxBytes =
+        exactBytePlan.decisions[firstRecommended].estimatedBytes - 1
+      let belowBytePlan = db.planSegmentMaintenance(bytePolicy)
+      check belowBytePlan.decisions[firstRecommended].reason ==
+        "byte-budget-exhausted"
+
+      let dryRun = db.runSegmentMaintenance(policy, dryRun = true)
+      check dryRun.dryRun
+      check db.segmentStatus(0.5, 4).recommendedRings == 2
+
+      let run = db.runSegmentMaintenance(policy)
+      check not run.dryRun
+      check run.outcome == "completed"
+      check run.packedRings == 1
+      check run.recordsRewritten == 1
+      check run.bytesRewritten > 0
+      check db.segmentStatus(0.5, 4).recommendedRings == 1
+      let status = db.segmentMaintenanceStatus()
+      check status["schema"].getStr() == "koutendb.segment-maintenance.v1"
+      check status["outcome"].getStr() == "completed"
+      check status["packedRings"].getInt() == 1
+
+      expect KoutenValidationError:
+        discard db.planSegmentMaintenance(KoutenSegmentMaintenancePolicy(
+          staleRatioThreshold: 1.01, minStaleRecords: 0,
+          maxRings: 0, maxBytes: 0, maxElapsedMs: 0))
+      expect KoutenValidationError:
+        discard db.planSegmentMaintenance(KoutenSegmentMaintenancePolicy(
+          staleRatioThreshold: 0, minStaleRecords: 0,
+          maxRings: -1, maxBytes: 0, maxElapsedMs: 0))
+      expect KoutenValidationError:
+        discard db.planSegmentMaintenance(KoutenSegmentMaintenancePolicy(
+          staleRatioThreshold: 0, minStaleRecords: 0,
+          maxRings: 0, maxBytes: -1, maxElapsedMs: 0))
+      expect KoutenValidationError:
+        discard db.planSegmentMaintenance(KoutenSegmentMaintenancePolicy(
+          staleRatioThreshold: 0, minStaleRecords: 0,
+          maxRings: 0, maxBytes: 0, maxElapsedMs: -1))
+      db.close()
+
+      var interrupted = parseJson(readFile(dir / "segment-maintenance.json"))
+      interrupted["outcome"] = %"running"
+      interrupted["finishedAt"] = %0
+      writeFile(dir / "segment-maintenance.json", pretty(interrupted))
+
+      var reopened = open(dataDir = dir, diskBacked = true)
+      check reopened.recoverInterruptedSegmentMaintenance()
+      let recoveredStatus = reopened.segmentMaintenanceStatus()
+      check recoveredStatus["outcome"].getStr() == "interrupted"
+      check recoveredStatus["stopReason"].getStr() == "process-terminated"
+      check not reopened.recoverInterruptedSegmentMaintenance()
+      for id in ids:
+        check reopened.get(id).contains("\"value\":6")
+      reopened.close()
+    finally:
+      removeDir(root)
+
+  test "segment maintenance rejects stores without the persistent ring layout":
+    var memoryDb = open()
+    expect KoutenValidationError:
+      discard memoryDb.planSegmentMaintenance()
+    memoryDb.close()
+
+    let root = createTempDir("koutendb", "maintenance-no-segments")
+    try:
+      var walOnly = open(dataDir = root)
+      expect KoutenValidationError:
+        discard walOnly.runSegmentMaintenance()
+      walOnly.close()
+    finally:
+      removeDir(root)
+
+  test "segment maintenance status fails closed when its sidecar is malformed":
+    let root = createTempDir("koutendb", "maintenance-invalid-status")
+    try:
+      var db = open(dataDir = root, diskBacked = true)
+      writeFile(root / "segment-maintenance.json", "{not-json")
+      expect KoutenOperationError:
+        discard db.segmentMaintenanceStatus()
+      expect KoutenOperationError:
+        discard db.recoverInterruptedSegmentMaintenance()
+      check readFile(root / "segment-maintenance.json") == "{not-json"
+      writeFile(root / "segment-maintenance.json",
+                """{"schema":"unknown","outcome":"running"}""")
+      expect KoutenOperationError:
+        discard db.segmentMaintenanceStatus()
+      writeFile(root / "segment-maintenance.json",
+                """{"schema":"koutendb.segment-maintenance.v1","outcome":"unknown"}""")
+      expect KoutenOperationError:
+        discard db.segmentMaintenanceStatus()
+      db.close()
+    finally:
+      removeDir(root)
+
+  test "segment maintenance packs a fully deleted ring into an empty generation":
+    let root = createTempDir("koutendb", "maintenance-deleted-ring")
+    let dir = root / "db"
+    try:
+      var db = open(dataDir = dir, diskBacked = true)
+      let id = db.put(%*{"value": 0}, ring = "maintenance/deleted")
+      for value in 1 .. 3:
+        db.update(id, %*{"value": value})
+      db.remove(id)
+
+      let before = db.segmentStatus(staleRatioThreshold = 0.5,
+                                    minStaleRecords = 1)
+      let deletedBefore = before.rings.filterIt(
+        it.ring == "maintenance/deleted")
+      check deletedBefore.len == 1
+      check deletedBefore[0].liveRecords == 0
+      check deletedBefore[0].staleRecords >= 1
+      check deletedBefore[0].packRecommended
+      let oldGeneration = deletedBefore[0].generation
+
+      var policy = defaultSegmentMaintenancePolicy()
+      policy.staleRatioThreshold = 0.5
+      policy.minStaleRecords = 1
+      policy.maxRings = 1
+      policy.maxBytes = 0
+      policy.maxElapsedMs = 0
+      let plan = db.planSegmentMaintenance(policy)
+      check plan.selectedRings == 1
+      check plan.decisions.anyIt(
+        it.ring == "maintenance/deleted" and it.selected)
+
+      let run = db.runSegmentMaintenance(policy)
+      check run.outcome == "completed"
+      check run.packedRings == 1
+      check run.recordsRewritten == 0
+      let after = db.segmentStatus(staleRatioThreshold = 0.5,
+                                   minStaleRecords = 1)
+      let deletedAfter = after.rings.filterIt(
+        it.ring == "maintenance/deleted")
+      check deletedAfter.len == 1
+      check deletedAfter[0].generation == oldGeneration + 1
+      check deletedAfter[0].liveRecords == 0
+      check deletedAfter[0].segmentRecords == 0
+      check deletedAfter[0].staleRecords == 0
+      check not deletedAfter[0].packRecommended
+      check db.readRing("maintenance/deleted").count == 0
+      db.close()
+
+      var reopened = open(dataDir = dir, diskBacked = true)
+      check id notin reopened
+      check reopened.readRing("maintenance/deleted").count == 0
+      let reopenedStatus = reopened.segmentStatus(0.5, 1)
+      check reopenedStatus.rings.anyIt(
+        it.ring == "maintenance/deleted" and
+        it.generation == oldGeneration + 1 and
+        it.segmentRecords == 0 and
+        not it.packRecommended)
+      reopened.close()
     finally:
       removeDir(root)
 

@@ -1,7 +1,133 @@
-import std/[os, tempfiles, unittest]
+import std/[os, sequtils, tempfiles, unittest]
 import ../src/kouten/store
 
 suite "ring segment manifest failpoints":
+  test "byte and elapsed limits never publish an incomplete generation":
+    let dir = createTempDir("kouten-store", "segment-pack-limits")
+    let ring = 88'u64
+    let otherRing = 89'u64
+    var st = openStore(dir, diskBacked = true)
+    for i in 0'u32 ..< 4'u32:
+      st.upsert Particle(parent: ring, seq: i, period: 60.0, head: 0.0,
+                         tWrite: float(i), payload: "bounded-" & $i)
+    st.upsert Particle(parent: otherRing, seq: 0'u32, period: 60.0, head: 0.0,
+                       tWrite: 1.0, payload: "unrelated")
+
+    try:
+      discard st.packRingSegment(ring, maxBytes = 1)
+      check false
+    except SegmentPackLimitError as exc:
+      check exc.limitKind == splBytes
+    check st.getParticle(ring, 3'u32).payload == "bounded-3"
+    check st.getParticle(otherRing, 0'u32).payload == "unrelated"
+
+    st.delaySegmentPackForTest(5)
+    try:
+      discard st.packRingSegment(ring, maxElapsedMs = 1)
+      check false
+    except SegmentPackLimitError as exc:
+      check exc.limitKind == splElapsed
+    st.delaySegmentPackForTest(0)
+    for path in walkFiles(dir / "segments" / "*.tmp"):
+      checkpoint path
+      check false
+    st.close()
+
+    var reopened = openStore(dir, diskBacked = true)
+    check reopened.getParticle(ring, 0'u32).payload == "bounded-0"
+    check reopened.getParticle(ring, 3'u32).payload == "bounded-3"
+    check reopened.getParticle(otherRing, 0'u32).payload == "unrelated"
+    let before = reopened.segmentReport()
+    check before.rings.allIt(it.generation == 0)
+    let packed = reopened.packRingSegment(ring)
+    check packed.rings == 1
+    reopened.close()
+
+    var finalStore = openStore(dir, diskBacked = true)
+    let after = finalStore.segmentReport()
+    check after.rings.anyIt(it.ring == ring and it.generation == 1)
+    check after.rings.anyIt(it.ring == otherRing and it.generation == 0)
+    finalStore.close()
+    removeDir(dir)
+
+  when defined(linux):
+    test "checkpoint restore rolls back immediately after atomic exchange":
+      let root = createTempDir("kouten-store", "checkpoint-exchange-failpoint")
+      let sourceDir = root / "source"
+      let targetDir = root / "target"
+      let checkpointRoot = root / "checkpoints"
+
+      var source = openStore(sourceDir, durability = durStrong,
+                             diskBacked = true)
+      source.upsert Particle(parent: 401, seq: 0, period: 60.0, head: 0.0,
+                             tWrite: 1.0, payload: "checkpoint-value")
+      let checkpoint = source.createCheckpoint(checkpointRoot,
+                                               "exchange-rollback")
+      source.close()
+
+      var target = openStore(targetDir, durability = durStrong,
+                             diskBacked = true)
+      target.upsert Particle(parent: 402, seq: 0, period: 60.0, head: 0.0,
+                             tWrite: 1.0, payload: "previous-value")
+      target.close()
+
+      failCheckpointRestoreAfterExchangeForTest(true)
+      try:
+        expect IOError:
+          discard restoreCheckpoint(checkpoint.path, targetDir,
+                                    overwrite = true)
+      finally:
+        failCheckpointRestoreAfterExchangeForTest(false)
+
+      var reopened = openStore(targetDir, durability = durStrong,
+                               diskBacked = true)
+      check reopened.getParticle(402, 0).payload == "previous-value"
+      expect KeyError:
+        discard reopened.getParticle(401, 0)
+      reopened.close()
+      for path in walkDirs(targetDir & ".checkpoint-*"):
+        checkpoint path
+        check false
+      removeDir(root)
+
+    test "checkpoint restore rolls back after publication failure":
+      let root = createTempDir("kouten-store", "checkpoint-restore-failpoint")
+      let sourceDir = root / "source"
+      let targetDir = root / "target"
+      let checkpointRoot = root / "checkpoints"
+
+      var source = openStore(sourceDir, durability = durStrong,
+                             diskBacked = true)
+      source.upsert Particle(parent: 401, seq: 0, period: 60.0, head: 0.0,
+                             tWrite: 1.0, payload: "checkpoint-value")
+      let checkpoint = source.createCheckpoint(checkpointRoot, "rollback")
+      source.close()
+
+      var target = openStore(targetDir, durability = durStrong,
+                             diskBacked = true)
+      target.upsert Particle(parent: 402, seq: 0, period: 60.0, head: 0.0,
+                             tWrite: 1.0, payload: "previous-value")
+      target.close()
+
+      failCheckpointRestoreAfterPublishForTest(true)
+      try:
+        expect IOError:
+          discard restoreCheckpoint(checkpoint.path, targetDir,
+                                    overwrite = true)
+      finally:
+        failCheckpointRestoreAfterPublishForTest(false)
+
+      var reopened = openStore(targetDir, durability = durStrong,
+                               diskBacked = true)
+      check reopened.getParticle(402, 0).payload == "previous-value"
+      expect KeyError:
+        discard reopened.getParticle(401, 0)
+      reopened.close()
+      for path in walkDirs(targetDir & ".checkpoint-*"):
+        checkpoint path
+        check false
+      removeDir(root)
+
   test "interruption after one file replacement keeps the prior generation active":
     let dir = createTempDir("kouten-store", "segment-replace-failpoint")
     let ring = 90'u64

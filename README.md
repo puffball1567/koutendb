@@ -53,17 +53,17 @@ through six indexed PostgreSQL queries and `236 us` through a PostgreSQL JSON
 aggregate query. The detailed workload, data shape, and reproduction helper are
 documented in [Benchmark Comparison](docs/benchmark-comparison.md).
 
-## Verified Persistent Cluster Operation
+## Verified 72-Hour Strong-Durability Cluster Operation
 
-KoutenDB v0.10.0 completed a **72-hour local three-node persistent cluster
-run** with **4,022,516 mixed client operations**, **zero client errors**, and
-successful offline verification of all three data directories after shutdown.
+KoutenDB v0.12.0 completed a **72-hour local three-node, disk-backed,
+strong-durability run** with **4,213,187 mixed operations** and **zero client
+errors**. After shutdown, all source stores and generation checkpoints passed
+verification, restored stores matched the source data exactly, and every
+cluster queue converged to zero.
 
-The run completed 969,281 each of PUTs, returned-ID GETs, projection queries,
-and bounded ring reads, plus 96,928 ring-scoped retrievals. Handoff, migration,
-and universe-sync error/queue counters remained zero, and retrieval did not fall
-back to a global cluster scan. See [72-Hour Soak Testing](docs/soak-testing.md)
-for the exact configuration and final counters.
+See [72-Hour Soak Testing](docs/soak-testing.md) for the full workload,
+operation counts, latency telemetry, recovery checks, and scope, or read the
+[v0.12.0 Release Notes](docs/github-release-v0.12.0.md) for the release summary.
 
 ## How Locality-First Retrieval Works
 
@@ -96,9 +96,10 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Concept: [docs/koutendb-concept.md](docs/koutendb-concept.md)
 - Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
-- v0.12 implementation and validation roadmap: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
+- v0.12 implementation and validation record: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
-- GitHub release notes: [docs/github-release-v0.11.0.md](docs/github-release-v0.11.0.md)
+- v0.12.0 release notes: [docs/github-release-v0.12.0.md](docs/github-release-v0.12.0.md)
+- 72-hour strong-durability result: [docs/soak-testing.md](docs/soak-testing.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
 - Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
 - Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)
@@ -111,7 +112,8 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Threat model: [docs/threat-model.md](docs/threat-model.md)
 - Benchmark notes: [docs/koutendb-bench.md](docs/koutendb-bench.md)
 - Effect validation: [docs/effect-validation.md](docs/effect-validation.md)
-- Cloud operations metrics: [docs/cloud-operations.md](docs/cloud-operations.md)
+- Generation checkpoints: [docs/generation-checkpoints.md](docs/generation-checkpoints.md)
+- Prometheus/OpenMetrics and cloud operations: [docs/cloud-operations.md](docs/cloud-operations.md)
 - Topology configuration reference: [docs/topology-config.md](docs/topology-config.md)
 - Topology pattern catalog: [docs/topology-examples.md](docs/topology-examples.md)
 - Topology remapping: [docs/topology-remapping.md](docs/topology-remapping.md)
@@ -278,7 +280,7 @@ Published external drivers:
 
 | Language / runtime | Package | Version | Repository | Mode |
 |---|---|---:|---|---|
-| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.3` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
+| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.5` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
 | JavaScript / TypeScript | [`koutendb`](https://www.npmjs.com/package/koutendb) | `0.1.3` | [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js) | Node-API C ABI wrapper |
 | PHP | [`koutendb/koutendb`](https://packagist.org/packages/koutendb/koutendb) | `0.1.2` | [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) | FFI / C ABI wrapper |
 | C++ | GitHub / CMake source package | `0.1.1` | [`puffball1567/koutendb-cpp`](https://github.com/puffball1567/koutendb-cpp) | C++17 C ABI wrapper |
@@ -545,6 +547,21 @@ Strong durability mode:
 bin/koutend --id=0 --peers=127.0.0.1:7301 --data=/var/lib/kouten --durability=strong
 ```
 
+Bounded automatic ring packing is opt-in and requires explicit I/O limits:
+
+```sh
+bin/koutend --id=0 --peers=127.0.0.1:7301 \
+  --data=/var/lib/kouten --disk-backed --auto-pack \
+  --auto-pack-interval=300 --auto-pack-window=01:00-04:00 \
+  --auto-pack-max-rings=1 --auto-pack-max-bytes=67108864 \
+  --auto-pack-max-elapsed-ms=1000
+```
+
+Preview and inspect the same maintenance decisions with
+`kouten maintenance-plan` and `kouten maintenance-status`. See
+[Data Locality](docs/data-locality.md) and
+[Configuration Reference](docs/config-reference.md).
+
 Ring-prefix authorization:
 
 ```sh
@@ -573,6 +590,25 @@ kouten restore-encrypted --backup=backup.enc --data=restored --passphrase=change
 `backup`, `backup-encrypted`, `restore`, and `restore-encrypted` use
 temporary files plus atomic replacement. Snapshot files are fsynced before they
 are made visible.
+
+Immutable generation checkpoints preserve one verified WAL and ring-local
+segment/index generation together:
+
+```sh
+kouten checkpoint-create --data=/var/lib/kouten --json
+kouten checkpoint-list --checkpoint-root=/var/lib/kouten.checkpoints --json
+kouten checkpoint-verify \
+  --checkpoint=/var/lib/kouten.checkpoints/CHECKPOINT_ID --json
+kouten checkpoint-restore \
+  --checkpoint=/var/lib/kouten.checkpoints/CHECKPOINT_ID \
+  --data=/var/lib/kouten-restored --json
+```
+
+The default root is the data-directory sibling `DATA_DIR.checkpoints`.
+Publication is manifest-last and directory-atomic; restore verifies and stages
+the complete generation before atomically replacing the target directory. See
+[Generation Checkpoints](docs/generation-checkpoints.md) for cleanup,
+integrity, and trust-boundary details.
 
 ### Driver Checks
 
@@ -665,15 +701,16 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.11.0 is a public pre-v1 release with persistent storage, recovery,
-transactions, topology controls, TLS-capable transport, a C ABI, published
-drivers, ring-local physical segments, operational verification, and documented
-local endurance and forced-crash recovery evidence.
+KoutenDB v0.12.0 is a public pre-v1 release with persistent storage, strong
+durability, recovery, transactions, topology controls, TLS-capable transport, a
+C ABI, published drivers, ring-local physical segments, bounded automatic
+maintenance, generation checkpoints, operational metrics, and documented
+crash, corruption, container, driver, and 72-hour endurance validation.
 
 It is designed for teams that can express a meaningful locality boundary and
 want to evaluate a smaller-working-set retrieval architecture. Multi-machine
-and multi-region endurance testing, strong-durability endurance testing, and
-broader external production reports remain active validation tracks. See
+and multi-region endurance testing and broader external production reports
+remain active validation tracks. See
 [Operational Trials](docs/operational-trials.md),
 [Soak Testing](docs/soak-testing.md), and
 [Feature Status](docs/koutendb-status.md) for the current evidence and roadmap.
