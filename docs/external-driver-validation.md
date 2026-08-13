@@ -41,21 +41,19 @@ The PHP path uses a uniquely named temporary Docker image because the host does
 not need to enable PHP FFI globally. The cleanup trap removes that image and all
 matrix-owned temporary data. The matrix is intentionally outside normal CI.
 
-## Current Development Result
+## v0.12 Release Result
 
-The first v0.12 development run established that the core-side harness works
-and identified external-driver release blockers rather than hiding them:
+The clean v0.12 compatibility run on 2026-08-13 completed every driver-owned
+suite and every shared security/restart row:
 
 | Driver | Driver suite | Shared TLS/auth/restart matrix |
 |---|---|---|
-| Rust 0.1.5 | 5 of 6 tests passed. One stale test still expects a failed TLS connection to be deferred until the first operation; the current core fails during `connect`. | Passed every row. |
-| JavaScript/TypeScript 0.1.4 | Passed. | Passed every row, including CA verification and restart. |
-| PHP | Passed in the isolated PHP 8.3 FFI image. | Passed every row, including CA verification and restart. |
-| C++ 0.1.2 | Passed from a clean CMake build directory. | Passed every row, including CA verification and restart. |
-| Python 0.2.0 | 10 of 12 tests passed. The driver has not yet adopted the extended `FWD` response and current routed `BGET` behavior. | Rejection rows passed. Valid shared-secret requests returned `bad-request` before and after restart. |
+| Rust 0.1.6 | Passed 7 tests, including v0.12 persistence/maintenance/checkpoint coverage and eager-connect failure semantics. | Passed every row. |
+| JavaScript/TypeScript 0.1.5 | Passed 3 Node.js tests, including the v0.12 C ABI additions. | Passed every row, including CA verification and restart. |
+| PHP 0.1.3 source | Passed in the isolated PHP 8.3 FFI image, including the v0.12 C ABI additions. | Passed every row, including CA verification and restart. |
+| C++ 0.1.3 | Passed from a clean CMake build directory, including the v0.12 C ABI additions. | Passed every row, including CA verification and restart. |
+| Python 0.2.1 | Passed 12 tests after adopting owner-bearing `FWD` and routed multi-node `BGET`. | Passed every row, including shared-secret CRUD and restart. |
 
-These failures are not accepted as a completed release gate. The core keeps its
-current early connection failure, forwarding metadata, and routing behavior;
-the separately maintained Rust and Python drivers must update their contracts.
-The matrix should be rerun and this result replaced before the final v0.12
-endurance gate.
+Offline segment verification and persistent authentication-failure audit
+evidence also passed. This closes the external-driver compatibility gate for
+the v0.12 release.

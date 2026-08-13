@@ -53,17 +53,17 @@ through six indexed PostgreSQL queries and `236 us` through a PostgreSQL JSON
 aggregate query. The detailed workload, data shape, and reproduction helper are
 documented in [Benchmark Comparison](docs/benchmark-comparison.md).
 
-## Verified Persistent Cluster Operation
+## Verified 72-Hour Strong-Durability Cluster Operation
 
-KoutenDB v0.10.0 completed a **72-hour local three-node persistent cluster
-run** with **4,022,516 mixed client operations**, **zero client errors**, and
-successful offline verification of all three data directories after shutdown.
+KoutenDB v0.12.0 completed a **72-hour local three-node, disk-backed,
+strong-durability run** with **4,213,187 mixed operations** and **zero client
+errors**. After shutdown, all source stores and generation checkpoints passed
+verification, restored stores matched the source data exactly, and every
+cluster queue converged to zero.
 
-The run completed 969,281 each of PUTs, returned-ID GETs, projection queries,
-and bounded ring reads, plus 96,928 ring-scoped retrievals. Handoff, migration,
-and universe-sync error/queue counters remained zero, and retrieval did not fall
-back to a global cluster scan. See [72-Hour Soak Testing](docs/soak-testing.md)
-for the exact configuration and final counters.
+See [72-Hour Soak Testing](docs/soak-testing.md) for the full workload,
+operation counts, latency telemetry, recovery checks, and scope, or read the
+[v0.12.0 Release Notes](docs/github-release-v0.12.0.md) for the release summary.
 
 ## How Locality-First Retrieval Works
 
@@ -96,9 +96,10 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Concept: [docs/koutendb-concept.md](docs/koutendb-concept.md)
 - Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
-- v0.12 implementation and validation roadmap: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
+- v0.12 implementation and validation record: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
-- GitHub release notes: [docs/github-release-v0.11.0.md](docs/github-release-v0.11.0.md)
+- v0.12.0 release notes: [docs/github-release-v0.12.0.md](docs/github-release-v0.12.0.md)
+- 72-hour strong-durability result: [docs/soak-testing.md](docs/soak-testing.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
 - Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
 - Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)
@@ -700,15 +701,16 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.11.0 is a public pre-v1 release with persistent storage, recovery,
-transactions, topology controls, TLS-capable transport, a C ABI, published
-drivers, ring-local physical segments, operational verification, and documented
-local endurance and forced-crash recovery evidence.
+KoutenDB v0.12.0 is a public pre-v1 release with persistent storage, strong
+durability, recovery, transactions, topology controls, TLS-capable transport, a
+C ABI, published drivers, ring-local physical segments, bounded automatic
+maintenance, generation checkpoints, operational metrics, and documented
+crash, corruption, container, driver, and 72-hour endurance validation.
 
 It is designed for teams that can express a meaningful locality boundary and
 want to evaluate a smaller-working-set retrieval architecture. Multi-machine
-and multi-region endurance testing, strong-durability endurance testing, and
-broader external production reports remain active validation tracks. See
+and multi-region endurance testing and broader external production reports
+remain active validation tracks. See
 [Operational Trials](docs/operational-trials.md),
 [Soak Testing](docs/soak-testing.md), and
 [Feature Status](docs/koutendb-status.md) for the current evidence and roadmap.
