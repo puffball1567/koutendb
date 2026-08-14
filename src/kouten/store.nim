@@ -210,6 +210,9 @@ type
     id*: uint64
     ops*: seq[ClusterTxOp]
     committed*: bool
+    replicated*: bool
+    replicatedEpoch*: uint32
+    replicatedNode*: int
     applied*: bool
 
   StoreCompactStats* = object
@@ -319,6 +322,9 @@ type
     placementEpoch*: uint32
     placementNodes*: uint16
     placementVirtualArcs*: int
+    coordinatorEpoch*: uint32
+    coordinatorNode*: uint16
+    coordinatorReplica*: int
     maintenanceDrained*: bool
     clusterTx*: Table[uint64, ClusterTxIntent]
     appliedClusterTx*: Table[uint64, bool]
@@ -334,6 +340,7 @@ type
     mutationClockLogical: uint32
     mutationOrigin: uint32
     nextTxId: uint64
+    nextCoordinatorTxSeq: uint32
     logFile: File
     logPath: string
     segmentDir: string
@@ -1976,6 +1983,21 @@ proc replay(s: Store, path: string, repair = true) =
         s.placementEpoch = uint32(epoch)
         s.placementNodes = uint16(nodes)
         s.placementVirtualArcs = virtualArcs
+      of "CM":
+        if parts.len != 4:
+          raise newException(WalCorruptionError,
+            "invalid coordinator metadata record")
+        let epoch = parseUInt(parts[1])
+        let node = parseUInt(parts[2])
+        let replica = parseInt(parts[3])
+        if epoch == 0 or epoch > uint32.high.uint64 or
+            node > uint16.high.uint64 or replica < -1 or
+            replica > int(uint16.high):
+          raise newException(WalCorruptionError,
+            "invalid coordinator metadata values")
+        s.coordinatorEpoch = uint32(epoch)
+        s.coordinatorNode = uint16(node)
+        s.coordinatorReplica = replica
       of "MD":
         if parts.len != 2 or parts[1] notin ["0", "1"]:
           raise newException(WalCorruptionError,
@@ -2102,6 +2124,30 @@ proc replay(s: Store, path: string, repair = true) =
         s.clusterTx[txid] = intent
         pendingCluster.del txid
         s.nextTxId = max(s.nextTxId, txid + 1)
+      of "CR":
+        if parts.len notin [2, 4]:
+          raise newException(WalCorruptionError,
+            "invalid cluster transaction replication marker")
+        let txid = parseBiggestUInt(parts[1]).uint64
+        if txid notin s.clusterTx:
+          raise newException(WalCorruptionError,
+            "cluster transaction replication marker has no committed intent")
+        s.clusterTx[txid].replicated = true
+        # v0.12 wrote only `CR txid`. It remains readable, but does not prove
+        # replication to a standby configured in a later epoch.
+        if parts.len == 4:
+          let epoch = parseUInt(parts[2])
+          let replica = parseInt(parts[3])
+          if epoch == 0 or epoch > uint32.high.uint64 or replica < -1 or
+              replica > int(uint16.high):
+            raise newException(WalCorruptionError,
+              "invalid cluster transaction replication values")
+          s.clusterTx[txid].replicatedEpoch = epoch.uint32
+          s.clusterTx[txid].replicatedNode = replica
+        else:
+          s.clusterTx[txid].replicatedEpoch = 0
+          s.clusterTx[txid].replicatedNode = -1
+        s.nextTxId = max(s.nextTxId, txid + 1)
       of "CA":
         let txid = parseBiggestUInt(parts[1]).uint64
         s.appliedClusterTx[txid] = true
@@ -2143,6 +2189,12 @@ proc replay(s: Store, path: string, repair = true) =
                                   parseBiggestUInt(parts[1]).uint64)
       of "Q":
         s.nextTxId = max(s.nextTxId, parseBiggestUInt(parts[1]).uint64)
+      of "CQ":
+        let nextSeq = parseBiggestUInt(parts[1]).uint64
+        if nextSeq == 0 or nextSeq > uint32.high.uint64:
+          raise newException(WalCorruptionError,
+            "invalid coordinator transaction sequence")
+        s.nextCoordinatorTxSeq = max(s.nextCoordinatorTxSeq, uint32(nextSeq))
       of "S":
         let ringKey = parseBiggestUInt(parts[1]).uint64
         let nextSeq = parseUInt(parts[2]).uint32
@@ -2214,6 +2266,9 @@ proc clearReplayState(s: Store) =
   s.placementEpoch = 0
   s.placementNodes = 0
   s.placementVirtualArcs = 0
+  s.coordinatorEpoch = 0
+  s.coordinatorNode = 0
+  s.coordinatorReplica = -1
   s.maintenanceDrained = false
   s.clusterTx.clear()
   s.appliedClusterTx.clear()
@@ -2226,6 +2281,7 @@ proc clearReplayState(s: Store) =
   s.mutationClockPhysical = 0
   s.mutationClockLogical = 0
   s.nextTxId = 1
+  s.nextCoordinatorTxSeq = 1
 
 proc flushMaybe(s: Store, force = false)
 
@@ -2291,6 +2347,8 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
                 diskBacked = false, mutationOrigin = 1'u32): Store =
   ## dir == "" ならメモリのみ。指定時は dir/kouten.log に追記・起動時に再生。
   result = Store(lastFlush: getMonoTime(), nextTxId: 1,
+                 nextCoordinatorTxSeq: 1,
+                 coordinatorReplica: -1,
                  durability: durability,
                  diskBacked: diskBacked,
                  mutationOrigin: mutationOrigin)
@@ -2343,6 +2401,38 @@ proc setGalaxy*(s: Store, galaxy: string) =
   s.galaxy = galaxy
 
 proc clusterTxPending*(s: Store): int
+
+proc configureCoordinator*(s: Store, epoch: uint32, node: uint16,
+                           replica: int) =
+  ## Persist the cluster-transaction coordinator fence independently from
+  ## physical placement. Promotion changes coordination, not ring ownership.
+  if epoch == 0:
+    raise newException(ValueError, "coordinator epoch must be positive")
+  if replica < -1 or replica > int(uint16.high):
+    raise newException(ValueError,
+      "coordinator replica must be -1 or a valid node id")
+  if replica == int(node):
+    raise newException(ValueError,
+      "coordinator replica must differ from the primary")
+  s.ensureWritable()
+  if s.coordinatorEpoch > epoch:
+    raise newException(ValueError,
+      "coordinator epoch rollback is not allowed (stored=" &
+      $s.coordinatorEpoch & ", requested=" & $epoch & ")")
+  if s.coordinatorEpoch == epoch and s.coordinatorEpoch != 0:
+    if s.coordinatorNode != node or s.coordinatorReplica != replica:
+      raise newException(ValueError,
+        "coordinator assignment changed without increasing coordinator epoch")
+    return
+  if s.coordinatorEpoch != 0 and not s.maintenanceDrained:
+    raise newException(ValueError,
+      "coordinator promotion requires persistent maintenance drain")
+  if s.persistent:
+    s.writeStoreWalLine("CM " & $epoch & " " & $node & " " & $replica)
+    s.flushMaybe(force = true)
+  s.coordinatorEpoch = epoch
+  s.coordinatorNode = node
+  s.coordinatorReplica = replica
 
 proc configurePlacement*(s: Store, epoch: uint32, nodes: uint16,
                          virtualArcs: int) =
@@ -2473,9 +2563,13 @@ proc writeSnapshotFile(s: Store, path: string) =
     if s.placementEpoch > 0:
       file.writeWalLine("PM " & $s.placementEpoch & " " &
                         $s.placementNodes & " " & $s.placementVirtualArcs)
+    if s.coordinatorEpoch > 0:
+      file.writeWalLine("CM " & $s.coordinatorEpoch & " " &
+                        $s.coordinatorNode & " " & $s.coordinatorReplica)
     if s.maintenanceDrained:
       file.writeWalLine("MD 1")
     file.writeWalLine("Q " & $s.nextTxId)
+    file.writeWalLine("CQ " & $s.nextCoordinatorTxSeq)
     file.writeWalLine("UQ " & $s.nextUniverseSyncId)
     file.writeWalLine("M " & $s.maxTWrite)
     var seqKeys: seq[uint64] = @[]
@@ -2578,6 +2672,13 @@ proc writeSnapshotFile(s: Store, path: string) =
         file.writeClusterTxOp(intent.id, op)
       if intent.committed:
         file.writeWalLine("CC " & $intent.id)
+      if intent.replicated:
+        if intent.replicatedEpoch == 0:
+          file.writeWalLine("CR " & $intent.id)
+        else:
+          file.writeWalLine("CR " & $intent.id & " " &
+                            $intent.replicatedEpoch & " " &
+                            $intent.replicatedNode)
       if intent.applied:
         file.writeWalLine("CA " & $intent.id)
     var appliedClusterKeys: seq[uint64] = @[]
@@ -2629,7 +2730,9 @@ proc snapshotStats(s: Store, path: string, source = ""): StoreBackupStats =
                    destination: path)
 
 proc snapshotStatsFromFile(path, source: string): StoreBackupStats =
-  var s = Store(lastFlush: getMonoTime(), nextTxId: 1)
+  var s = Store(lastFlush: getMonoTime(), nextTxId: 1,
+                nextCoordinatorTxSeq: 1,
+                coordinatorReplica: -1)
   s.replay(path, repair = false)
   result = s.snapshotStats(path, source)
 
@@ -3026,6 +3129,8 @@ proc validateCheckpointContents(checkpointDir: string): StoreCheckpointStatus =
       "checkpoint segment directory symlinks are not allowed")
   if "segments/manifest" in inventory:
     var verifier = Store(lastFlush: getMonoTime(), nextTxId: 1,
+                         nextCoordinatorTxSeq: 1,
+                         coordinatorReplica: -1,
                          diskBacked: true, persistent: true,
                          logPath: wal, segmentDir: segmentDir)
     verifier.replay(wal, repair = false)
@@ -3985,6 +4090,21 @@ proc reserveTxId*(s: Store): uint64 =
   result = s.nextTxId
   inc s.nextTxId
 
+proc reserveCoordinatorTxId*(s: Store, epoch: uint32): uint64 =
+  if epoch == 0:
+    raise newException(ValueError, "coordinator epoch must be positive")
+  s.ensureWritable()
+  if s.nextCoordinatorTxSeq == 0 or
+      s.nextCoordinatorTxSeq == uint32.high:
+    raise newException(ValueError,
+      "coordinator transaction sequence is exhausted")
+  let seq = s.nextCoordinatorTxSeq
+  inc s.nextCoordinatorTxSeq
+  if s.persistent:
+    s.writeStoreWalLine("CQ " & $s.nextCoordinatorTxSeq)
+    s.flushMaybe(force = true)
+  (uint64(epoch) shl 32) or uint64(seq)
+
 proc upsert*(tx: StoreTxn, p: Particle) =
   doAssert not tx.closed, "transaction is closed"
   var effective = p
@@ -4116,9 +4236,30 @@ proc packCommittedSegments*(tx: StoreTxn) =
         else: particleRecordBody("", 0, p)
       s.cacheParticleInSegment(p, op.walOffset, body)
 
+proc sameClusterTxRequest(a, b: ClusterTxIntent): bool =
+  if a.id != b.id or a.ops.len != b.ops.len:
+    return false
+  for i in 0 ..< a.ops.len:
+    let x = a.ops[i]
+    let y = b.ops[i]
+    if x.kind != y.kind or x.parent != y.parent or x.seq != y.seq or
+        x.period != y.period or x.head != y.head or x.tWrite != y.tWrite or
+        x.payload != y.payload or x.codec != y.codec or x.vec != y.vec:
+      return false
+    if not y.version.isZero and x.version != y.version:
+      return false
+  true
+
 proc putClusterTxIntent*(s: Store, intent: ClusterTxIntent) =
   s.ensureWritable()
+  if intent.id in s.clusterTx:
+    let existing = s.clusterTx[intent.id]
+    if not sameClusterTxRequest(existing, intent):
+      raise newException(ValueError,
+        "cluster transaction id already belongs to a different intent")
+    return
   var effective = intent
+  effective.committed = true
   for op in effective.ops.mitems:
     op.version =
       if op.version.isZero: s.nextMutationVersion()
@@ -4130,6 +4271,39 @@ proc putClusterTxIntent*(s: Store, intent: ClusterTxIntent) =
     s.writeStoreWalLine("CC " & $effective.id)
     s.flushMaybe(force = true)
   s.clusterTx[effective.id] = effective
+
+proc markClusterTxReplicated*(s: Store, txid: uint64,
+                              epoch = 0'u32, replica = -1) =
+  s.ensureWritable()
+  if epoch == 0 and replica != -1:
+    raise newException(ValueError,
+      "legacy replication state cannot identify a replica")
+  if txid notin s.clusterTx or not s.clusterTx[txid].committed:
+    raise newException(KeyError,
+      "cluster transaction intent is not committed")
+  if s.clusterTx[txid].replicated and
+      s.clusterTx[txid].replicatedEpoch == epoch and
+      s.clusterTx[txid].replicatedNode == replica:
+    return
+  if s.persistent:
+    if epoch == 0:
+      s.writeStoreWalLine("CR " & $txid)
+    else:
+      s.writeStoreWalLine("CR " & $txid & " " & $epoch & " " & $replica)
+    s.flushMaybe(force = true)
+  s.clusterTx[txid].replicated = true
+  s.clusterTx[txid].replicatedEpoch = epoch
+  s.clusterTx[txid].replicatedNode = replica
+
+proc clusterTxReplicationCurrent*(intent: ClusterTxIntent, epoch: uint32,
+                                  replica: int): bool =
+  intent.replicated and intent.replicatedEpoch == epoch and
+    intent.replicatedNode == replica
+
+proc clusterTxIntent*(s: Store, txid: uint64): ClusterTxIntent =
+  if txid notin s.clusterTx:
+    raise newException(KeyError, "cluster transaction intent not found")
+  s.clusterTx[txid]
 
 proc markClusterTxApplied*(s: Store, txid: uint64) =
   s.ensureWritable()

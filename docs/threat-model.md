@@ -75,8 +75,10 @@ drivers.
 - Rich role policies are intentionally not implemented. KoutenDB's primary
   isolation model is galaxy separation plus ring-prefix scope; roles are kept
   minimal for read/write/admin separation.
-- Cluster transaction coordinator redundancy is not implemented; node0 landing
-  remains a single point of failure.
+- Cluster transaction intent can be synchronously mirrored to a configured
+  standby and promoted through an explicit, epoch-fenced majority operation.
+  Automatic failure detection and promotion are not implemented; operators
+  must confirm the old primary is unavailable before promotion.
 - Write-quiesced rolling scale-out is implemented with persistent drain,
   topology fencing, bounded migration, and activation preflight. Online
   membership discovery, live writes during topology change, and live scale-in

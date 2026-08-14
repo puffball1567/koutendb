@@ -252,8 +252,15 @@ type
     tx: StoreTxn
     stagedRingWrites: Table[uint64, int]
     clusterTxId: uint64
+    clusterCoordinatorNode: int
+    clusterCoordinatorEpoch: uint32
     clusterOps: seq[TxWireOp]
     closed: bool
+
+  KoutenCoordinatorStatus* = object
+    epoch*: uint32
+    node*: int
+    replica*: int
 
   KoutenHit* = object
     ## retrieve の候補。score は cosine similarity（高いほど近い）。
@@ -962,7 +969,7 @@ proc connect*(peers: string, username: string = "", password: string = "",
                                 tlsInsecureSkipVerify = tlsInsecureSkipVerify)
   var tbl: ArcTable
   try:
-    tbl = client.topologyReq(0)
+    tbl = client.discoverTopology()
     if int(tbl.nNodes) != ps.len:
       raise newException(IOError,
         "server topology node count does not match configured peers")
@@ -2240,14 +2247,18 @@ proc clearPendingLandingRead(db: KoutenDb, id: KoutenId) =
 proc hasPendingLandingRead(db: KoutenDb, id: KoutenId): bool =
   db.mode == mCluster and db.pendingLandingReads.getOrDefault((id.parent, id.seq), false)
 
-proc waitClusterTxApplied*(db: KoutenDb, txid: uint64, timeoutMs = 10_000,
+proc waitClusterTxApplied*(db: KoutenDb, txid: uint64,
+                           coordinatorNode = -1, timeoutMs = 10_000,
                            pollMs = 20): bool =
   ## cluster landing intent が owner に apply されるまで待つ。
   ## timeout 時は false。呼び出し側は accepted 済みとして後で status / get を再試行できる。
   doAssert db.mode == mCluster, "waitClusterTxApplied は cluster mode 専用"
+  let landing =
+    if coordinatorNode >= 0: coordinatorNode
+    else: db.client.discoverCoordinator().node
   let deadline = epochTime() + float(timeoutMs) / 1000.0
   while epochTime() <= deadline:
-    let status = db.client.txStatusReq(0, txid)
+    let status = db.client.txStatusReq(landing, txid)
     if status == "APPLIED":
       return true
     if status == "UNKNOWN":
@@ -2457,7 +2468,11 @@ proc beginTransaction*(db: KoutenDb): KoutenTx =
   of mEmbedded:
     KoutenTx(db: db, tx: db.st.beginTxn())
   of mCluster:
-    KoutenTx(db: db, clusterTxId: db.client.txBeginReq(0))
+    let coordinator = db.client.discoverCoordinator()
+    KoutenTx(db: db,
+             clusterTxId: db.client.txBeginReq(coordinator.node),
+             clusterCoordinatorNode: coordinator.node,
+             clusterCoordinatorEpoch: coordinator.epoch)
 
 proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
@@ -2492,8 +2507,8 @@ proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
                           payload: encoded.data, codec: encoded.codec, vec: normVec)
     tx.stagedRingWrites[key] = tx.stagedRingWrites.getOrDefault(key, 0) + 1
   of mCluster:
-    let (seq, tWrite) = tx.db.client.txReserveReq(0, tx.clusterTxId, key,
-                                                  ri.period, ri.headAngle)
+    let (seq, tWrite) = tx.db.client.txReserveReq(
+      tx.clusterCoordinatorNode, tx.clusterTxId, key, ri.period, ri.headAngle)
     result = KoutenId(parent: key, epoch: tx.db.tbl.epoch, seq: seq, tWrite: tWrite)
     tx.clusterOps.add TxWireOp(parent: key, seq: seq, period: ri.period,
                                head: ri.headAngle, tWrite: tWrite,
@@ -2563,9 +2578,11 @@ proc commit*(tx: KoutenTx) =
       for _, p in tx.db.st.items:
         tx.db.vectorBackend.upsert p
   of mCluster:
-    tx.db.client.txCommitReq(0, tx.clusterTxId, tx.clusterOps)
+    tx.db.client.txCommitReq(tx.clusterCoordinatorNode, tx.clusterTxId,
+                             tx.clusterOps)
     if tx.db.writeAckModeForOps(tx.clusterOps) == wamApplied:
-      if not tx.db.waitClusterTxApplied(tx.clusterTxId):
+      if not tx.db.waitClusterTxApplied(tx.clusterTxId,
+                                        tx.clusterCoordinatorNode):
         raise newException(IOError, "cluster transaction apply timed out")
     else:
       tx.db.markPendingLandingReads(tx.clusterOps)
@@ -2578,9 +2595,11 @@ proc commit*(tx: KoutenTx, ackMode: WriteAckMode) =
   of mEmbedded:
     tx.commit()
   of mCluster:
-    tx.db.client.txCommitReq(0, tx.clusterTxId, tx.clusterOps)
+    tx.db.client.txCommitReq(tx.clusterCoordinatorNode, tx.clusterTxId,
+                             tx.clusterOps)
     if ackMode == wamApplied:
-      if not tx.db.waitClusterTxApplied(tx.clusterTxId):
+      if not tx.db.waitClusterTxApplied(tx.clusterTxId,
+                                        tx.clusterCoordinatorNode):
         raise newException(IOError, "cluster transaction apply timed out")
     else:
       tx.db.markPendingLandingReads(tx.clusterOps)
@@ -2704,7 +2723,9 @@ proc fetchClusterPayload(db: KoutenDb, id: KoutenId, selection: string,
       candidates.insert(node, at)
       dec redirectsLeft
   proc landingRead(): tuple[hit: bool, deleted: bool, value: EncodedPayload] =
-    let r = db.client.txGetIdReq(0, WireId(parent: id.parent, epoch: id.epoch,
+    let coordinator = db.client.discoverCoordinator()
+    let r = db.client.txGetIdReq(coordinator.node,
+      WireId(parent: id.parent, epoch: id.epoch,
       seq: id.seq, tWrite: id.tWrite, period: ri.period, head: ri.headAngle),
       selection)
     if r.found:
@@ -2840,14 +2861,15 @@ proc remove*(db: KoutenDb, id: KoutenId) =
     db.audit("delete", id = $id)
   of mCluster:
     let ri = db.rings[id.parent]
-    let txid = db.client.txBeginReq(0)
+    let coordinator = db.client.discoverCoordinator()
+    let txid = db.client.txBeginReq(coordinator.node)
     let ops = @[
       TxWireOp(delete: true, parent: id.parent, seq: id.seq,
                period: ri.period, head: ri.headAngle, tWrite: id.tWrite)
     ]
-    db.client.txCommitReq(0, txid, ops)
+    db.client.txCommitReq(coordinator.node, txid, ops)
     if db.writeAckModeForOps(ops) == wamApplied:
-      if not db.waitClusterTxApplied(txid):
+      if not db.waitClusterTxApplied(txid, coordinator.node):
         raise newException(IOError, "cluster delete apply timed out")
     else:
       db.markPendingLandingReads(ops)
@@ -2879,15 +2901,16 @@ proc update*(db: KoutenDb, id: KoutenId, encoded: EncodedPayload,
                         "codec": $encoded.codec})
   of mCluster:
     let ri = db.rings[id.parent]
-    let txid = db.client.txBeginReq(0)
+    let coordinator = db.client.discoverCoordinator()
+    let txid = db.client.txBeginReq(coordinator.node)
     let ops = @[
       TxWireOp(parent: id.parent, seq: id.seq, period: ri.period,
                head: ri.headAngle, tWrite: id.tWrite,
                payload: encoded.data, codec: encoded.codec, vec: vec.normalize())
     ]
-    db.client.txCommitReq(0, txid, ops)
+    db.client.txCommitReq(coordinator.node, txid, ops)
     if db.writeAckModeForOps(ops) == wamApplied:
-      if not db.waitClusterTxApplied(txid):
+      if not db.waitClusterTxApplied(txid, coordinator.node):
         raise newException(IOError, "cluster update apply timed out")
     else:
       db.markPendingLandingReads(ops)
@@ -5037,6 +5060,77 @@ proc drainCluster*(db: KoutenDb): seq[string] =
   doAssert db.mode == mCluster, "drainCluster はクラスタモード専用"
   for i in 0 ..< db.client.peers.len:
     result.add db.client.drainReq(i)
+
+proc coordinatorStatus*(db: KoutenDb): KoutenCoordinatorStatus =
+  ## Return the highest non-conflicting coordinator assignment reported by
+  ## reachable peers.
+  doAssert db.mode == mCluster, "coordinatorStatus is cluster mode only"
+  let status = db.client.discoverCoordinator()
+  KoutenCoordinatorStatus(epoch: status.epoch, node: status.node,
+                           replica: status.replica)
+
+proc promoteCoordinator*(db: KoutenDb, epoch: uint32, coordinatorNode,
+                         replica: int): seq[string] =
+  ## Explicit, fenced failover. Ordinary writes do not run quorum consensus;
+  ## quorum is required only while changing the coordinator assignment.
+  doAssert db.mode == mCluster, "promoteCoordinator is cluster mode only"
+  let peerCount = db.client.peers.len
+  if epoch == 0:
+    raise newException(ValueError, "coordinator epoch must be positive")
+  if coordinatorNode < 0 or coordinatorNode >= peerCount or
+      replica < 0 or replica >= peerCount or coordinatorNode == replica:
+    raise newException(ValueError,
+      "coordinator and replica must be distinct configured peer indexes")
+  let current = db.client.discoverCoordinator()
+  if epoch < current.epoch:
+    raise newException(ValueError, "coordinator epoch cannot move backwards")
+  if epoch == current.epoch and
+      (coordinatorNode != current.node or replica != current.replica):
+    raise newException(ValueError,
+      "an existing coordinator epoch cannot change assignment")
+  if epoch > current.epoch and coordinatorNode != current.node and
+      coordinatorNode != current.replica:
+    raise newException(ValueError,
+      "new coordinator must be the current primary or durable standby")
+
+  var reachable: seq[int] = @[]
+  for node in 0 ..< peerCount:
+    var remote: CoordinatorWireStatus
+    try:
+      remote = db.client.coordinatorReq(node)
+    except IOError, OSError, TimeoutError:
+      continue
+    if remote.epoch > epoch:
+      raise newException(IOError,
+        "node " & $node & " already reports newer coordinator epoch " &
+        $remote.epoch)
+    if remote.epoch == epoch and
+        (remote.node != coordinatorNode or remote.replica != replica):
+      raise newException(IOError,
+        "node " & $node & " reports a conflicting coordinator assignment")
+    reachable.add node
+  let required = peerCount div 2 + 1
+  if reachable.len < required:
+    raise newException(IOError,
+      "coordinator promotion requires reachable quorum " & $reachable.len &
+      "/" & $required)
+  if coordinatorNode notin reachable or replica notin reachable:
+    raise newException(IOError,
+      "new coordinator and replica must both be reachable")
+
+  # Leave nodes drained if any later step fails. Re-running the same epoch and
+  # assignment resumes the staged operation without exposing split ownership.
+  for node in reachable:
+    result.add "node" & $node & " drain: " & db.client.drainReq(node)
+  for node in reachable:
+    result.add "node" & $node & " stage: " &
+      db.client.coordinatorPromoteReq(node, epoch, coordinatorNode, replica)
+  for node in reachable:
+    if node != coordinatorNode:
+      result.add "node" & $node & " resume: " &
+        db.client.coordinatorResumeReq(node, epoch)
+  result.add "node" & $coordinatorNode & " resume: " &
+    db.client.coordinatorResumeReq(coordinatorNode, epoch)
 
 proc resumeCluster*(db: KoutenDb): seq[string] =
   ## drainCluster 後に全ノードの書き込み受け入れを再開する。

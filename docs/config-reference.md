@@ -78,6 +78,9 @@ provides it.
   "slowTick": 0.05,
   "placementEpoch": 1,
   "virtualArcsPerNode": 64,
+  "coordinatorEpoch": 1,
+  "coordinatorNode": 0,
+  "coordinatorReplica": 1,
   "startDrained": false,
   "durability": "strong",
   "galaxy": "app-main",
@@ -140,6 +143,9 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--auto-pack-max-elapsed-ms=N` | Elapsed-time budget per run. Default `1000`. Must be positive for automatic packing. |
 | `--placement-epoch=N` | Monotonic physical placement generation. Increase it when peer count or virtual-arc settings change. |
 | `--virtual-arcs-per-node=N` | Deterministic virtual arcs assigned to each node. Default `64`; changing it requires a placement epoch increase. |
+| `--coordinator-epoch=N` | Monotonic cluster transaction coordinator generation. Default `1`. Increase only during explicit coordinator promotion. |
+| `--coordinator-node=N` | Primary cluster transaction coordinator node index. Default `0`. |
+| `--coordinator-replica=N` | Durable coordinator standby node index. Default `-1` disables redundancy. Production coordinator redundancy requires a distinct node. |
 | `--start-drained` | Persist read-only maintenance drain before serving. Use it for a newly added node during rolling topology activation. |
 | `--durability=buffered|strong` | WAL durability policy. Applies to server writes and local management commands such as `compact`, `backup`, and `restore`. |
 | `--user=NAME` / `--password=TEXT` | Basic username/password gate. Prefer `--password-file` or `KOUTEN_PASSWORD` outside local smoke tests. |
@@ -162,6 +168,11 @@ Startup rejects epoch rollback, same-epoch topology changes, and undrained
 changes to an existing topology. Empty multi-node stores above epoch `1` start
 drained automatically. See
 [Physical Placement and Topology Remapping](topology-remapping.md).
+
+Coordinator assignment is independent of placement ownership. Configure the
+same coordinator tuple on every node. Persistent stores reject epoch rollback
+and same-epoch assignment changes. See
+[Cluster Transaction Coordinator Failover](coordinator-failover.md).
 
 Automatic packing runs on the server's existing single-owner maintenance path;
 it never accesses the same `Store` concurrently from another thread. The byte

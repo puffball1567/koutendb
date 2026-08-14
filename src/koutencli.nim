@@ -977,6 +977,39 @@ proc runDrain(peers, username, password, authToken, secretKey, galaxy: string,
     echo line
   db.close()
 
+proc runCoordinatorStatus(peers, username, password, authToken, secretKey,
+                          galaxy: string, tls: bool, tlsCaFile,
+                          tlsServerName: string,
+                          tlsInsecureSkipVerify: bool) =
+  var db = connect(peers, username = username, password = password,
+                   authToken = authToken, secretKey = secretKey, galaxy = galaxy,
+                   tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  let status = db.coordinatorStatus()
+  echo "coordinatorEpoch " & $status.epoch & " coordinatorNode " &
+       $status.node & " coordinatorReplica " & $status.replica
+  db.close()
+
+proc runCoordinatorPromote(peers, username, password, authToken, secretKey,
+                           galaxy: string, tls: bool, tlsCaFile,
+                           tlsServerName: string,
+                           tlsInsecureSkipVerify: bool, epoch: uint32,
+                           coordinatorNode, coordinatorReplica: int) =
+  if epoch == 0 or coordinatorNode < 0 or coordinatorReplica < 0:
+    raise newException(ValueError,
+      "coordinator-promote requires --coordinator-epoch, " &
+      "--coordinator-node, and --coordinator-replica")
+  var db = connect(peers, username = username, password = password,
+                   authToken = authToken, secretKey = secretKey, galaxy = galaxy,
+                   tls = tls, tlsCaFile = tlsCaFile,
+                   tlsServerName = tlsServerName,
+                   tlsInsecureSkipVerify = tlsInsecureSkipVerify)
+  for line in db.promoteCoordinator(epoch, coordinatorNode,
+                                    coordinatorReplica):
+    echo line
+  db.close()
+
 proc runResume(peers, username, password, authToken, secretKey, galaxy: string,
                tls: bool, tlsCaFile, tlsServerName: string,
                tlsInsecureSkipVerify: bool) =
@@ -3201,6 +3234,8 @@ proc printHelp() =
   echo "  kouten shell [--data=DIR | --peers=host:port,...]"
   echo "  kouten atlas [--data=DIR | --peers=host:port,...]"
   echo "  kouten health|rings|drain|resume|snapshot --peers=host:port,..."
+  echo "  kouten coordinator-status --peers=host:port,..."
+  echo "  kouten coordinator-promote --peers=host:port,... --coordinator-epoch=N --coordinator-node=N --coordinator-replica=N"
   echo "  kouten metrics --peers=host:port,... [--format=key-value|prometheus|openmetrics]"
   echo "  kouten driver list|info|install [LANG] [--manifest-path=FILE] [--execute]"
   echo "  kouten compact --data=DIR"
@@ -3343,6 +3378,9 @@ proc main() =
   var snapshotSeq: BiggestInt = 0
   var requiredHealthy = 1
   var requiredHealthySet = false
+  var coordinatorEpoch = 0'u32
+  var coordinatorNode = -1
+  var coordinatorReplica = -1
   var help = false
   var executeDriverInstall = false
   var limit = 100
@@ -3554,6 +3592,14 @@ proc main() =
       of "required-healthy":
         requiredHealthy = parseInt(val)
         requiredHealthySet = true
+      of "coordinator-epoch":
+        let parsed = parseUInt(val)
+        if parsed == 0 or parsed > uint32.high.uint64:
+          raise newException(ValueError,
+            "--coordinator-epoch must be a positive uint32")
+        coordinatorEpoch = parsed.uint32
+      of "coordinator-node": coordinatorNode = parseInt(val)
+      of "coordinator-replica": coordinatorReplica = parseInt(val)
       else: discard
     else: discard
   if passwordFile.len > 0:
@@ -3649,6 +3695,15 @@ proc main() =
   of "drain":
     runDrain(peers, username, password, authToken, secretKey, galaxy, tls,
              tlsCaFile, tlsServerName, tlsInsecureSkipVerify)
+  of "coordinator-status":
+    runCoordinatorStatus(peers, username, password, authToken, secretKey,
+                         galaxy, tls, tlsCaFile, tlsServerName,
+                         tlsInsecureSkipVerify)
+  of "coordinator-promote":
+    runCoordinatorPromote(peers, username, password, authToken, secretKey,
+                          galaxy, tls, tlsCaFile, tlsServerName,
+                          tlsInsecureSkipVerify, coordinatorEpoch,
+                          coordinatorNode, coordinatorReplica)
   of "resume":
     runResume(peers, username, password, authToken, secretKey, galaxy, tls,
               tlsCaFile, tlsServerName, tlsInsecureSkipVerify)

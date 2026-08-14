@@ -282,6 +282,10 @@ HTTP lifecycle and vendor dependencies outside the database process.
 | `clusterTxCommitted` | Committed cluster transaction intents | Transaction landing throughput |
 | `clusterTxApplied` | Applied cluster transaction intents | Apply progress |
 | `clusterTxPending` | Committed but unapplied cluster transaction intents | Retry backlog / owner failure signal |
+| `coordinatorEpoch` | Active coordinator fencing generation | Detect stale configuration and confirm promotion |
+| `coordinatorNode` / `coordinatorReplica` | Primary and durable standby node indexes | Confirm assignment is identical across the cluster |
+| `coordinatorMirrorSucceeded` | Standby intent mirror acknowledgements | Confirm redundant landing commits are flowing |
+| `coordinatorMirrorFailed` | Intent mirror or mirrored apply-ack failures | Alert immediately; affected commits are not acknowledged |
 | `clumps` | Field-state clump count | Query/index state growth |
 
 Prometheus output also exposes the fixed-label families

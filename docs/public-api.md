@@ -184,8 +184,12 @@ The C ABI exposes additive codec-aware functions (`kouten_put_codec`,
 | `tx.rollback()` | Roll back. |
 | `transaction(db, proc(tx))` | Helper that rolls back on exception. |
 
-Cluster transactions are a PoC. They use a landing intent and retry apply, but
-coordinator redundancy is still planned.
+Cluster transactions use a durable landing intent and retry apply. A configured
+standby receives the complete intent before commit acknowledgement. The active
+coordinator is discovered by epoch; explicit promotion is available through
+`coordinatorStatus()` / `promoteCoordinator()` and the corresponding CLI
+commands. Promotion is majority-gated and does not add consensus traffic to
+ordinary ring-local operations.
 
 ## Cooperative Locks
 

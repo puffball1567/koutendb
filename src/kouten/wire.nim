@@ -86,6 +86,11 @@ type
     lastOk*: int
     lastError*: int
 
+  CoordinatorWireStatus* = object
+    epoch*: uint32
+    node*: int
+    replica*: int
+
   TxWireOp* = object
     delete*: bool
     parent*: uint64
@@ -722,6 +727,44 @@ proc transferDeleteReq*(c: ClusterClient, node: int, parent: uint64,
     reclaimAfter, timeoutMs, expectedPlacementEpoch, expectedPlacementNodes,
     expectedVirtualArcs, maintenanceMigration)
 
+proc coordinatorReq*(c: ClusterClient, node: int): CoordinatorWireStatus =
+  let r = c.rpc(node, "COORDINATOR")
+  expect(r, "COORD", "COORDINATOR")
+  if r.len != 4:
+    raise newException(IOError, "COORDINATOR returned an invalid response")
+  let epoch = parseUInt(r[1])
+  if epoch == 0 or epoch > uint32.high.uint64:
+    raise newException(IOError, "COORDINATOR returned an invalid epoch")
+  result.epoch = epoch.uint32
+  result.node = parseInt(r[2])
+  result.replica = parseInt(r[3])
+
+proc discoverCoordinator*(c: ClusterClient): CoordinatorWireStatus =
+  var candidates: seq[CoordinatorWireStatus] = @[]
+  for node in 0 ..< c.peers.len:
+    var candidate: CoordinatorWireStatus
+    try:
+      candidate = c.coordinatorReq(node)
+    except CatchableError:
+      continue
+    if candidate.node < 0 or candidate.node >= c.peers.len or
+        candidate.replica < -1 or candidate.replica >= c.peers.len or
+        candidate.node == candidate.replica:
+      raise newException(IOError,
+        "node " & $node & " returned an invalid coordinator assignment")
+    candidates.add candidate
+  if candidates.len == 0:
+    raise newException(IOError, "no coordinator metadata is reachable")
+  result = candidates[0]
+  for candidate in candidates:
+    if candidate.epoch > result.epoch:
+      result = candidate
+  for candidate in candidates:
+    if candidate.epoch == result.epoch and
+        (candidate.node != result.node or candidate.replica != result.replica):
+      raise newException(IOError,
+        "conflicting coordinator assignments at the same epoch")
+
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
   let r = c.rpc(node, "TXBEGIN")
   expect(r, "OK", "TXBEGIN")
@@ -750,6 +793,31 @@ proc txCommitReq*(c: ClusterClient, node: int, txid: uint64, ops: seq[TxWireOp])
     body.add("\n")
   let r = c.rpc(node, "TXCOMMIT " & $txid & " " & $ops.len, body)
   expect(r, "OK", "TXCOMMIT")
+
+proc txMirrorReq*(c: ClusterClient, node: int, coordinatorEpoch: uint32,
+                  coordinatorNode: int, txid: uint64,
+                  ops: seq[TxWireOp]) =
+  var body = ""
+  for op in ops:
+    body.add((if op.delete: "D " else: "P ") & $op.parent & " " & $op.seq &
+             " " & $op.period & " " & $op.head & " " & $op.tWrite & " " &
+             $op.payload.len & " " & $op.vec.len & " " &
+             op.codec.payloadCodecName & " " & op.version.mutationVersionFields &
+             "\n")
+    body.add(op.payload)
+    if op.vec.len > 0:
+      body.add(op.vec.vecBytes)
+    body.add("\n")
+  let r = c.rpc(node, "TXMIRROR " & $coordinatorEpoch & " " &
+                $coordinatorNode & " " & $txid & " " & $ops.len, body)
+  expect(r, "OK", "TXMIRROR")
+
+proc txMirrorAppliedReq*(c: ClusterClient, node: int,
+                         coordinatorEpoch: uint32, coordinatorNode: int,
+                         txid: uint64) =
+  let r = c.rpc(node, "TXMIRRORAPPLIED " & $coordinatorEpoch & " " &
+                $coordinatorNode & " " & $txid)
+  expect(r, "OK", "TXMIRRORAPPLIED")
 
 proc txStatusReq*(c: ClusterClient, node: int, txid: uint64): string =
   let r = c.rpc(node, "TXSTATUS " & $txid)
@@ -782,12 +850,16 @@ proc universeStatusReq*(c: ClusterClient, node: int): UniverseWireStatus =
     result.lastError = parseInt(r[8])
 
 proc applyTxReq*(c: ClusterClient, node: int, txid: uint64, op: TxWireOp,
-                 timeoutMs = 10_000) =
+                 coordinatorEpoch = 1'u32, coordinatorNode = 0,
+                 fenced = false, timeoutMs = 10_000) =
   let body =
     if op.vec.len == 0: op.payload
     else: op.payload & op.vec.vecBytes
   let kind = if op.delete: "D" else: "P"
-  let r = c.rpc(node, "APPLYTX " & $txid & " " & kind & " " & $op.parent & " " & $op.seq & " " &
+  let command = if fenced: "APPLYTXF" else: "APPLYTX"
+  let fence = if fenced: " " & $coordinatorEpoch & " " & $coordinatorNode else: ""
+  let r = c.rpc(node, command & " " & $txid & fence & " " & kind & " " &
+                $op.parent & " " & $op.seq & " " &
                 $op.period & " " & $op.head & " " & $op.tWrite & " " &
                 $op.payload.len & " " & $op.vec.len & " " &
                 op.codec.payloadCodecName & " " &
@@ -861,6 +933,19 @@ proc resumeReq*(c: ClusterClient, node: int): string =
   expect(r, "OK", "RESUME")
   r[1 .. ^1].join(" ")
 
+proc coordinatorPromoteReq*(c: ClusterClient, node: int, epoch: uint32,
+                            coordinatorNode, replica: int): string =
+  let r = c.rpc(node, "COORDPROMOTE " & $epoch & " " &
+                $coordinatorNode & " " & $replica)
+  expect(r, "OK", "COORDPROMOTE")
+  r[1 .. ^1].join(" ")
+
+proc coordinatorResumeReq*(c: ClusterClient, node: int,
+                           epoch: uint32): string =
+  let r = c.rpc(node, "COORDRESUME " & $epoch)
+  expect(r, "OK", "COORDRESUME")
+  r[1 .. ^1].join(" ")
+
 proc snapshotReq*(c: ClusterClient, node: int): string =
   let r = c.rpc(node, "SNAPSHOT")
   expect(r, "SNAPSHOT", "SNAPSHOT")
@@ -883,6 +968,34 @@ proc topologyReq*(c: ClusterClient, node: int): ArcTable =
       nNodes == 0 or nNodes > uint16.high.uint64 or virtualArcs <= 0:
     raise newException(IOError, "TOPOLOGY returned invalid values")
   virtualArcTable(uint32(epoch), uint16(nNodes), virtualArcs)
+
+proc discoverTopology*(c: ClusterClient): ArcTable =
+  ## Bootstrap from any reachable peer. Prefer the newest placement epoch and
+  ## fail closed when peers claim different layouts for the same epoch.
+  if c.peers.len == 1:
+    # Preserve the original transport/authentication error for the common
+    # single-node case instead of hiding it behind discovery context.
+    return c.topologyReq(0)
+  var found = false
+  var failures: seq[string] = @[]
+  for node in 0 ..< c.peers.len:
+    var candidate: ArcTable
+    try:
+      candidate = c.topologyReq(node)
+    except CatchableError as e:
+      failures.add "node" & $node & ": " & e.msg
+      continue
+    if not found or candidate.epoch > result.epoch:
+      result = candidate
+      found = true
+    elif candidate.epoch == result.epoch and
+        (candidate.nNodes != result.nNodes or candidate.arcs != result.arcs):
+      raise newException(IOError,
+        "peers report conflicting placement topology for epoch " &
+        $candidate.epoch)
+  if not found:
+    raise newException(IOError,
+      "no configured peer returned placement topology: " & failures.join("; "))
 
 proc activationReq*(c: ClusterClient, node: int): tuple[
     state: string, epoch: uint32, nodes: uint16, virtualArcs: int,

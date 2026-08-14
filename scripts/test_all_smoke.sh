@@ -15,6 +15,7 @@ scripts/checkpoint_smoke.sh
 scripts/cli_crud_smoke.sh
 scripts/cluster_tx_smoke.sh
 scripts/cluster_failure_smoke.sh
+scripts/coordinator_failover_smoke.sh
 scripts/cluster_authz_smoke.sh
 scripts/cluster_rbac_smoke.sh
 scripts/cluster_wire_driver_smoke.sh

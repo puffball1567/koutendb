@@ -77,6 +77,24 @@ ACTIVATION READY|ACTIVE|BLOCKED <epoch> <nodes> <virtualArcs> <migrationPending>
 requesting activation. Each server repeats peer topology/readiness checks before
 clearing its persistent drain marker.
 
+Coordinator redundancy adds commands without changing existing frame shapes:
+
+```text
+COORDINATOR
+TXMIRROR <coordinatorEpoch> <coordinatorNode> <txid> <opCount>
+TXMIRRORAPPLIED <coordinatorEpoch> <coordinatorNode> <txid>
+APPLYTXF <txid> <coordinatorEpoch> <coordinatorNode> ...
+COORDPROMOTE <epoch> <coordinatorNode> <replicaNode>
+COORDRESUME <epoch>
+```
+
+`APPLYTX` remains readable for legacy single-coordinator clusters. Redundant or
+promoted coordinators use `APPLYTXF`; a destination rejects mismatched epochs or
+coordinator node IDs. `TXBEGIN`, reserve, and commit return the current `COORD`
+assignment outside the active primary. Status and landing reads are accepted by
+the primary or standby and return `COORD` elsewhere. Current clients discover
+the highest non-conflicting reachable assignment.
+
 Topology-fenced `TRF` / `TRFD` frames may append `MIGRATION`. A drained server
 accepts that path only for an admin-authenticated request with an exact topology
 fence. Ordinary transfer frames and writer-role attempts remain rejected while
@@ -200,11 +218,11 @@ the remaining gaps are still material:
 
 - certificate issuance, rotation, and expiry monitoring for TLS deployments;
 - richer role policy and audit logs;
-- cluster transaction coordinator redundancy;
+- automatic coordinator health policy and promotion orchestration;
 - mixed-version live wire/driver tests and a documented rolling-upgrade policy.
 
-Until those land, expose `koutend` only on trusted networks or behind a tunnel /
-proxy that provides transport security.
+Use TLS on untrusted networks and monitor coordinator, certificate, audit, and
+mixed-version boundaries according to the deployment risk.
 
 ## Planner Boundary
 

@@ -63,6 +63,55 @@ suite "store persistence":
     compacted.close()
     removeDir(dir)
 
+  test "coordinator assignment is durable and epoch-fenced":
+    let dir = createTempDir("kouten-store", "coordinator-fence")
+    var st = openStore(dir)
+    expect ValueError:
+      st.configureCoordinator(0, 0, 1)
+    expect ValueError:
+      st.configureCoordinator(1, 0, 0)
+    expect ValueError:
+      st.configureCoordinator(1, 0, -2)
+    st.configureCoordinator(1, 0, 1)
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.coordinatorEpoch == 1
+    check replayed.coordinatorNode == 0
+    check replayed.coordinatorReplica == 1
+    expect ValueError:
+      replayed.configureCoordinator(1, 1, 2)
+    expect ValueError:
+      replayed.configureCoordinator(2, 1, 2)
+    replayed.setMaintenanceDrained(true)
+    replayed.configureCoordinator(2, 1, 2)
+    discard replayed.compact()
+    replayed.close()
+
+    var promoted = openStore(dir)
+    check promoted.coordinatorEpoch == 2
+    check promoted.coordinatorNode == 1
+    check promoted.coordinatorReplica == 2
+    expect ValueError:
+      promoted.configureCoordinator(1, 0, 1)
+    promoted.close()
+    removeDir(dir)
+
+  test "coordinator transaction ids encode epoch and persist their sequence":
+    let dir = createTempDir("kouten-store", "coordinator-txid")
+    var st = openStore(dir)
+    let first = st.reserveCoordinatorTxId(3)
+    let second = st.reserveCoordinatorTxId(3)
+    check first == ((3'u64 shl 32) or 1'u64)
+    check second == ((3'u64 shl 32) or 2'u64)
+    st.close()
+
+    var replayed = openStore(dir)
+    let third = replayed.reserveCoordinatorTxId(4)
+    check third == ((4'u64 shl 32) or 3'u64)
+    replayed.close()
+    removeDir(dir)
+
   test "maintenance drain state survives replay and compaction":
     let dir = createTempDir("kouten-store", "maintenance-drain")
     var st = openStore(dir)
@@ -868,6 +917,79 @@ suite "store persistence":
     check st3.clusterTx[9'u64].applied
     st3.close()
     removeDir(dir)
+
+  test "cluster transaction mirror state survives replay and compact":
+    let dir = createTempDir("kouten-store", "cluster-tx-replicated")
+    let request = ClusterTxIntent(
+      id: 19'u64,
+      ops: @[ClusterTxOp(parent: 8'u64, seq: 2'u32, period: 60.0,
+                         head: 0.4, tWrite: 20.0, payload: "mirrored",
+                         vec: @[0.0'f32, 1.0'f32])],
+      committed: true)
+    var st = openStore(dir)
+    st.putClusterTxIntent(request)
+    check not st.clusterTxIntent(19).replicated
+    st.markClusterTxReplicated(19, 3, 2)
+    st.markClusterTxReplicated(19, 3, 2) # acknowledgement replay is idempotent
+    check st.clusterTxIntent(19).replicated
+    check st.clusterTxIntent(19).replicatedEpoch == 3
+    check st.clusterTxIntent(19).replicatedNode == 2
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.clusterTxIntent(19).replicated
+    check replayed.clusterTxIntent(19).replicatedEpoch == 3
+    check replayed.clusterTxIntent(19).replicatedNode == 2
+    discard replayed.compact()
+    replayed.close()
+
+    var compacted = openStore(dir)
+    check compacted.clusterTxIntent(19).replicated
+    check compacted.clusterTxIntent(19).replicatedEpoch == 3
+    check compacted.clusterTxIntent(19).replicatedNode == 2
+    compacted.close()
+    removeDir(dir)
+
+  test "legacy cluster transaction mirror marker survives compact":
+    let dir = createTempDir("kouten-store", "cluster-tx-legacy-replicated")
+    var st = openStore(dir)
+    st.putClusterTxIntent ClusterTxIntent(
+      id: 20'u64,
+      ops: @[ClusterTxOp(parent: 9'u64, seq: 1'u32, period: 60.0,
+                         head: 0.5, tWrite: 21.0, payload: "legacy")],
+      committed: true)
+    st.markClusterTxReplicated(20)
+    st.close()
+
+    var replayed = openStore(dir)
+    check replayed.clusterTxIntent(20).replicated
+    check replayed.clusterTxIntent(20).replicatedEpoch == 0
+    check replayed.clusterTxIntent(20).replicatedNode == -1
+    discard replayed.compact()
+    replayed.close()
+
+    var compacted = openStore(dir)
+    check compacted.clusterTxIntent(20).replicated
+    check compacted.clusterTxIntent(20).replicatedEpoch == 0
+    check compacted.clusterTxIntent(20).replicatedNode == -1
+    compacted.close()
+    removeDir(dir)
+
+  test "cluster transaction retry accepts the same intent and rejects collision":
+    var st = openStore("")
+    let request = ClusterTxIntent(
+      id: 23'u64,
+      ops: @[ClusterTxOp(parent: 4'u64, seq: 1'u32, period: 60.0,
+                         head: 0.1, tWrite: 3.0, payload: "same")],
+      committed: true)
+    st.putClusterTxIntent(request)
+    st.putClusterTxIntent(request)
+    check st.clusterTxCommitted == 1
+    var collision = request
+    collision.ops[0].payload = "different"
+    expect ValueError:
+      st.putClusterTxIntent(collision)
+    st.close()
 
   test "compact 中断で tmp だけ残った場合は tmp を正規 WAL として復旧する":
     let dir = createTempDir("kouten-store", "compact-tmp")
