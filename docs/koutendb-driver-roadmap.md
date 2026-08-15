@@ -39,15 +39,15 @@ and atlas access.
 
 | Priority | Target | Reason | Status |
 |---:|---|---|---|
-| 1 | Rust driver | High-performance infrastructure, gateway, and systems integration path | Published: crates.io [`koutendb` v0.1.5](https://crates.io/crates/koutendb), repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) |
-| 2 | JavaScript / TypeScript driver | Web API, SaaS, Studio, GUI, and local AI client entry point | Published: npm [`koutendb` v0.1.3](https://www.npmjs.com/package/koutendb), repository [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js). Bun remains experimental on the same Node-API path |
-| 3 | PHP driver | Laravel and existing business web systems | Published: Packagist [`koutendb/koutendb` v0.1.2](https://packagist.org/packages/koutendb/koutendb), repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) |
-| 4 | C++ driver | Generic native and engine integration base. Unreal plugin stays separate | Repository released: [`puffball1567/koutendb-cpp` v0.1.1](https://github.com/puffball1567/koutendb-cpp); CMake smoke passes in CI |
-| 5 | Python native wire driver | AI/RAG and broad scripting entry point without making big-data positioning the first message | Published: PyPI [`koutendb` v0.1.3](https://pypi.org/project/koutendb/), repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) |
-| 6 | Swift driver | Apple local AI client, browser companion, and app state path | Minimal C ABI wrapper done. Docker smoke added |
-| 7 | Kotlin-first JVM driver | JVM backend and Android path, Java-compatible | Minimal JNI / C ABI wrapper done |
-| 8 | Go driver | Cloud backend and ops tooling; lower initial priority than Rust/Node/PHP for KoutenDB positioning | Minimal C ABI wrapper done. Native wire comes later |
-| 9 | C# driver | Generic .NET backend entry point. Unity official asset stays separate | Minimal C ABI wrapper done |
+| 1 | Rust driver | High-performance infrastructure, gateway, and systems integration path | Published: crates.io [`koutendb` v0.1.6](https://crates.io/crates/koutendb), repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) |
+| 2 | JavaScript / TypeScript driver | Web API, SaaS, Studio, GUI, and local AI client entry point | Published: npm [`koutendb` v0.1.5](https://www.npmjs.com/package/koutendb), repository [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js). Bun remains experimental on the same Node-API path |
+| 3 | PHP driver | Laravel and existing business web systems | Published: Packagist [`koutendb/koutendb` v0.1.3](https://packagist.org/packages/koutendb/koutendb), repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) |
+| 4 | C++ driver | Generic native and engine integration base. Unreal plugin stays separate | Repository released: [`puffball1567/koutendb-cpp` v0.1.3](https://github.com/puffball1567/koutendb-cpp); CMake smoke passes in CI |
+| 5 | Python native wire driver | AI/RAG and broad scripting entry point without making big-data positioning the first message | Published: PyPI [`koutendb` v0.2.1](https://pypi.org/project/koutendb/), repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) |
+| 6 | Swift driver | Apple local AI client, browser companion, and app state path | In-tree C ABI wrapper only; not published to SwiftPM. Docker smoke added |
+| 7 | Kotlin-first JVM driver | JVM backend and Android path, Java-compatible | In-tree JNI / C ABI wrapper only; not published to Maven |
+| 8 | Go driver | Cloud backend and ops tooling; lower initial priority than Rust/Node/PHP for KoutenDB positioning | In-tree C ABI wrapper only; no Go module or external repository published. Native wire comes later |
+| 9 | C# driver | Generic .NET backend entry point. Unity official asset stays separate | In-tree C ABI wrapper only; not published to NuGet |
 | 10 | DB trust work | Crash recovery, compatibility suite, failure benchmarks, operational docs | Ongoing core work |
 
 ## Browser / Wasm Track

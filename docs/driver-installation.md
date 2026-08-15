@@ -118,9 +118,9 @@ working while newer wrappers may bind the additional symbols explicitly.
 
 The Python driver is released as a separate native TCP wire driver:
 
-- repository: [`puffball1567/koutendb-python` v0.1.3](https://github.com/puffball1567/koutendb-python)
+- repository: [`puffball1567/koutendb-python` v0.2.1](https://github.com/puffball1567/koutendb-python)
 - mode: pure Python TCP driver for `koutend`
-- PyPI: [`koutendb` v0.1.3](https://pypi.org/project/koutendb/)
+- PyPI: [`koutendb` v0.2.1](https://pypi.org/project/koutendb/)
 
 ```sh
 python3 -m pip install koutendb
@@ -143,7 +143,7 @@ db.close()
 The published JavaScript / TypeScript driver is a Node-API wrapper over the
 KoutenDB C ABI:
 
-- npm: [`koutendb` v0.1.3](https://www.npmjs.com/package/koutendb)
+- npm: [`koutendb` v0.1.5](https://www.npmjs.com/package/koutendb)
 - repository: [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js)
 
 Install it in an application:
@@ -179,7 +179,7 @@ await db.close();
 
 The Rust driver is published as a C ABI wrapper:
 
-- crates.io: [`koutendb` v0.1.5](https://crates.io/crates/koutendb)
+- crates.io: [`koutendb` v0.1.6](https://crates.io/crates/koutendb)
 - repository: [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust)
 
 Install it in a Rust project:
@@ -200,7 +200,8 @@ repository README for the full setup flow.
 
 ## Go
 
-The Go driver is a C ABI wrapper.
+The Go driver is a repository-local C ABI wrapper. It has not been published as
+a Go module or separate driver repository.
 
 ```sh
 scripts/build_capi.sh
@@ -219,7 +220,7 @@ replace github.com/koutendb/koutendb-go => ../drivers/go
 The PHP driver uses FFI over the C ABI. Local PHP must have `ext-ffi` enabled.
 It is published on Packagist:
 
-- Packagist: [`koutendb/koutendb` v0.1.2](https://packagist.org/packages/koutendb/koutendb)
+- Packagist: [`koutendb/koutendb` v0.1.3](https://packagist.org/packages/koutendb/koutendb)
 - repository: [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php)
 - package name: `koutendb/koutendb`
 
@@ -297,7 +298,7 @@ separate from this generic OSS driver.
 
 The C++ driver is released as a separate C++17 wrapper over the C ABI:
 
-- repository: [`puffball1567/koutendb-cpp` v0.1.1](https://github.com/puffball1567/koutendb-cpp)
+- repository: [`puffball1567/koutendb-cpp` v0.1.3](https://github.com/puffball1567/koutendb-cpp)
 - mode: C++17 RAII wrapper over `libkoutendb.so`
 
 ```sh
