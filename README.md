@@ -280,26 +280,26 @@ Published external drivers:
 
 | Language / runtime | Package | Version | Repository | Mode |
 |---|---|---:|---|---|
-| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.5` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
-| JavaScript / TypeScript | [`koutendb`](https://www.npmjs.com/package/koutendb) | `0.1.3` | [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js) | Node-API C ABI wrapper |
-| PHP | [`koutendb/koutendb`](https://packagist.org/packages/koutendb/koutendb) | `0.1.2` | [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) | FFI / C ABI wrapper |
-| C++ | GitHub / CMake source package | `0.1.1` | [`puffball1567/koutendb-cpp`](https://github.com/puffball1567/koutendb-cpp) | C++17 C ABI wrapper |
-| Python | [`koutendb`](https://pypi.org/project/koutendb/) | `0.1.3` | [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) | Native TCP wire driver |
+| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.6` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
+| JavaScript / TypeScript | [`koutendb`](https://www.npmjs.com/package/koutendb) | `0.1.5` | [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js) | Node-API C ABI wrapper |
+| PHP | [`koutendb/koutendb`](https://packagist.org/packages/koutendb/koutendb) | `0.1.3` | [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) | FFI / C ABI wrapper |
+| C++ | GitHub / CMake source package | `0.1.3` | [`puffball1567/koutendb-cpp`](https://github.com/puffball1567/koutendb-cpp) | C++17 C ABI wrapper |
+| Python | [`koutendb`](https://pypi.org/project/koutendb/) | `0.2.1` | [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) | Native TCP wire driver |
 
 The table below lists current core-repository driver foundations. Publication
 priority for remaining language packages is tracked in
 [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md).
 
-| Language / runtime | Driver path | Current mode | Smoke status |
-|---|---|---|---|
-| Nim | `src/koutendb.nim` | Native embedded and cluster API | core tests |
-| C ABI | `include/koutendb.h` | Embedded / cluster foundation for bindings | contract smoke |
-| Node.js / TypeScript | `drivers/node` | Native TCP wire driver, ESM | `node --test` |
-| Bun | `drivers/node` | Node-compatible TCP wire driver | `bun test` |
-| Go | `drivers/go` | C ABI wrapper | `go test` |
-| Swift | `drivers/swift` | SwiftPM C ABI wrapper | Linux Docker smoke |
-| C# | `drivers/csharp` | Generic .NET C ABI wrapper | contract smoke |
-| Kotlin/JVM | `drivers/kotlin` | JNI / C ABI wrapper | Docker smoke |
+| Language / runtime | Driver path | Current mode | Distribution | Verification |
+|---|---|---|---|---|
+| Nim | `src/koutendb.nim` | Native embedded and cluster API | Published with the core Nimble package | core tests |
+| C ABI | `include/koutendb.h` | Embedded / cluster foundation for bindings | Shipped with the core source release | contract smoke |
+| Node.js / TypeScript | `drivers/node` | Native TCP wire driver, ESM | In-tree test foundation; the published Node-API driver is listed above | `node --test` |
+| Bun | `drivers/node` | Node-compatible TCP wire driver | In-tree experimental path; no separate Bun package | `bun test` |
+| Go | `drivers/go` | C ABI wrapper | **In-tree only; no Go module has been published** | `go test` |
+| Swift | `drivers/swift` | SwiftPM C ABI wrapper | **In-tree only; no SwiftPM package has been published** | Linux Docker smoke |
+| C# | `drivers/csharp` | Generic .NET C ABI wrapper | **In-tree only; no NuGet package has been published** | contract smoke |
+| Kotlin/JVM | `drivers/kotlin` | JNI / C ABI wrapper | **In-tree only; no Maven package has been published** | Docker smoke |
 
 Detailed setup notes are in
 [docs/driver-installation.md](docs/driver-installation.md). Nimble package

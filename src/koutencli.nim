@@ -40,7 +40,7 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-rust",
       packageName: "koutendb",
       installHint: "cargo add koutendb",
-      notes: "Published on crates.io as koutendb v0.1.5. Wraps the KoutenDB C ABI."
+      notes: "Published on crates.io as koutendb v0.1.6. Wraps the KoutenDB C ABI."
     ),
     DriverInfo(
       name: "node",
@@ -49,7 +49,7 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-js",
       packageName: "koutendb",
       installHint: "npm install koutendb",
-      notes: "Published on npm as koutendb v0.1.3. Bun compatibility is tested on the Node-API path, but remains experimental."
+      notes: "Published on npm as koutendb v0.1.5. Bun compatibility is tested on the Node-API path, but remains experimental."
     ),
     DriverInfo(
       name: "php",
@@ -58,7 +58,7 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-php",
       packageName: "koutendb/koutendb",
       installHint: "composer require koutendb/koutendb",
-      notes: "Published on Packagist as koutendb/koutendb v0.1.2. Wraps the KoutenDB C ABI through PHP FFI."
+      notes: "Published on Packagist as koutendb/koutendb v0.1.3. Wraps the KoutenDB C ABI through PHP FFI."
     ),
     DriverInfo(
       name: "cpp",
@@ -67,7 +67,7 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-cpp",
       packageName: "koutendb-cpp",
       installHint: "git clone https://github.com/puffball1567/koutendb-cpp.git",
-      notes: "Released as koutendb-cpp v0.1.1. CMake smoke passes in CI; Conan/vcpkg publication is future work."
+      notes: "Released as koutendb-cpp v0.1.3. CMake smoke passes in CI; Conan/vcpkg publication is future work."
     ),
     DriverInfo(
       name: "python",
@@ -76,16 +76,16 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-python",
       packageName: "koutendb",
       installHint: "python3 -m pip install koutendb",
-      notes: "Published on PyPI as koutendb v0.1.3. Pure Python TCP driver."
+      notes: "Published on PyPI as koutendb v0.2.1. Pure Python TCP driver."
     ),
     DriverInfo(
       name: "go",
       status: "repository-local",
       mode: "C ABI wrapper",
       repository: "drivers/go",
-      packageName: "github.com/koutendb/koutendb-go",
-      installHint: "go get github.com/koutendb/koutendb-go",
-      notes: "Repository-local foundation. Package publication is future work."
+      packageName: "not published (local module path: github.com/koutendb/koutendb-go)",
+      installHint: "use drivers/go with a local go.mod replace directive",
+      notes: "In-tree foundation only. No Go module or external Go driver repository has been published."
     )
   ]
 
