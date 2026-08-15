@@ -62,6 +62,7 @@ downstream AI/RAG or application logic.
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.12.1 Release Notes](github-release-v0.12.1.md)
 - [v0.12.0 Release Notes](github-release-v0.12.0.md)
 - [v0.11.0 Release Notes](github-release-v0.11.0.md)
 - [Historical v0.10 Roadmap](v0.10-roadmap.md)

@@ -98,6 +98,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
 - v0.12 implementation and validation record: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
+- v0.12.1 release notes: [docs/github-release-v0.12.1.md](docs/github-release-v0.12.1.md)
 - v0.12.0 release notes: [docs/github-release-v0.12.0.md](docs/github-release-v0.12.0.md)
 - 72-hour strong-durability result: [docs/soak-testing.md](docs/soak-testing.md)
 - Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
