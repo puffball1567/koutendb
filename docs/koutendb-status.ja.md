@@ -57,12 +57,14 @@
 |---|---|---|
 | Nim API | 完了 | Native public API |
 | C ABI | 完了 | ABI version / last error / put/get/retrieve/batch/atlas |
-| Python | 完了 | Native wire minimal |
-| Node.js / TypeScript / Bun | 一部公開済み | npm `koutendb` v0.1.3。Bun は実験的 |
-| Rust | 公開済み | crates.io `koutendb` v0.1.5。詳細は英語正本を参照 |
-| Go | 完了 | C ABI wrapper minimal |
-| PHP / Swift / Kotlin | 完了 | Docker smoke あり |
-| C# / C++ | 完了 | OSS generic wrappers。Unity / Unreal 公式 asset は別候補 |
+| Python | 公開済み | PyPI `koutendb` v0.2.1。Native TCP wire driver |
+| Node.js / TypeScript / Bun | 公開済み | npm `koutendb` v0.1.5。Bun は実験的 |
+| Rust | 公開済み | crates.io `koutendb` v0.1.6。詳細は英語正本を参照 |
+| Go | リポジトリ内のみ | C ABI wrapper minimal。Go module と外部 driver repository は未公開 |
+| PHP | 公開済み | Packagist `koutendb/koutendb` v0.1.3。Docker smoke あり |
+| Swift / Kotlin | リポジトリ内のみ | wrapper と Docker smoke は実装済み。SwiftPM / Maven package は未公開 |
+| C# | リポジトリ内のみ | generic wrapper は実装済み。NuGet package は未公開。Unity 公式 asset は別候補 |
+| C++ | GitHub Release 公開済み | `koutendb-cpp` v0.1.3。Unreal 公式 asset は別候補 |
 | React Native / WASM | v0.1 後の候補 | Browser / local state boundary |
 | Driver discovery CLI | 完了 | `kouten driver list/info/install` が公式 driver metadata と setup command を表示。remote script は実行しない |
 | Package publishing | 一部完了 | `nimble install koutendb`, `cargo add koutendb`, `npm install koutendb`, `composer require koutendb/koutendb`, `python3 -m pip install koutendb` が利用可能。その他のレジストリは今後 |
