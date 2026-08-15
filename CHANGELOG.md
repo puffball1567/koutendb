@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.12.1 - 2026-08-15
+
+### Changed
+
+- Updated the documented Rust, JavaScript/TypeScript, Python, PHP, and C++
+  driver versions to match their current public package or GitHub releases.
+- Distinguished published external drivers from the Go, Swift, C#, Kotlin,
+  Node TCP, and Bun foundations that currently exist only in the core
+  repository.
+- Replaced the misleading Go package installation hint with the supported
+  local `go.mod replace` workflow.
+- Synchronized driver release status across the README, installation guide,
+  roadmap, CLI discovery output, canonical status page, and translations.
+
 ## v0.12.0 - 2026-08-13
 
 ### Added
