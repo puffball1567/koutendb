@@ -1533,6 +1533,9 @@ proc clusterActivationReady(sv: Server): tuple[ok: bool, reason: string] =
 
 proc coordinatorActivationReady(sv: Server): tuple[ok: bool, reason: string] =
   var matching = 1 # local metadata already passed configureCoordinator
+  var primaryMatching = sv.myId == sv.coordinatorNode
+  var replicaMatching = sv.coordinatorReplica < 0 or
+                        sv.myId == sv.coordinatorReplica
   for node in 0 ..< sv.peers.len:
     if node == sv.myId:
       continue
@@ -1545,11 +1548,19 @@ proc coordinatorActivationReady(sv: Server): tuple[ok: bool, reason: string] =
             remote.replica != sv.coordinatorReplica:
           return (false, "node-" & $node & "-coordinator-conflict")
         inc matching
+        if node == sv.coordinatorNode:
+          primaryMatching = true
+        if node == sv.coordinatorReplica:
+          replicaMatching = true
     except CatchableError:
       discard
   let required = sv.peers.len div 2 + 1
   if matching < required:
     return (false, "coordinator-quorum=" & $matching & "/" & $required)
+  if not primaryMatching:
+    return (false, "coordinator-primary-not-ready")
+  if not replicaMatching:
+    return (false, "coordinator-replica-not-ready")
   (true, "")
 
 proc parseCoordinatorEpoch(value: string): uint32 =

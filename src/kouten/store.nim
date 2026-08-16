@@ -2113,12 +2113,18 @@ proc replay(s: Store, path: string, repair = true) =
         s.nextTxId = max(s.nextTxId, txid + 1)
       of "CP":
         let txid = parseBiggestUInt(parts[1]).uint64
+        if txid notin pendingCluster:
+          raise newException(WalCorruptionError,
+            "cluster transaction operation has no begin marker")
         let op = recordStream.readClusterTxOp(parts, 2)
-        pendingCluster.mgetOrPut(txid, ClusterTxIntent(id: txid)).ops.add op
+        pendingCluster[txid].ops.add op
         s.nextTxId = max(s.nextTxId, txid + 1)
       of "CC":
         let txid = parseBiggestUInt(parts[1]).uint64
-        var intent = pendingCluster.getOrDefault(txid, ClusterTxIntent(id: txid))
+        if txid notin pendingCluster:
+          raise newException(WalCorruptionError,
+            "cluster transaction commit has no begin marker")
+        var intent = pendingCluster[txid]
         intent.committed = true
         intent.applied = s.appliedClusterTx.getOrDefault(txid, false)
         s.clusterTx[txid] = intent

@@ -86,6 +86,85 @@ proc waitMetricAtLeast(client: ClusterClient, node: int, name: string,
   false
 
 suite "cluster coordinator failover":
+  test "promotion boundary matrix fails closed before activation":
+    let basePort = parseInt(getEnv("KOUTEN_COORDINATOR_BASE_PORT", "17631")) + 30
+    let peers = "127.0.0.1:" & $basePort & ",127.0.0.1:" & $(basePort + 1) &
+                ",127.0.0.1:" & $(basePort + 2)
+    let dataRoot = getTempDir() /
+      ("koutendb-coordinator-promotion-matrix-" & $getCurrentProcessId())
+    createDir(dataRoot)
+    var nodes: seq[NodeProc] = @[]
+    var client = newClusterClient(parsePeers(peers))
+    try:
+      for id in 0 ..< 3:
+        nodes.add startNode(id, peers, dataRoot, 1, 0, 1)
+      for id in 0 ..< 3:
+        check client.waitNode(id)
+
+      checkpoint "promotion requires durable drain"
+      expect IOError:
+        discard client.coordinatorPromoteReq(0, 2, 1, 2)
+      check metricValue(client.metricsReq(0), "coordinatorEpoch") == 1
+
+      check client.drainReq(0).contains("draining")
+      checkpoint "invalid node indexes are rejected"
+      expect IOError:
+        discard client.coordinatorPromoteReq(0, 2, 3, 1)
+      checkpoint "primary and standby must differ"
+      expect IOError:
+        discard client.coordinatorPromoteReq(0, 2, 1, 1)
+      checkpoint "same epoch cannot change assignment"
+      expect IOError:
+        discard client.coordinatorPromoteReq(0, 1, 1, 2)
+
+      check client.coordinatorPromoteReq(0, 2, 1, 2).contains("staged")
+      # Replaying the exact stage operation is idempotent.
+      check client.coordinatorPromoteReq(0, 2, 1, 2).contains("staged")
+      checkpoint "epoch rollback is rejected"
+      expect IOError:
+        discard client.coordinatorPromoteReq(0, 1, 0, 1)
+      checkpoint "same promoted epoch is assignment-fenced"
+      expect IOError:
+        discard client.coordinatorPromoteReq(0, 2, 2, 1)
+      checkpoint "one staged node is not a quorum"
+      expect IOError:
+        discard client.coordinatorResumeReq(0, 2)
+      expect IOError:
+        discard client.txBeginReq(0)
+
+      check client.drainReq(1).contains("draining")
+      check client.coordinatorPromoteReq(1, 2, 1, 2).contains("staged")
+      checkpoint "quorum cannot activate before the assigned standby is ready"
+      expect IOError:
+        discard client.coordinatorResumeReq(1, 2)
+      expect IOError:
+        discard client.txBeginReq(1)
+
+      check client.drainReq(2).contains("draining")
+      check client.coordinatorPromoteReq(2, 2, 1, 2).contains("staged")
+      check client.coordinatorResumeReq(0, 2).contains("active")
+      check client.coordinatorResumeReq(2, 2).contains("active")
+      check client.coordinatorResumeReq(1, 2).contains("active")
+      check client.waitMetric(0, "coordinatorRole", 0)
+      check client.waitMetric(1, "coordinatorRole", 1)
+      check client.waitMetric(2, "coordinatorRole", 2)
+      check client.waitMetric(1, "coordinatorReplicaReachable", 1)
+
+      checkpoint "promoted assignment and active state survive restart"
+      nodes[1].stopNode(crash = true)
+      check client.waitNode(1, expected = false)
+      nodes[1] = startNode(1, peers, dataRoot, 2, 1, 2)
+      check client.waitNode(1)
+      check client.waitMetric(1, "coordinatorRole", 1)
+      let txid = client.txBeginReq(1)
+      check (txid shr 32) == 2'u64
+    finally:
+      client.close()
+      for i in 0 ..< nodes.len:
+        nodes[i].stopNode()
+      if dirExists(dataRoot):
+        removeDir(dataRoot)
+
   test "commit is not acknowledged until the standby durably accepts it":
     let basePort = parseInt(getEnv("KOUTEN_COORDINATOR_BASE_PORT", "17631")) + 20
     let peers = "127.0.0.1:" & $basePort & ",127.0.0.1:" & $(basePort + 1) &
@@ -123,36 +202,38 @@ suite "cluster coordinator failover":
       check client.waitMetric(1, "clusterTxPending", 0)
 
       db = connect(peers)
-      let ring = "coordinator/ack-gate"
-      db.configureRing(ring, 315_360_000.0)
-      let tx = db.beginTransaction()
-      let id = tx.put($(%*{"value": "exactly-once-after-retry"}), ring = ring)
+      for crash in [false, true]:
+        let stopMode = if crash: "sigkill" else: "terminate"
+        checkpoint "standby stop mode: " & stopMode
+        let ring = "coordinator/ack-gate/" & stopMode
+        db.configureRing(ring, 315_360_000.0)
+        let tx = db.beginTransaction()
+        let id = tx.put(
+          $(%*{"value": "exactly-once-after-retry", "mode": stopMode}),
+          ring = ring)
 
-      nodes[1].stopNode(crash = true)
-      check client.waitNode(1, expected = false)
-      expect IOError:
+        nodes[1].stopNode(crash = crash)
+        check client.waitNode(1, expected = false)
+        expect IOError:
+          tx.commit()
+        check client.waitMetric(0, "clusterTxPending", 1)
+        check client.waitMetric(0, "coordinatorReplicaReachable", 0)
+        check metricValue(client.metricsReq(0),
+                          "coordinatorReplicaLastError") > 0
+
+        nodes[1] = startNode(1, peers, dataRoot, 1, 0, 1)
+        check client.waitNode(1)
+        # Retry the same transaction identity. Duplicate intent delivery is
+        # accepted only when the complete request is identical.
         tx.commit()
-      check client.waitMetric(0, "clusterTxPending", 1)
-      check client.waitMetric(0, "coordinatorReplicaReachable", 0)
-      check metricValue(client.metricsReq(0),
-                        "coordinatorReplicaLastError") > 0
+        check client.waitMetric(0, "clusterTxPending", 0)
+        check client.waitMetric(1, "clusterTxPending", 0)
+        check client.waitMetric(0, "coordinatorReplicaReachable", 1)
+        check metricValue(client.metricsReq(0),
+                          "coordinatorReplicaLastOk") > 0
 
-      nodes[1] = startNode(1, peers, dataRoot, 1, 0, 1)
-      check client.waitNode(1)
-      # Retry the same transaction identity. Duplicate intent delivery is
-      # accepted only when the complete request is identical.
-      tx.commit()
-      check client.waitMetric(0, "clusterTxPending", 0)
-      check client.waitMetric(1, "clusterTxPending", 0)
-      check client.waitMetric(0, "coordinatorReplicaReachable", 1)
-      check metricValue(client.metricsReq(0),
-                        "coordinatorReplicaLastOk") > 0
-
-      db.close()
-      db = connect(peers)
-      db.configureRing(ring, 315_360_000.0)
-      check db.get(id).contains("exactly-once-after-retry")
-      check db.readRing(ring).count == 1
+        check db.get(id).contains("exactly-once-after-retry")
+        check db.readRing(ring).count == 1
     finally:
       if not db.isNil:
         db.close()

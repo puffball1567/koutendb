@@ -994,6 +994,70 @@ suite "store persistence":
       st.putClusterTxIntent(collision)
     st.close()
 
+  test "cluster transaction identity collision matrix fails closed":
+    proc baseIntent(): ClusterTxIntent =
+      ClusterTxIntent(
+        id: 24'u64,
+        ops: @[ClusterTxOp(
+          kind: ctxPut, parent: 4'u64, seq: 1'u32, period: 60.0,
+          head: 0.1, tWrite: 3.0, payload: "same", codec: pcJson,
+          vec: @[1.0'f32, 0.0'f32])],
+        committed: true)
+
+    let dir = createTempDir("kouten-store", "cluster-tx-collision-matrix")
+    var st = openStore(dir)
+    st.putClusterTxIntent(baseIntent())
+    st.close()
+
+    st = openStore(dir)
+    # An identical request with an implicit version remains retryable after
+    # WAL replay even though the stored intent now has a generated version.
+    st.putClusterTxIntent(baseIntent())
+    let names = ["op-count", "kind", "parent", "seq", "period", "head",
+                 "tWrite", "payload", "codec", "vector", "version"]
+    for variant in 0 .. names.high:
+      checkpoint names[variant]
+      var changed = baseIntent()
+      case variant
+      of 0:
+        changed.ops.add changed.ops[0]
+      of 1:
+        changed.ops[0].kind = ctxDelete
+      of 2:
+        changed.ops[0].parent = 5'u64
+      of 3:
+        changed.ops[0].seq = 2'u32
+      of 4:
+        changed.ops[0].period = 61.0
+      of 5:
+        changed.ops[0].head = 0.2
+      of 6:
+        changed.ops[0].tWrite = 4.0
+      of 7:
+        changed.ops[0].payload = "different"
+      of 8:
+        changed.ops[0].codec = pcNif
+      of 9:
+        changed.ops[0].vec = @[0.0'f32, 1.0'f32]
+      of 10:
+        changed.ops[0].version = mutationVersion(9_000)
+      else:
+        discard
+      expect ValueError:
+        st.putClusterTxIntent(changed)
+    check st.clusterTxCommitted == 1
+    st.close()
+    removeDir(dir)
+
+  test "orphan cluster transaction WAL records fail closed":
+    for record in ["CP 31 P 4 1 60.0 0.1 3.0 0 0\n\n",
+                   "CC 31\n"]:
+      let dir = createTempDir("kouten-store", "cluster-tx-orphan")
+      writeFile(dir / "kouten.log", record)
+      expect IOError:
+        discard openStore(dir)
+      removeDir(dir)
+
   test "compact 中断で tmp だけ残った場合は tmp を正規 WAL として復旧する":
     let dir = createTempDir("kouten-store", "compact-tmp")
     writeFile(dir / "kouten.log.compact",

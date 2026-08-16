@@ -120,7 +120,40 @@ not acknowledged as successful.
 - A stale primary may restart, but current-epoch nodes reject its fenced mirror
   and apply requests.
 
-The executable failure matrix covers mirror loss, coordinator loss, owner
-loss, quorum rejection, standby WAL restart, duplicate delivery, transaction-ID
-collision, stale-primary fencing, and exact final cardinality:
+## Executable Failure Matrix
+
+The coordinator suite uses three persistent nodes with strong durability. It
+does not replace the separate TLS, authorization, wire-fuzz, storage-failure,
+or process-crash suites; those remain part of `scripts/test_all_smoke.sh`.
+
+| Boundary or failure | Injected condition | Required invariant |
+|---|---|---|
+| Promotion before drain | Send `COORDPROMOTE` to an active node | Reject; epoch and assignment remain unchanged. |
+| Invalid assignment | Out-of-range node or identical primary/standby | Reject without changing durable coordinator state. |
+| Same-epoch conflict | Reuse an epoch with another assignment | Reject; the existing epoch remains fenced. |
+| Epoch rollback | Stage epoch N, then request N-1 | Reject before activation. |
+| Partial staging | Stage one node only | Resume and new transactions remain rejected. |
+| Quorum without standby | Stage a majority but not the assigned standby | Resume remains rejected. |
+| Complete staging | Stage primary, standby, and quorum | Resume succeeds; role metrics match all nodes. |
+| Promoted-primary restart | SIGKILL and reopen its own WAL | Epoch, assignment, active state, and tx sequence survive. |
+| Standby unavailable before mirror | Termination and SIGKILL variants | Commit is not acknowledged; primary intent stays pending. |
+| Exact retry after standby restart | Resend the same transaction ID and body | Commit converges once; final ring cardinality is one. |
+| Duplicate mirror | Deliver the same intent twice | Both deliveries succeed without another logical intent. |
+| Transaction-ID collision | Change op count, kind, parent, sequence, orbit, time, payload, codec, vector, or version | Every changed identity is rejected. |
+| Duplicate completion | Deliver `TXMIRRORAPPLIED` twice | Completion is idempotent and writes one applied marker. |
+| Orphan WAL operation/commit | Replay `CP` or `CC` without `CT` | Store open fails closed as WAL corruption. |
+| Owner unavailable after mirror | Stop the selected owner before apply | Mirrored intent remains pending on primary and standby. |
+| Standby unavailable at completion | Stop standby after owner recovery | Primary remains pending and re-seeds the standby later. |
+| Standby WAL restart | Restart standby while intent is pending | Mirrored pending intent survives local WAL replay. |
+| Primary loss | SIGKILL the primary with a mirrored pending intent | Standby can be explicitly promoted through quorum. |
+| Stale primary return | Restart the old epoch after promotion | Stale reserve, commit, mirror, and apply paths are fenced. |
+| Final convergence | Retry, restart, owner recovery, and promotion | Pending reaches zero and visible data has exact cardinality. |
+
+This matrix intentionally distinguishes process termination from SIGKILL and
+exact replay from conflicting replay. Recovery guarantees that depend on a
+durable standby are tested with `durability=strong`; `coordinatorReplica: -1`
+is documented as a non-recoverable compatibility mode rather than counted as a
+successful failover cell.
+
+The executable entry point is:
 [`scripts/coordinator_failover_smoke.sh`](../scripts/coordinator_failover_smoke.sh).
