@@ -911,7 +911,10 @@ suite "store persistence":
     check st2.clusterTx[9'u64].committed
     check not st2.clusterTx[9'u64].applied
     st2.markClusterTxApplied(9'u64)
+    st2.markClusterTxApplied(9'u64)
     st2.close()
+
+    check readFile(dir / "kouten.log").count("CA 9\n") == 1
 
     var st3 = openStore(dir)
     check st3.clusterTx[9'u64].applied

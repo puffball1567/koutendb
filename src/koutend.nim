@@ -163,6 +163,10 @@ type
     coordinatorReplica: int
     coordinatorMirrorSucceeded: uint64
     coordinatorMirrorFailed: uint64
+    coordinatorReplicaReachable: int
+    coordinatorReplicaLastCheck: float
+    coordinatorReplicaLastOk: float
+    coordinatorReplicaLastError: float
     st: Store
     dataDir: string
     fs: FieldState
@@ -1237,9 +1241,55 @@ proc rebuildFieldState(sv: Server) =
     if p.parent != HaloKey and p.vec.len > 0:
       sv.fs.observeRingPut(p.parent, p.vec)
 
+proc coordinatorRole(sv: Server): int =
+  ## Stable metric values: 0=follower, 1=primary, 2=standby.
+  if sv.myId == sv.coordinatorNode:
+    1
+  elif sv.myId == sv.coordinatorReplica:
+    2
+  else:
+    0
+
+proc observeCoordinatorReplica(sv: Server, reachable: bool) =
+  let now = epochTime()
+  sv.coordinatorReplicaLastCheck = now
+  sv.coordinatorReplicaReachable = if reachable: 1 else: 0
+  if reachable:
+    sv.coordinatorReplicaLastOk = now
+  else:
+    sv.coordinatorReplicaLastError = now
+
+proc coordinatorReplicaHealthTick(sv: Server) =
+  ## Probe at most once per second. This remains outside ordinary ring-local
+  ## request paths. Only the primary probes: synchronous cross-probes from
+  ## every single-threaded node could form a request cycle during promotion.
+  if sv.coordinatorReplica < 0:
+    sv.coordinatorReplicaReachable = -1
+    return
+  if sv.myId == sv.coordinatorReplica:
+    if sv.coordinatorReplicaLastCheck == 0:
+      sv.observeCoordinatorReplica(true)
+    return
+  if sv.myId != sv.coordinatorNode:
+    sv.coordinatorReplicaReachable = -1
+    return
+  let now = epochTime()
+  if sv.coordinatorReplicaLastCheck > 0 and
+      now - sv.coordinatorReplicaLastCheck < 1.0:
+    return
+  try:
+    let remote = sv.peerLink.coordinatorReq(sv.coordinatorReplica)
+    sv.observeCoordinatorReplica(
+      remote.epoch == sv.coordinatorEpoch and
+      remote.node == sv.coordinatorNode and
+      remote.replica == sv.coordinatorReplica)
+  except CatchableError:
+    sv.observeCoordinatorReplica(false)
+
 proc slowTick(sv: Server) =
   sv.fs.clusterTick(sv.st)
   discard sv.fs.captureTick(sv.st, epochTime())
+  sv.coordinatorReplicaHealthTick()
 
 proc autoPackTick(sv: Server) =
   if not sv.autoPack.enabled or not sv.autoPack.window.isOpenNow():
@@ -1384,9 +1434,11 @@ proc mirrorClusterTxIntent(sv: Server, intent: ClusterTxIntent): bool =
     sv.st.markClusterTxReplicated(intent.id, sv.coordinatorEpoch,
                                   sv.coordinatorReplica)
     inc sv.coordinatorMirrorSucceeded
+    sv.observeCoordinatorReplica(true)
     true
   except CatchableError:
     inc sv.coordinatorMirrorFailed
+    sv.observeCoordinatorReplica(false)
     false
 
 proc applyClusterTxTick(sv: Server) =
@@ -2514,6 +2566,15 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "coordinatorEpoch " & $sv.coordinatorEpoch & " " &
                    "coordinatorNode " & $sv.coordinatorNode & " " &
                    "coordinatorReplica " & $sv.coordinatorReplica & " " &
+                   "coordinatorRole " & $sv.coordinatorRole & " " &
+                   "coordinatorReplicaReachable " &
+                     $sv.coordinatorReplicaReachable & " " &
+                   "coordinatorReplicaLastCheck " &
+                     $(int(sv.coordinatorReplicaLastCheck)) & " " &
+                   "coordinatorReplicaLastOk " &
+                     $(int(sv.coordinatorReplicaLastOk)) & " " &
+                   "coordinatorReplicaLastError " &
+                     $(int(sv.coordinatorReplicaLastError)) & " " &
                    "coordinatorMirrorSucceeded " &
                      $sv.coordinatorMirrorSucceeded & " " &
                    "coordinatorMirrorFailed " &
@@ -2600,6 +2661,13 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     sv.coordinatorEpoch = epoch
     sv.coordinatorNode = node
     sv.coordinatorReplica = replica
+    sv.coordinatorReplicaReachable =
+      if replica < 0 or sv.myId notin [node, replica]: -1
+      elif replica == sv.myId: 1
+      else: 0
+    sv.coordinatorReplicaLastCheck = 0
+    sv.coordinatorReplicaLastOk = 0
+    sv.coordinatorReplicaLastError = 0
     sv.audit("coordinator-promote", user = sv.currentUser(sock),
              message = "coordinator assignment updated",
              extra = %*{"epoch": epoch, "node": node, "replica": replica})
@@ -2900,6 +2968,11 @@ proc main() =
                   coordinatorEpoch: coordinatorEpoch,
                   coordinatorNode: coordinatorNode,
                   coordinatorReplica: coordinatorReplica,
+                  coordinatorReplicaReachable:
+                    (if coordinatorReplica < 0 or
+                        id notin [coordinatorNode, coordinatorReplica]: -1
+                     elif coordinatorReplica == id: 1
+                     else: 0),
                   st: openStore(dataDir, durability = durability,
                                 diskBacked = diskBacked,
                                 mutationOrigin = uint32(id + 1)),

@@ -4307,6 +4307,8 @@ proc clusterTxIntent*(s: Store, txid: uint64): ClusterTxIntent =
 
 proc markClusterTxApplied*(s: Store, txid: uint64) =
   s.ensureWritable()
+  if s.appliedClusterTx.getOrDefault(txid, false):
+    return
   if s.persistent:
     s.writeStoreWalLine("CA " & $txid)
     s.flushMaybe()

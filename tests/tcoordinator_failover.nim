@@ -1,6 +1,9 @@
 ## Recoverable cluster transaction coordinator matrix:
+## - reject commit acknowledgement while the standby is unavailable
+## - accept identical intent/completion replay and reject txid collisions
 ## - commit while the owner is unavailable
 ## - verify the primary and standby both retain the intent
+## - restart the standby from its own WAL
 ## - crash the primary coordinator
 ## - fence and promote the standby through a surviving-node quorum
 ## - recover the owner and converge without duplicate visible data
@@ -83,6 +86,82 @@ proc waitMetricAtLeast(client: ClusterClient, node: int, name: string,
   false
 
 suite "cluster coordinator failover":
+  test "commit is not acknowledged until the standby durably accepts it":
+    let basePort = parseInt(getEnv("KOUTEN_COORDINATOR_BASE_PORT", "17631")) + 20
+    let peers = "127.0.0.1:" & $basePort & ",127.0.0.1:" & $(basePort + 1) &
+                ",127.0.0.1:" & $(basePort + 2)
+    let dataRoot = getTempDir() /
+      ("koutendb-coordinator-ack-gate-" & $getCurrentProcessId())
+    createDir(dataRoot)
+    var nodes: seq[NodeProc] = @[]
+    var client = newClusterClient(parsePeers(peers))
+    var db: KoutenDb = nil
+    try:
+      for id in 0 ..< 3:
+        nodes.add startNode(id, peers, dataRoot, 1, 0, 1)
+      for id in 0 ..< 3:
+        check client.waitNode(id)
+      check client.waitMetric(0, "coordinatorRole", 1)
+      check client.waitMetric(1, "coordinatorRole", 2)
+      check client.waitMetric(2, "coordinatorRole", 0)
+      check client.waitMetric(0, "coordinatorReplicaReachable", 1)
+
+      let replayTxid = client.txBeginReq(0)
+      let reservation = client.txReserveReq(0, replayTxid, 101'u64,
+                                            315_360_000.0, 0.25)
+      let replayOp = TxWireOp(
+        parent: 101'u64, seq: reservation.seq, period: 315_360_000.0,
+        head: 0.25, tWrite: reservation.tWrite, payload: "replayed-intent")
+      client.txMirrorReq(1, 1, 0, replayTxid, @[replayOp])
+      client.txMirrorReq(1, 1, 0, replayTxid, @[replayOp])
+      var conflictingOp = replayOp
+      conflictingOp.payload = "different-intent"
+      expect IOError:
+        client.txMirrorReq(1, 1, 0, replayTxid, @[conflictingOp])
+      client.txMirrorAppliedReq(1, 1, 0, replayTxid)
+      client.txMirrorAppliedReq(1, 1, 0, replayTxid)
+      check client.waitMetric(1, "clusterTxPending", 0)
+
+      db = connect(peers)
+      let ring = "coordinator/ack-gate"
+      db.configureRing(ring, 315_360_000.0)
+      let tx = db.beginTransaction()
+      let id = tx.put($(%*{"value": "exactly-once-after-retry"}), ring = ring)
+
+      nodes[1].stopNode(crash = true)
+      check client.waitNode(1, expected = false)
+      expect IOError:
+        tx.commit()
+      check client.waitMetric(0, "clusterTxPending", 1)
+      check client.waitMetric(0, "coordinatorReplicaReachable", 0)
+      check metricValue(client.metricsReq(0),
+                        "coordinatorReplicaLastError") > 0
+
+      nodes[1] = startNode(1, peers, dataRoot, 1, 0, 1)
+      check client.waitNode(1)
+      # Retry the same transaction identity. Duplicate intent delivery is
+      # accepted only when the complete request is identical.
+      tx.commit()
+      check client.waitMetric(0, "clusterTxPending", 0)
+      check client.waitMetric(1, "clusterTxPending", 0)
+      check client.waitMetric(0, "coordinatorReplicaReachable", 1)
+      check metricValue(client.metricsReq(0),
+                        "coordinatorReplicaLastOk") > 0
+
+      db.close()
+      db = connect(peers)
+      db.configureRing(ring, 315_360_000.0)
+      check db.get(id).contains("exactly-once-after-retry")
+      check db.readRing(ring).count == 1
+    finally:
+      if not db.isNil:
+        db.close()
+      client.close()
+      for i in 0 ..< nodes.len:
+        nodes[i].stopNode()
+      if dirExists(dataRoot):
+        removeDir(dataRoot)
+
   test "standby completion acknowledgement converges after an outage":
     let basePort = parseInt(getEnv("KOUTEN_COORDINATOR_BASE_PORT", "17631")) + 10
     let peers = "127.0.0.1:" & $basePort & ",127.0.0.1:" & $(basePort + 1) &
@@ -198,12 +277,22 @@ suite "cluster coordinator failover":
       check metricValue(client.metricsReq(0),
                         "coordinatorMirrorSucceeded") >= 1
 
+      # Restart the standby from its own WAL before promotion. The mirrored
+      # intent and pending state must survive process replacement.
+      nodes[1].stopNode(crash = true)
+      check client.waitNode(1, expected = false)
+      nodes[1] = startNode(1, peers, dataRoot, 1, 0, 1)
+      check client.waitNode(1)
+      check client.waitMetric(1, "clusterTxPending", 1)
+
       nodes[0].stopNode(crash = true)
       check client.waitNode(0, expected = false)
       check client.drainReq(1).contains("draining")
       check client.coordinatorPromoteReq(1, 2, 1, 2).contains("staged")
       expect IOError:
         discard client.coordinatorResumeReq(1, 2)
+      expect IOError:
+        discard client.txBeginReq(1)
 
       nodes[2] = startNode(2, peers, dataRoot, 1, 0, 1)
       check client.waitNode(2)
@@ -246,6 +335,7 @@ suite "cluster coordinator failover":
       # rejects the stale mirror, so it cannot acknowledge a split-brain commit.
       nodes[0] = startNode(0, peers, dataRoot, 1, 0, 1)
       check client.waitNode(0)
+      check db.readRing(selectedRing).count == 1
       let staleTxid = client.txBeginReq(0)
       check (staleTxid shr 32) == 1'u64
       expect IOError:

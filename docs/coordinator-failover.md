@@ -89,13 +89,20 @@ The key/value, Prometheus, and OpenMetrics surfaces include:
 | `coordinatorEpoch` | Active coordinator fencing generation. |
 | `coordinatorNode` | Primary coordinator node index. |
 | `coordinatorReplica` | Durable standby node index, or `-1`. |
+| `coordinatorRole` | Local role: `0` follower, `1` primary, `2` standby. |
+| `coordinatorReplicaReachable` | Standby state observed locally: `-1` not configured/not observed by this node, `0` unknown/unreachable/mismatched, `1` reachable with matching coordinator metadata. The primary is the active observer. |
+| `coordinatorReplicaLastCheck` | Unix time of the last standby observation. |
+| `coordinatorReplicaLastOk` | Unix time of the last successful standby observation. |
+| `coordinatorReplicaLastError` | Unix time of the last failed or mismatched standby observation. |
 | `coordinatorMirrorSucceeded` | Intent mirrors accepted by the standby. |
 | `coordinatorMirrorFailed` | Intent mirror or mirrored apply-ack failures. |
 | `clusterTxPending` | Committed intents not yet fully applied. |
 
-Alert on any sustained increase in `coordinatorMirrorFailed` or
-`clusterTxPending`. A commit whose standby mirror fails is not acknowledged as
-successful.
+Alert when `coordinatorReplicaReachable` remains `0`, or on any sustained
+increase in `coordinatorMirrorFailed` or `clusterTxPending`. Replica health is
+sampled outside ordinary ring-local request paths and therefore does not add a
+round trip to normal reads or writes. A commit whose standby mirror fails is
+not acknowledged as successful.
 
 ## Recovery Properties
 
@@ -113,5 +120,7 @@ successful.
 - A stale primary may restart, but current-epoch nodes reject its fenced mirror
   and apply requests.
 
-The executable failure matrix is
+The executable failure matrix covers mirror loss, coordinator loss, owner
+loss, quorum rejection, standby WAL restart, duplicate delivery, transaction-ID
+collision, stale-primary fencing, and exact final cardinality:
 [`scripts/coordinator_failover_smoke.sh`](../scripts/coordinator_failover_smoke.sh).
