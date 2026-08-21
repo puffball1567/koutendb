@@ -5,11 +5,11 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
-Current release evidence: [v0.12.1 release notes](./github-release-v0.12.1.md)
+Current release evidence: [v0.13.0 release notes](./github-release-v0.13.0.md)
 
 Current persistence-cycle record: [v0.12 implementation and validation](./v0.12-roadmap.md)
 
-Current development record: [v0.13 coordinator redundancy](./v0.13-roadmap.md)
+Current coordinator-redundancy record: [v0.13 coordinator redundancy](./v0.13-roadmap.md)
 
 Historical planning reference: [v0.10 roadmap](./v0.10-roadmap.md)
 

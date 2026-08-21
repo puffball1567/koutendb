@@ -23,6 +23,8 @@ downstream AI/RAG or application logic.
 - [Technical FAQ](technical-faq.md)
 - [Feature Status / Roadmap](koutendb-status.md)
 - [v0.12 Implementation And Validation Record](v0.12-roadmap.md)
+- [v0.13 Coordinator Redundancy Record](v0.13-roadmap.md)
+- [Coordinator Failover](coordinator-failover.md)
 - [Operational Trials](operational-trials.md)
 - [72-Hour Strong-Durability Soak Result](soak-testing.md)
 - [Accelerated Churn Testing](accelerated-churn-testing.md)
@@ -62,6 +64,7 @@ downstream AI/RAG or application logic.
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.13.0 Release Notes](github-release-v0.13.0.md)
 - [v0.12.1 Release Notes](github-release-v0.12.1.md)
 - [v0.12.0 Release Notes](github-release-v0.12.0.md)
 - [v0.11.0 Release Notes](github-release-v0.11.0.md)
