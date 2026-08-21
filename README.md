@@ -87,6 +87,9 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 
 - Documentation site entry point: [docs/index.md](docs/index.md)
 - Installation: [docs/installation.md](docs/installation.md)
+- Hands-on evaluation: [docs/hands-on-evaluation.md](docs/hands-on-evaluation.md)
+- Service operation trial: [docs/service-trial.md](docs/service-trial.md)
+- v1.0 stabilization plan: [docs/v1-stabilization.md](docs/v1-stabilization.md)
 - Public API reference: [docs/public-api.md](docs/public-api.md)
 - Configuration reference: [docs/config-reference.md](docs/config-reference.md)
 - CLI reference: [docs/cli-reference.md](docs/cli-reference.md)
@@ -715,6 +718,9 @@ It is designed for teams that can express a meaningful locality boundary and
 want to evaluate a smaller-working-set retrieval architecture. Multi-machine
 and multi-region endurance testing and broader external production reports
 remain active validation tracks. See
+[Hands-on Evaluation](docs/hands-on-evaluation.md),
+[Service Trial](docs/service-trial.md),
+[v1.0 Stabilization](docs/v1-stabilization.md),
 [Operational Trials](docs/operational-trials.md),
 [Soak Testing](docs/soak-testing.md), and
 [Feature Status](docs/koutendb-status.md) for the current evidence and roadmap.

@@ -14,6 +14,9 @@ downstream AI/RAG or application logic.
 
 - [Concept](koutendb-concept.md)
 - [Installation](installation.md)
+- [Hands-on Evaluation](hands-on-evaluation.md)
+- [Service Trial](service-trial.md)
+- [v1.0 Stabilization Plan](v1-stabilization.md)
 - [Public API](public-api.md)
 - [Configuration Reference](config-reference.md)
 - [CLI Reference](cli-reference.md)
