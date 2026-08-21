@@ -7,6 +7,11 @@ Release checklist: [release-checklist.md](./release-checklist.md)
 
 Current release evidence: [v0.13.0 release notes](./github-release-v0.13.0.md)
 
+Current v1.0 preparation: [v1.0 stabilization plan](./v1-stabilization.md)
+
+Human evaluation path: [hands-on evaluation](./hands-on-evaluation.md) and
+[service trial](./service-trial.md)
+
 Current persistence-cycle record: [v0.12 implementation and validation](./v0.12-roadmap.md)
 
 Current coordinator-redundancy record: [v0.13 coordinator redundancy](./v0.13-roadmap.md)
