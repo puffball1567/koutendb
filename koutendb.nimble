@@ -1,6 +1,6 @@
 # Package
 
-version     = "0.12.1"
+version     = "0.13.0"
 author      = "puffball1567"
 description = "KoutenDB: ring-oriented NoSQL document/vector store for smaller working sets"
 license     = "Apache-2.0"

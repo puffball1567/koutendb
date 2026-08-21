@@ -68,7 +68,7 @@ product decision.
 | Universe sync | Applied event dedup state is grow-only. | Done | Target-side applied event keys now keep insertion order and support bounded retention. Prunes are persisted through `UX` WAL records, so restart/compact preserve the idempotency window. Covered by store replay tests. |
 | Universe sync | Retry accounting is mostly inert. | Done | Source outbox events now persist `attempts`, `maxAttempts`, `retryAt`, `deadLetter`, and `error`. Failed delivery attempts back off and eventually dead-letter without being acked/pruned. `tests/tapi.nim` covers dispatch gating, persistence, and dead-letter behavior. |
 | Universe sync | Outbox ID can reset after full prune. | Done | Store now persists `UQ <nextEventId>` independently of live outbox rows. Tests cover prune + reopen + compact without event-id reuse. |
-| Cluster | Static peers and unfenced topology remain. | Planned | Dynamic membership / epoch migration is foundation-only today; coordinator redundancy remains planned. |
+| Cluster | Static peers and operator-driven topology remain. | Partial | Placement and coordinator epochs are fenced; coordinator intent has a durable standby and explicit majority-gated promotion. Dynamic discovery and automated promotion remain planned. |
 
 ## Evidence Gaps
 

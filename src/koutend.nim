@@ -60,6 +60,7 @@ const
   MaxRetrieveScan =
     when defined(koutenTestSmallLimits): 3
     else: 1_000_000
+  MaxClusterTxOps = 10_000
 
 type
   AutoPackConfig = object
@@ -157,6 +158,15 @@ type
     peers: seq[Peer]
     tbl: ArcTable
     virtualArcsPerNode: int
+    coordinatorEpoch: uint32
+    coordinatorNode: int
+    coordinatorReplica: int
+    coordinatorMirrorSucceeded: uint64
+    coordinatorMirrorFailed: uint64
+    coordinatorReplicaReachable: int
+    coordinatorReplicaLastCheck: float
+    coordinatorReplicaLastOk: float
+    coordinatorReplicaLastError: float
     st: Store
     dataDir: string
     fs: FieldState
@@ -594,6 +604,8 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
                       durability: var StoreDurability,
                       placementEpoch: var uint32,
                       virtualArcsPerNode: var int,
+                      coordinatorEpoch: var uint32,
+                      coordinatorNode, coordinatorReplica: var int,
                       startDrained: var bool) =
   let cfg = parseFile(path)
   if cfg.kind != JObject:
@@ -674,6 +686,18 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
   virtualArcsPerNode =
     jsonIntOpt(cfg, "virtualArcsPerNode",
       jsonIntOpt(cfg, "virtual-arcs-per-node", virtualArcsPerNode))
+  let configuredCoordinatorEpoch =
+    jsonIntOpt(cfg, "coordinatorEpoch",
+      jsonIntOpt(cfg, "coordinator-epoch", int(coordinatorEpoch)))
+  if configuredCoordinatorEpoch <= 0 or
+      uint64(configuredCoordinatorEpoch) > uint32.high.uint64:
+    raise newException(ValueError,
+      "coordinatorEpoch must be a positive uint32")
+  coordinatorEpoch = uint32(configuredCoordinatorEpoch)
+  coordinatorNode = jsonIntOpt(cfg, "coordinatorNode",
+    jsonIntOpt(cfg, "coordinator-node", coordinatorNode))
+  coordinatorReplica = jsonIntOpt(cfg, "coordinatorReplica",
+    jsonIntOpt(cfg, "coordinator-replica", coordinatorReplica))
   startDrained = jsonBoolOpt(cfg, "startDrained",
                              jsonBoolOpt(cfg, "start-drained", startDrained))
   if cfg.hasKey("authToken"):
@@ -1217,9 +1241,55 @@ proc rebuildFieldState(sv: Server) =
     if p.parent != HaloKey and p.vec.len > 0:
       sv.fs.observeRingPut(p.parent, p.vec)
 
+proc coordinatorRole(sv: Server): int =
+  ## Stable metric values: 0=follower, 1=primary, 2=standby.
+  if sv.myId == sv.coordinatorNode:
+    1
+  elif sv.myId == sv.coordinatorReplica:
+    2
+  else:
+    0
+
+proc observeCoordinatorReplica(sv: Server, reachable: bool) =
+  let now = epochTime()
+  sv.coordinatorReplicaLastCheck = now
+  sv.coordinatorReplicaReachable = if reachable: 1 else: 0
+  if reachable:
+    sv.coordinatorReplicaLastOk = now
+  else:
+    sv.coordinatorReplicaLastError = now
+
+proc coordinatorReplicaHealthTick(sv: Server) =
+  ## Probe at most once per second. This remains outside ordinary ring-local
+  ## request paths. Only the primary probes: synchronous cross-probes from
+  ## every single-threaded node could form a request cycle during promotion.
+  if sv.coordinatorReplica < 0:
+    sv.coordinatorReplicaReachable = -1
+    return
+  if sv.myId == sv.coordinatorReplica:
+    if sv.coordinatorReplicaLastCheck == 0:
+      sv.observeCoordinatorReplica(true)
+    return
+  if sv.myId != sv.coordinatorNode:
+    sv.coordinatorReplicaReachable = -1
+    return
+  let now = epochTime()
+  if sv.coordinatorReplicaLastCheck > 0 and
+      now - sv.coordinatorReplicaLastCheck < 1.0:
+    return
+  try:
+    let remote = sv.peerLink.coordinatorReq(sv.coordinatorReplica)
+    sv.observeCoordinatorReplica(
+      remote.epoch == sv.coordinatorEpoch and
+      remote.node == sv.coordinatorNode and
+      remote.replica == sv.coordinatorReplica)
+  except CatchableError:
+    sv.observeCoordinatorReplica(false)
+
 proc slowTick(sv: Server) =
   sv.fs.clusterTick(sv.st)
   discard sv.fs.captureTick(sv.st, epochTime())
+  sv.coordinatorReplicaHealthTick()
 
 proc autoPackTick(sv: Server) =
   if not sv.autoPack.enabled or not sv.autoPack.window.isOpenNow():
@@ -1345,13 +1415,44 @@ proc applyClusterTxOp(sv: Server, op: ClusterTxOp,
   if result and p.parent != HaloKey:
     sv.fs.observeRingPut(p.parent, p.vec)
 
+proc txWireOp(op: ClusterTxOp): TxWireOp =
+  TxWireOp(delete: op.kind == ctxDelete,
+           parent: op.parent, seq: op.seq, period: op.period,
+           head: op.head, tWrite: op.tWrite, payload: op.payload,
+           codec: op.codec, vec: op.vec, version: op.version)
+
+proc mirrorClusterTxIntent(sv: Server, intent: ClusterTxIntent): bool =
+  if sv.coordinatorReplica < 0:
+    sv.st.markClusterTxReplicated(intent.id, sv.coordinatorEpoch, -1)
+    return true
+  var ops: seq[TxWireOp] = @[]
+  for op in intent.ops:
+    ops.add op.txWireOp
+  try:
+    sv.peerLink.txMirrorReq(sv.coordinatorReplica, sv.coordinatorEpoch,
+                            sv.coordinatorNode, intent.id, ops)
+    sv.st.markClusterTxReplicated(intent.id, sv.coordinatorEpoch,
+                                  sv.coordinatorReplica)
+    inc sv.coordinatorMirrorSucceeded
+    sv.observeCoordinatorReplica(true)
+    true
+  except CatchableError:
+    inc sv.coordinatorMirrorFailed
+    sv.observeCoordinatorReplica(false)
+    false
+
 proc applyClusterTxTick(sv: Server) =
-  ## node0 が landing zone。commit intent は全 op の apply ACK まで残す。
-  if sv.myId != 0:
+  ## Only the fenced coordinator applies intents. A standby stores the same
+  ## intent and remains passive until an explicit epoch promotion.
+  if sv.myId != sv.coordinatorNode:
     return
   var done: seq[uint64] = @[]
   for txid, intent in sv.st.clusterTx:
     if intent.applied or not intent.committed:
+      continue
+    if not intent.clusterTxReplicationCurrent(sv.coordinatorEpoch,
+                                               sv.coordinatorReplica) and
+        not sv.mirrorClusterTxIntent(intent):
       continue
     var allApplied = true
     for op in intent.ops:
@@ -1363,18 +1464,27 @@ proc applyClusterTxTick(sv: Server) =
             continue
           discard sv.applyClusterTxOp(op, epochTime())
         else:
-          sv.peerLink.applyTxReq(node, txid,
-            TxWireOp(delete: op.kind == ctxDelete,
-                     parent: op.parent, seq: op.seq, period: op.period,
-                     head: op.head, tWrite: op.tWrite,
-                     payload: op.payload, codec: op.codec, vec: op.vec,
-                     version: op.version),
+          sv.peerLink.applyTxReq(node, txid, op.txWireOp,
+            coordinatorEpoch = sv.coordinatorEpoch,
+            coordinatorNode = sv.coordinatorNode,
+            fenced = sv.coordinatorReplica >= 0 or sv.coordinatorEpoch > 1,
             timeoutMs = 500)
       except CatchableError:
         allApplied = false
     if allApplied:
       done.add txid
   for txid in done:
+    if sv.coordinatorReplica >= 0:
+      try:
+        sv.peerLink.txMirrorAppliedReq(sv.coordinatorReplica,
+          sv.coordinatorEpoch, sv.coordinatorNode, txid)
+      except CatchableError:
+        inc sv.coordinatorMirrorFailed
+        # The standby may have restarted from an older checkpoint or the
+        # completion frame may have been lost. Re-seed the durable intent and
+        # leave the primary pending so the next tick retries completion.
+        discard sv.mirrorClusterTxIntent(sv.st.clusterTxIntent(txid))
+        continue
     sv.st.markClusterTxApplied(txid)
 
 proc migrationPendingCount(sv: Server): int =
@@ -1420,6 +1530,83 @@ proc clusterActivationReady(sv: Server): tuple[ok: bool, reason: string] =
     except CatchableError:
       return (false, "node-" & $node & "-unreachable")
   (true, "")
+
+proc coordinatorActivationReady(sv: Server): tuple[ok: bool, reason: string] =
+  var matching = 1 # local metadata already passed configureCoordinator
+  var primaryMatching = sv.myId == sv.coordinatorNode
+  var replicaMatching = sv.coordinatorReplica < 0 or
+                        sv.myId == sv.coordinatorReplica
+  for node in 0 ..< sv.peers.len:
+    if node == sv.myId:
+      continue
+    try:
+      let remote = sv.peerLink.coordinatorReq(node)
+      if remote.epoch > sv.coordinatorEpoch:
+        return (false, "node-" & $node & "-has-newer-epoch=" & $remote.epoch)
+      if remote.epoch == sv.coordinatorEpoch:
+        if remote.node != sv.coordinatorNode or
+            remote.replica != sv.coordinatorReplica:
+          return (false, "node-" & $node & "-coordinator-conflict")
+        inc matching
+        if node == sv.coordinatorNode:
+          primaryMatching = true
+        if node == sv.coordinatorReplica:
+          replicaMatching = true
+    except CatchableError:
+      discard
+  let required = sv.peers.len div 2 + 1
+  if matching < required:
+    return (false, "coordinator-quorum=" & $matching & "/" & $required)
+  if not primaryMatching:
+    return (false, "coordinator-primary-not-ready")
+  if not replicaMatching:
+    return (false, "coordinator-replica-not-ready")
+  (true, "")
+
+proc parseCoordinatorEpoch(value: string): uint32 =
+  let parsed = parseUInt(value)
+  if parsed == 0 or parsed > uint32.high.uint64:
+    raise newException(ValueError, "coordinator epoch is out of range")
+  parsed.uint32
+
+proc coordinatorTxIdMatches(txid: uint64, epoch: uint32): bool =
+  ## Coordinator-generated transaction IDs encode the fencing epoch in their
+  ## high word. Sequence zero is reserved so malformed IDs fail closed.
+  uint32(txid shr 32) == epoch and uint32(txid and 0xffffffff'u64) != 0
+
+proc readClusterTxOps(sv: Server, sock: Socket,
+                      nOps: int): tuple[ok: bool, ops: seq[ClusterTxOp]] =
+  if nOps < 0 or nOps > MaxClusterTxOps:
+    raise newException(ValueError, "cluster transaction operation count is invalid")
+  result.ok = true
+  for opIndex in 0 ..< nOps:
+    let h = sock.readHeader()
+    let isDelete = h[0] == "D"
+    let data = if h[0] == "P" or h[0] == "D": 1 else: 0
+    requireParts(h, "cluster transaction op", data + 7)
+    var op = ClusterTxOp(kind: if isDelete: ctxDelete else: ctxPut,
+                         parent: parseBiggestUInt(h[data]).uint64,
+                         seq: parseUInt(h[data + 1]).uint32,
+                         period: parseFloat(h[data + 2]),
+                         head: parseFloat(h[data + 3]),
+                         tWrite: parseFloat(h[data + 4]))
+    let payloadLen = parseInt(h[data + 5])
+    let vecDim = parseInt(h[data + 6])
+    op.codec = if h.len > data + 7: parsePayloadCodec(h[data + 7]) else: pcRaw
+    if h.len >= data + 11:
+      op.version = parseMutationVersion(h, data + 8, op.tWrite)
+    let bodyBytes = checkedFrameBytes(payloadLen, vecDim, extra = 1)
+    if not sv.ringKeyAllowed(sock, op.parent):
+      sock.drainBytes(bodyBytes)
+      sock.drainTxCommitOps(nOps - opIndex - 1)
+      sv.denyRingKey(sock, op.parent)
+      return (false, @[])
+    op.payload = sock.readExact(payloadLen)
+    op.vec =
+      if vecDim == 0: @[]
+      else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
+    discard sock.readExact(1)
+    result.ops.add op
 
 proc handleFrame(sv: Server, sock: Socket): bool =
   ## 1フレーム処理。false = 接続を閉じる。
@@ -1486,21 +1673,34 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       sock.sendFrame("ERR wrong-galaxy expected=" & sv.galaxy)
     else:
       sock.sendFrame("OK galaxy=" & sv.galaxy)
+  of "COORDINATOR":
+    sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
+                   $sv.coordinatorNode & " " & $sv.coordinatorReplica)
   of "TXBEGIN":
     if not sv.requireRole(sock, roleWriter):
       return true
     if sv.rejectIfDraining(sock, "TXBEGIN"):
       return true
-    doAssert sv.myId == 0, "TXBEGIN は node0 の landing zone で処理する"
-    let txid = sv.st.reserveTxId()
+    if sv.myId != sv.coordinatorNode:
+      sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
+                     $sv.coordinatorNode & " " & $sv.coordinatorReplica)
+      return true
+    let txid = sv.st.reserveCoordinatorTxId(sv.coordinatorEpoch)
     sock.sendFrame("OK " & $txid)
   of "TXRESERVE":
     if not sv.requireRole(sock, roleWriter):
       return true
     if sv.rejectIfDraining(sock, "TXRESERVE"):
       return true
-    doAssert sv.myId == 0, "TXRESERVE は node0 の landing zone で処理する"
+    if sv.myId != sv.coordinatorNode:
+      sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
+                     $sv.coordinatorNode & " " & $sv.coordinatorReplica)
+      return true
     requireParts(parts, "TXRESERVE", 5)
+    let txid = parseBiggestUInt(parts[1]).uint64
+    if not coordinatorTxIdMatches(txid, sv.coordinatorEpoch):
+      sock.sendFrame("ERR coordinator-fence")
+      return true
     let ringKey = parseBiggestUInt(parts[2]).uint64
     if not sv.requireRingKey(sock, ringKey):
       return true
@@ -1513,49 +1713,77 @@ proc handleFrame(sv: Server, sock: Socket): bool =
   of "TXCOMMIT":
     if not sv.requireRole(sock, roleWriter):
       return false
-    doAssert sv.myId == 0, "TXCOMMIT は node0 の landing zone で処理する"
     requireParts(parts, "TXCOMMIT", 3)
     let txid = parseBiggestUInt(parts[1]).uint64
     let nOps = parseInt(parts[2])
+    if sv.myId != sv.coordinatorNode:
+      sock.drainTxCommitOps(nOps)
+      sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
+                     $sv.coordinatorNode & " " & $sv.coordinatorReplica)
+      return true
     if sv.draining:
       sock.drainTxCommitOps(nOps)
       sv.rejectDrainedWrite(sock, "TXCOMMIT")
       return true
-    var ops: seq[ClusterTxOp] = @[]
-    for _ in 0 ..< nOps:
-      let h = sock.readHeader()
-      let isDelete = h[0] == "D"
-      let data = if h[0] == "P" or h[0] == "D": 1 else: 0
-      requireParts(h, "TXCOMMIT op", data + 7)
-      var op = ClusterTxOp(kind: if isDelete: ctxDelete else: ctxPut,
-                           parent: parseBiggestUInt(h[data]).uint64,
-                           seq: parseUInt(h[data + 1]).uint32,
-                           period: parseFloat(h[data + 2]),
-                           head: parseFloat(h[data + 3]),
-                           tWrite: parseFloat(h[data + 4]))
-      let payloadLen = parseInt(h[data + 5])
-      let vecDim = parseInt(h[data + 6])
-      op.codec = if h.len > data + 7: parsePayloadCodec(h[data + 7]) else: pcRaw
-      if h.len >= data + 11:
-        op.version = parseMutationVersion(h, data + 8, op.tWrite)
-      let bodyBytes = checkedFrameBytes(payloadLen, vecDim, extra = 1)
-      if not sv.ringKeyAllowed(sock, op.parent):
-        sock.drainBytes(bodyBytes)
-        sock.drainTxCommitOps(nOps - ops.len - 1)
-        sv.denyRingKey(sock, op.parent)
-        return true
-      op.payload = sock.readExact(payloadLen)
-      op.vec =
-        if vecDim == 0: @[]
-        else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
-      discard sock.readExact(1) # op 区切りの '\n'
-      ops.add op
-    sv.st.putClusterTxIntent ClusterTxIntent(id: txid, ops: ops, committed: true)
+    if not coordinatorTxIdMatches(txid, sv.coordinatorEpoch):
+      sock.drainTxCommitOps(nOps)
+      sock.sendFrame("ERR coordinator-fence")
+      return true
+    let parsed = sv.readClusterTxOps(sock, nOps)
+    if not parsed.ok:
+      return true
+    sv.st.putClusterTxIntent ClusterTxIntent(
+      id: txid, ops: parsed.ops, committed: true)
+    let effective = sv.st.clusterTxIntent(txid)
+    if not effective.clusterTxReplicationCurrent(sv.coordinatorEpoch,
+                                                  sv.coordinatorReplica) and
+        not sv.mirrorClusterTxIntent(effective):
+      raise newException(IOError,
+        "cluster transaction standby did not durably accept the intent")
     sock.sendFrame("OK")
+  of "TXMIRROR":
+    if not sv.requireRole(sock, roleWriter):
+      return false
+    requireParts(parts, "TXMIRROR", 5)
+    let epoch = parseCoordinatorEpoch(parts[1])
+    let primary = parseInt(parts[2])
+    let txid = parseBiggestUInt(parts[3]).uint64
+    let nOps = parseInt(parts[4])
+    if sv.myId != sv.coordinatorReplica or epoch != sv.coordinatorEpoch or
+        primary != sv.coordinatorNode:
+      sock.drainTxCommitOps(nOps)
+      sock.sendFrame("ERR coordinator-fence")
+      return true
+    let parsed = sv.readClusterTxOps(sock, nOps)
+    if not parsed.ok:
+      return true
+    sv.st.putClusterTxIntent ClusterTxIntent(
+      id: txid, ops: parsed.ops, committed: true)
+    sv.st.markClusterTxReplicated(txid, epoch, sv.myId)
+    sock.sendFrame("OK MIRRORED")
+  of "TXMIRRORAPPLIED":
+    if not sv.requireRole(sock, roleWriter):
+      return true
+    requireParts(parts, "TXMIRRORAPPLIED", 4)
+    let epoch = parseCoordinatorEpoch(parts[1])
+    let primary = parseInt(parts[2])
+    let txid = parseBiggestUInt(parts[3]).uint64
+    if sv.myId != sv.coordinatorReplica or epoch != sv.coordinatorEpoch or
+        primary != sv.coordinatorNode:
+      sock.sendFrame("ERR coordinator-fence")
+      return true
+    if not sv.st.hasClusterTxIntent(txid):
+      sock.sendFrame("ERR unknown-transaction")
+      return true
+    sv.st.markClusterTxApplied(txid)
+    sock.sendFrame("OK APPLIED")
   of "TXSTATUS":
     if not sv.requireRole(sock, roleWriter):
       return true
-    doAssert sv.myId == 0, "TXSTATUS は node0 の landing zone で処理する"
+    if sv.myId != sv.coordinatorNode and sv.myId != sv.coordinatorReplica:
+      sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
+                     $sv.coordinatorNode & " " & $sv.coordinatorReplica)
+      return true
     requireParts(parts, "TXSTATUS", 2)
     let txid = parseBiggestUInt(parts[1]).uint64
     if sv.st.isClusterTxApplied(txid):
@@ -1834,20 +2062,33 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     else:
       sv.codecMetadata[sock.getFd.int] = true
       sock.sendFrame("OK codec-metadata")
-  of "APPLYTX":
+  of "APPLYTX", "APPLYTXF":
     if not sv.requireRole(sock, roleWriter):
       return false
-    requireParts(parts, "APPLYTX", 9)
+    let fenced = parts[0] == "APPLYTXF"
+    requireParts(parts, parts[0], if fenced: 11 else: 9)
     let txid = parseBiggestUInt(parts[1]).uint64
-    let isDelete = parts[2] == "D"
-    let data = if parts[2] == "P" or parts[2] == "D": 3 else: 2
-    requireParts(parts, "APPLYTX", data + 7)
+    let coordinatorEpoch =
+      if fenced: parseCoordinatorEpoch(parts[2]) else: 1'u32
+    let coordinatorNode = if fenced: parseInt(parts[3]) else: 0
+    let kindIndex = if fenced: 4 else: 2
+    let isDelete = parts[kindIndex] == "D"
+    let data = if parts[kindIndex] == "P" or parts[kindIndex] == "D":
+                 kindIndex + 1
+               else:
+                 kindIndex
+    requireParts(parts, parts[0], data + 7)
     let parent = parseBiggestUInt(parts[data]).uint64
     let seq = parseUInt(parts[data + 1]).uint32
     let payloadLen = parseInt(parts[data + 5])
     let vecDim = parseInt(parts[data + 6])
     let codec = if parts.len > data + 7: parsePayloadCodec(parts[data + 7]) else: pcRaw
     let bodyBytes = checkedFrameBytes(payloadLen, vecDim)
+    if fenced and (coordinatorEpoch != sv.coordinatorEpoch or
+        coordinatorNode != sv.coordinatorNode):
+      sock.drainBytes(bodyBytes)
+      sock.sendFrame("ERR coordinator-fence")
+      return true
     if sv.draining:
       sock.drainBytes(bodyBytes)
       sv.rejectDrainedWrite(sock, "APPLYTX")
@@ -1875,7 +2116,10 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let applied = sv.applyClusterTxOp(op, now)
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "TXGETID", "TXQRYID":
-    doAssert sv.myId == 0, "TXGETID/TXQRYID は node0 の landing zone で処理する"
+    if sv.myId != sv.coordinatorNode and sv.myId != sv.coordinatorReplica:
+      sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
+                     $sv.coordinatorNode & " " & $sv.coordinatorReplica)
+      return true
     requireParts(parts, parts[0], if parts[0] == "TXQRYID": 8 else: 7)
     let parent = parseBiggestUInt(parts[1]).uint64
     let seq = parseUInt(parts[3]).uint32
@@ -2330,6 +2574,22 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                      $sv.migrationPendingCount() & " " &
                    "placementEpoch " & $sv.tbl.epoch & " " &
                    "placementVirtualArcs " & $sv.virtualArcsPerNode & " " &
+                   "coordinatorEpoch " & $sv.coordinatorEpoch & " " &
+                   "coordinatorNode " & $sv.coordinatorNode & " " &
+                   "coordinatorReplica " & $sv.coordinatorReplica & " " &
+                   "coordinatorRole " & $sv.coordinatorRole & " " &
+                   "coordinatorReplicaReachable " &
+                     $sv.coordinatorReplicaReachable & " " &
+                   "coordinatorReplicaLastCheck " &
+                     $(int(sv.coordinatorReplicaLastCheck)) & " " &
+                   "coordinatorReplicaLastOk " &
+                     $(int(sv.coordinatorReplicaLastOk)) & " " &
+                   "coordinatorReplicaLastError " &
+                     $(int(sv.coordinatorReplicaLastError)) & " " &
+                   "coordinatorMirrorSucceeded " &
+                     $sv.coordinatorMirrorSucceeded & " " &
+                   "coordinatorMirrorFailed " &
+                     $sv.coordinatorMirrorFailed & " " &
                    "handoffQueued " & $sv.handoffQueued & " " &
                    "handoffApplied " & $sv.handoffApplied & " " &
                    "handoffFailed " & $sv.handoffFailed & " " &
@@ -2394,6 +2654,59 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     sv.audit("drain", user = sv.currentUser(sock),
              message = "server entered drain mode")
     sock.sendFrame("OK draining")
+  of "COORDPROMOTE":
+    if not sv.requireRole(sock, roleAdmin):
+      return true
+    requireParts(parts, "COORDPROMOTE", 4)
+    if not sv.draining:
+      sock.sendFrame("ERR coordinator-promotion-requires-drain")
+      return true
+    let epoch = parseCoordinatorEpoch(parts[1])
+    let node = parseInt(parts[2])
+    let replica = parseInt(parts[3])
+    if node < 0 or node >= sv.peers.len or replica < -1 or
+        replica >= sv.peers.len:
+      sock.sendFrame("ERR invalid-coordinator-node")
+      return true
+    sv.st.configureCoordinator(epoch, uint16(node), replica)
+    sv.coordinatorEpoch = epoch
+    sv.coordinatorNode = node
+    sv.coordinatorReplica = replica
+    sv.coordinatorReplicaReachable =
+      if replica < 0 or sv.myId notin [node, replica]: -1
+      elif replica == sv.myId: 1
+      else: 0
+    sv.coordinatorReplicaLastCheck = 0
+    sv.coordinatorReplicaLastOk = 0
+    sv.coordinatorReplicaLastError = 0
+    sv.audit("coordinator-promote", user = sv.currentUser(sock),
+             message = "coordinator assignment updated",
+             extra = %*{"epoch": epoch, "node": node, "replica": replica})
+    sock.sendFrame("OK coordinator-staged")
+  of "COORDRESUME":
+    if not sv.requireRole(sock, roleAdmin):
+      return true
+    requireParts(parts, "COORDRESUME", 2)
+    let epoch = parseCoordinatorEpoch(parts[1])
+    if epoch != sv.coordinatorEpoch:
+      sock.sendFrame("ERR coordinator-epoch-mismatch")
+      return true
+    if not sv.draining:
+      sock.sendFrame("OK active")
+      return true
+    let ready = sv.coordinatorActivationReady()
+    if not ready.ok:
+      inc sv.errorResponses
+      sock.sendFrame("ERR coordinator-activation-not-ready " & ready.reason)
+      return true
+    sv.st.setMaintenanceDrained(false)
+    sv.draining = false
+    sv.drainStartedAt = 0.0
+    sv.audit("coordinator-resume", user = sv.currentUser(sock),
+             message = "server resumed under coordinator epoch",
+             extra = %*{"epoch": epoch, "node": sv.coordinatorNode,
+                        "replica": sv.coordinatorReplica})
+    sock.sendFrame("OK coordinator-active")
   of "RESUME":
     if not sv.requireRole(sock, roleAdmin):
       return true
@@ -2515,6 +2828,9 @@ proc main() =
   var durability = durBuffered
   var placementEpoch = DefaultPlacementEpoch
   var virtualArcsPerNode = DefaultVirtualArcsPerNode
+  var coordinatorEpoch = 1'u32
+  var coordinatorNode = 0
+  var coordinatorReplica = -1
   var startDrained = false
   for kind, key, val in getopt():
     if kind == cmdLongOption:
@@ -2529,7 +2845,8 @@ proc main() =
                      authSecretKey, authSecretKeyFile, tlsCertFile, tlsKeyFile,
                      tlsCaFile, tlsServerName, tlsInsecureSkipVerify, users,
                      galaxy, allowedRingPrefixes, durability, placementEpoch,
-                     virtualArcsPerNode, startDrained)
+                     virtualArcsPerNode, coordinatorEpoch, coordinatorNode,
+                     coordinatorReplica, startDrained)
 
   for kind, key, val in getopt():
     if kind == cmdLongOption:
@@ -2585,6 +2902,14 @@ proc main() =
         placementEpoch = uint32(parsed)
       of "virtual-arcs-per-node":
         virtualArcsPerNode = parseInt(val)
+      of "coordinator-epoch":
+        let parsed = parseInt(val)
+        if parsed <= 0 or uint64(parsed) > uint32.high.uint64:
+          raise newException(ValueError,
+            "--coordinator-epoch must be a positive uint32")
+        coordinatorEpoch = uint32(parsed)
+      of "coordinator-node": coordinatorNode = parseInt(val)
+      of "coordinator-replica": coordinatorReplica = parseInt(val)
       of "start-drained":
         startDrained = true
       of "auth-token":
@@ -2624,6 +2949,15 @@ proc main() =
   doAssert id >= 0 and id < peers.len, "--id と --peers を指定（id は peers 内の自分の位置）"
   if virtualArcsPerNode <= 0:
     raise newException(ValueError, "--virtual-arcs-per-node must be positive")
+  if coordinatorNode < 0 or coordinatorNode >= peers.len:
+    raise newException(ValueError,
+      "--coordinator-node must identify a configured peer")
+  if coordinatorReplica < -1 or coordinatorReplica >= peers.len:
+    raise newException(ValueError,
+      "--coordinator-replica must be -1 or identify a configured peer")
+  if coordinatorReplica == coordinatorNode:
+    raise newException(ValueError,
+      "--coordinator-replica must differ from --coordinator-node")
   if slowTickSec <= 0:
     raise newException(ValueError, "--slow-tick must be positive")
   if autoPack.intervalSec <= 0:
@@ -2642,6 +2976,14 @@ proc main() =
                   tbl: virtualArcTable(placementEpoch, uint16(peers.len),
                                        virtualArcsPerNode),
                   virtualArcsPerNode: virtualArcsPerNode,
+                  coordinatorEpoch: coordinatorEpoch,
+                  coordinatorNode: coordinatorNode,
+                  coordinatorReplica: coordinatorReplica,
+                  coordinatorReplicaReachable:
+                    (if coordinatorReplica < 0 or
+                        id notin [coordinatorNode, coordinatorReplica]: -1
+                     elif coordinatorReplica == id: 1
+                     else: 0),
                   st: openStore(dataDir, durability = durability,
                                 diskBacked = diskBacked,
                                 mutationOrigin = uint32(id + 1)),
@@ -2692,6 +3034,8 @@ proc main() =
   if startDrained or
       (sv.st.placementEpoch == 0 and placementEpoch > 1 and peers.len > 1):
     sv.st.setMaintenanceDrained(true)
+  sv.st.configureCoordinator(coordinatorEpoch, uint16(coordinatorNode),
+                             coordinatorReplica)
   sv.st.configurePlacement(placementEpoch, uint16(peers.len),
                            virtualArcsPerNode)
   sv.draining = sv.st.maintenanceDrained
@@ -2726,6 +3070,9 @@ proc main() =
        " placementEpoch=", sv.tbl.epoch,
        " placementNodes=", sv.tbl.nNodes,
        " virtualArcsPerNode=", sv.virtualArcsPerNode,
+       " coordinatorEpoch=", sv.coordinatorEpoch,
+       " coordinatorNode=", sv.coordinatorNode,
+       " coordinatorReplica=", sv.coordinatorReplica,
        " restored=", sv.st.count,
        " slowTick=", sv.slowTickSec, "s",
        " durability=", (if durability == durStrong: "strong" else: "buffered"),

@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+## v0.13.0 - 2026-08-21
+
+### Added
+
+- Added a configurable durable standby for the cluster transaction
+  coordinator. A committed multi-owner transaction is acknowledged only after
+  its complete intent reaches the configured primary and standby durability
+  boundaries.
+- Added persistent coordinator epochs, primary/standby assignments,
+  epoch-encoded transaction IDs, mirror markers, and completion markers that
+  survive WAL replay and compaction.
+- Added explicit majority-gated coordinator promotion through the Nim API and
+  `kouten coordinator-promote`, plus coordinator discovery and status commands.
+- Added coordinator role, assignment, replica-health, mirror success/failure,
+  and pending-intent metrics.
+- Added a three-node strong-durability failure matrix covering process
+  termination, SIGKILL, standby outages, primary loss, replay, promotion,
+  transaction identity collisions, and stale-primary return.
+
+### Changed
+
+- Cluster transaction clients now discover the highest non-conflicting
+  coordinator epoch from reachable peers instead of assuming node zero.
+- Promoted coordinators re-replicate pending intent to the newly assigned
+  standby before resuming owner application.
+- Coordinator changes require an explicit maintenance drain, a reachable
+  majority, and reachable assigned primary and standby. Ordinary ring-local
+  reads and writes do not gain a quorum round trip.
+
+### Fixed / Hardened
+
+- Fenced mirror and apply operations reject stale coordinator epochs and
+  conflicting assignments after failover.
+- Duplicate intent, mirror, completion, and retry operations are idempotent,
+  while transaction-ID reuse with changed content fails closed.
+- Orphan cluster-transaction WAL operation and commit records now fail closed
+  during replay instead of producing an incomplete intent.
+- A failed standby mirror or completion acknowledgement leaves the primary
+  intent pending and recoverable instead of reporting an unsafe success.
+
 ## v0.12.1 - 2026-08-15
 
 ### Changed
