@@ -97,7 +97,7 @@ under the documented conditions.
 | CLI usability | CRUD, shell, help, and user-facing auth error smoke checks pass | Done |
 | Package metadata | `koutendb.nimble` is valid and versioned for v0.2.0 | Done |
 | Nimble CLI entrypoint | `src/kouten.nim` builds the user-facing `kouten` command for Nimble installs | Done |
-| Production boundary | README/status/design avoid claiming enterprise production readiness before TLS, audit, coordinator redundancy, and mixed-version tests | Done |
+| Production boundary | README/status/design distinguish implemented TLS, audit foundation, and coordinator redundancy from remaining certificate lifecycle and mixed-version work | Done |
 | Planner boundary | Heuristic planner status and benchmark dependency are documented | Done |
 
 ## Explicitly Not Required For v0.1.0
@@ -106,7 +106,7 @@ These are important, but should not block the first technical preview:
 
 - certificate lifecycle automation for public-network deployments
 - dynamic cluster membership
-- cluster coordinator redundancy
+- automatic coordinator failover orchestration
 - multi-VM / multi-AZ benchmark
 - WASM browser build
 - FlowBrigade / FlowLogbook adapter

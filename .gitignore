@@ -32,6 +32,7 @@ tests/tstore
 tests/twire_driver
 tests/tcluster_tx
 tests/tcluster_failure
+tests/tcoordinator_failover
 tests/tcluster_authz
 tests/tcluster_rbac
 tests/tcluster_wire_fuzz

@@ -13,7 +13,8 @@ suite "operational metrics":
   test "Prometheus output is deterministic bounded and typed":
     let lines = @[
       "node 0 requests 12 connectionsRejected 1 items 3 segmentWalFallbacks 2 " &
-        "segmentWalFallbackPointRead 1 segmentWalFallbackRingScan 1",
+        "segmentWalFallbackPointRead 1 segmentWalFallbackRingScan 1 " &
+        "coordinatorRole 1 coordinatorReplicaReachable 1",
       "node 1 requests 7 items 4 segmentWalFallbacks 0 " &
         "segmentWalFallbackPointRead 0 segmentWalFallbackRingScan 0"
     ]
@@ -25,6 +26,10 @@ suite "operational metrics":
     check output.contains(
       "koutendb_connections_rejected_total{node=\"0\"} 1")
     check output.contains("koutendb_items{node=\"1\"} 4")
+    check output.contains("# TYPE koutendb_coordinator_role gauge")
+    check output.contains("koutendb_coordinator_role{node=\"0\"} 1")
+    check output.contains(
+      "koutendb_coordinator_replica_reachable{node=\"0\"} 1")
     check output.contains(
       "koutendb_segment_wal_fallback_reasons_total{node=\"0\"," &
       "reason=\"point-read-failed\"} 1")

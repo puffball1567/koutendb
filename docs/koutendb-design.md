@@ -500,7 +500,8 @@ Core gaps before stronger production positioning:
 - longer cluster soak tests;
 - TLS and stronger wire security;
 - richer RBAC / audit policy for enterprise environments;
-- coordinator redundancy for cluster transactions;
+- automated coordinator health policy around the implemented fenced
+  primary/standby transaction landing path;
 - observability and admin tooling;
 - larger corpus benchmarks;
 - multi-driver compatibility tests in CI;

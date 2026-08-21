@@ -9,6 +9,8 @@ Current release evidence: [v0.12.1 release notes](./github-release-v0.12.1.md)
 
 Current persistence-cycle record: [v0.12 implementation and validation](./v0.12-roadmap.md)
 
+Current development record: [v0.13 coordinator redundancy](./v0.13-roadmap.md)
+
 Historical planning reference: [v0.10 roadmap](./v0.10-roadmap.md)
 
 Translations:
@@ -49,11 +51,11 @@ Translations:
 | Operational verify | Foundation | `operationalVerify(dataDir)` and `kouten verify --data=DIR` open/replay a persistent store and report WAL, metadata, segment, and locality health. `--max-wal-bytes`, `--max-segment-files`, `--max-items`, and `--max-rings` add operator-defined capacity thresholds. `kouten verify --backup=DIR` verifies backup readability. `kouten doctor --data=DIR` / `--backup=DIR` use the same operational paths |
 | Transaction | Done | Embedded atomic transaction plus all-or-nothing `batchPutAtomic`, `batchUpdateAtomic`, and `batchDeleteAtomic` helpers |
 | Cooperative coordinate locks | Done | Embedded opt-in `ring` and `stellar` locks for high-integrity workflows; normal NoSQL read/write paths do not check locks |
-| Cluster transaction landing | PoC | node0 landing. `scripts/cluster_tx_smoke.sh` covers apply smoke; `scripts/cluster_failure_smoke.sh` covers owner crash/restart retry; redundancy is not implemented yet |
+| Cluster transaction landing | Foundation | A configured primary synchronously mirrors durable intent to a standby before acknowledgement. Epoch-fenced explicit promotion recovers pending intents without adding consensus to ordinary ring-local writes. `scripts/coordinator_failover_smoke.sh` covers owner failure, primary crash, quorum refusal, promotion, convergence, and stale-primary rejection. |
 | Cluster CRUD/list/count | PoC | `update`, `deleteById`, JSON `patch`, `listByRing`, `countByRing` use landing intents or node fan-out; `scripts/cluster_tx_smoke.sh` covers smoke |
 | Compact | Done | Rebuilds WAL from live records |
 | Backup / restore | Done | Backup as compacted WAL and restore into another data dir |
-| Drain / snapshot barrier | Foundation | `DRAIN`, `SNAPSHOT`, and `RESUME` provide an admin-only maintenance boundary for cluster nodes. Drain is persisted across restart, rejects new writes while preserving read access and wire framing, and is required by explicit scale-in. Snapshot flushes and reports item/ring/pending-tx/WAL state. Coordinator redundancy and managed backup orchestration are still planned |
+| Drain / snapshot barrier | Foundation | `DRAIN`, `SNAPSHOT`, and `RESUME` provide an admin-only maintenance boundary for cluster nodes. Drain is persisted across restart, rejects new writes while preserving read access and wire framing, and is required by explicit scale-in and coordinator promotion. Snapshot flushes and reports item/ring/pending-tx/WAL state. Managed backup orchestration remains planned. |
 | Dump / import-jsonl | Done | NoSQL JSONL import rules. This is the stable human-readable migration boundary while the pre-v1.0 internal WAL format can still evolve |
 | Universe sync outbox | PoC | WAL-backed eventual sync event queue with idempotent apply, ack/prune, transaction-backed `putSynced`, prune-safe monotonic source ids, latest-only pending coalescing, delayed timestamp apply windows, retryAt / maxAttempts / dead-letter state, `kouten universe-export` / `universe-apply` JSONL handoff, one-shot `kouten universe-sync` between local data dirs, remote `--peers` delivery via `UAPPLY`, and `universe-status` operational counters. It is a durable scheduler boundary, not immediate global consistency |
 | Crash and storage-failure tests | Foundation | Torn WAL tail repair, checksum/mid-file corruption refusal, compact interruption, partial commit cases, nine real `SIGKILL` publication boundaries, injected disk-full/short writes, permission loss, missing generations, damaged manifests, and index-only corruption. Power-loss/device-controller fault coverage remains external validation work |
@@ -80,8 +82,8 @@ Translations:
 | Embedded write guardrails | Foundation | Opt-in `KoutenGuardrails` can cap payload bytes, vector dimension, ring count, and records per ring for production trials; default zero values preserve existing behavior |
 | Bounded server retrieve | Done | `koutend` keeps only the current top candidates up to request budget. Ring-scoped retrieval routes to the calculated owner and walks the ring index; only global retrieval scans every node |
 | Dynamic membership / epoch migration | Foundation | Scale-out supports a write-quiesced, one-node-at-a-time restart into a higher persisted placement epoch. Persistent drain, topology-fenced admin migration, cluster-wide activation preflight, bounded handoff, and source retention prevent mixed-epoch write acknowledgement. Explicit stop-the-world scale-in adds durable checkpoints, version/tombstone and metadata preservation, and independent verification. Live-write topology changes, in-place/live scale-in, and discovery orchestration remain unsupported and fail closed |
-| Cluster transaction coordinator redundancy | Planned | Remove node0 as a single point of failure |
-| Read-your-writes for cluster tx | PoC | `get/query/batchGet` fallback to node0 landing intent before owner apply; cluster smoke covers update/delete |
+| Cluster transaction coordinator redundancy | Foundation | Configurable primary/standby, durable intent mirroring, epoch-fenced apply, majority-gated explicit promotion, client discovery, metrics, and a crash/recovery matrix. Automatic failover and dynamic service discovery are intentionally not included. |
+| Read-your-writes for cluster tx | Foundation | `get/query/batchGet` discover the active coordinator and fall back to its landing intent before owner apply; cluster smoke covers update/delete and coordinator promotion. |
 | Fault-tolerance improvements | Planned | Post-v0.1 work; universe sync outbox is now the first durable eventual-convergence primitive |
 | Multi-VM / multi-AZ benchmark | Planned | Real-world latency and failure behavior |
 
@@ -119,8 +121,8 @@ Translations:
 | C ABI bench | Done | `examples/cbench.c` |
 | Docker case study | Partial | memory pressure / PHP / Swift smoke plus `examples/compose/operational-trial.compose.yml` for server JSON config loading, authenticated persistent startup, live health, offline verify, backup verification, and audit JSONL inspection |
 | Unique data model demo | Done | `examples/stellar_data_model_demo.sh` demonstrates separate rings, stellar attach/detach, narrowed reads, and non-copy visibility changes |
-| Cluster transaction smoke | Partial | `scripts/cluster_tx_smoke.sh` starts 3 local nodes and verifies apply / retrieve |
-| Cluster failure retry smoke | Partial | `scripts/cluster_failure_smoke.sh` kills the owner node, verifies the intent remains pending, restarts the owner, and verifies retry apply |
+| Cluster transaction smoke | Foundation | `scripts/cluster_tx_smoke.sh` verifies normal apply/retrieve; `scripts/coordinator_failover_smoke.sh` verifies durable standby failover and fencing. |
+| Cluster failure retry smoke | Foundation | `scripts/cluster_failure_smoke.sh` covers owner restart; the coordinator matrix additionally covers primary crash, promotion, pending-intent replay, and stale-primary rejection. |
 | Universe sync demo | Done | `examples/universe_sync_demo.sh` builds a small source/target pair, demonstrates API-level sync, then demonstrates the CLI export/sync/prune boundary. `scripts/universe_sync_failure_smoke.sh` verifies malformed JSONL handling, replay idempotency, and explicit ack/prune. `scripts/universe_sync_remote_smoke.sh` verifies remote `--peers` delivery and target-down retry behavior |
 | Payload codec demos | Done | `examples/payload_codecs_demo.sh` covers embedded persistence and prepared selection; `examples/payload_codecs_cluster_demo.sh` covers codec negotiation and legacy wire-header compatibility |
 | Crash / failure case study | Partial | Store-level WAL tail repair, mid-file WAL corruption refusal, compact interruption, partial commit, and cluster owner crash/restart retry are covered |
@@ -176,7 +178,7 @@ fully covered by the current concepts or code:
 | Ring apply policy | Managed deployments need per-ring behavior such as latest-only, append-only, bounded-history, and delayed timestamp apply. This keeps consistency rules explicit without making the whole DB strongly serializable. |
 | Read-your-writes across local pending state | Local users should not feel universe-sync delay. The cluster landing-intent fallback is a start; universe-level pending overlays are still missing. |
 | Dynamic node replacement | Managed services must replace failed or upgraded nodes without manual peer-list surgery. Current clusters use static peers. |
-| Cluster coordinator redundancy | Node0 is currently the transaction landing zone. Managed service readiness needs the coordinator role to survive node replacement or failover. |
+| Automated coordinator orchestration | Fenced primary/standby promotion is implemented. A managed service still needs health policy, operator approval, config rollout, and service discovery around that explicit boundary. |
 | TLS and certificate rotation | Username/password/secret-key auth exists, but managed public or VPC deployments need transport TLS and rotation workflows. |
 | Secret rotation | `authProfiles` reference external secrets, but the server and drivers need an explicit rotation story for username/password/secret-key credentials. |
 | Point-in-time recovery / generation checkpoints | Backup/restore exists. Managed services normally require recoverable generations, restore-point selection, and verification before promotion. |
