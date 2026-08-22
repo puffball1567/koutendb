@@ -9,6 +9,8 @@ Current release evidence: [v0.13.0 release notes](./github-release-v0.13.0.md)
 
 Current v1.0 preparation: [v1.0 stabilization plan](./v1-stabilization.md)
 
+Current self-host work: [v0.14 self-hosted operations](./v0.14-self-hosted-operations.md)
+
 Human evaluation path: [hands-on evaluation](./hands-on-evaluation.md) and
 [service trial](./service-trial.md)
 
