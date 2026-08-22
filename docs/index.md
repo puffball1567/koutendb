@@ -17,6 +17,7 @@ downstream AI/RAG or application logic.
 - [Hands-on Evaluation](hands-on-evaluation.md)
 - [Service Trial](service-trial.md)
 - [v1.0 Stabilization Plan](v1-stabilization.md)
+- [v0.14 Self-Hosted Operations](v0.14-self-hosted-operations.md)
 - [Public API](public-api.md)
 - [Configuration Reference](config-reference.md)
 - [CLI Reference](cli-reference.md)
