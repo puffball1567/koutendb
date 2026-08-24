@@ -62,9 +62,14 @@ echo "[self-host] validate and start hardened Compose service"
 KOUTENDB_IMAGE="$IMAGE" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
   docker compose -p "$PROJECT" --project-directory "$BUNDLE" \
   -f "$BUNDLE/compose.yaml" config >/dev/null
-KOUTENDB_IMAGE="$IMAGE" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
-  docker compose -p "$PROJECT" --project-directory "$BUNDLE" \
-  -f "$BUNDLE/compose.yaml" up -d >/dev/null
+if ! KOUTENDB_IMAGE="$IMAGE" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
+    docker compose -p "$PROJECT" --project-directory "$BUNDLE" \
+    -f "$BUNDLE/compose.yaml" up -d >/dev/null; then
+  KOUTENDB_IMAGE="$IMAGE" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
+    docker compose -p "$PROJECT" --project-directory "$BUNDLE" \
+    -f "$BUNDLE/compose.yaml" logs koutendb-secrets >&2 || true
+  exit 1
+fi
 
 for _ in $(seq 1 60); do
   STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER")"
@@ -79,6 +84,11 @@ if [[ "${STATUS:-}" != "healthy" ]]; then
 fi
 test "$(docker inspect --format '{{.Config.User}}' "$CONTAINER")" = "10001:10001"
 test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$CONTAINER")" = "true"
+docker exec "$CONTAINER" sh -ec '
+  test "$(stat -c %u:%g /run/secrets/koutendb_password)" = "10001:10001"
+  test "$(stat -c %a /run/secrets/koutendb_password)" = "400"
+  test "$(stat -c %a /run/secrets/koutendb_server_key)" = "400"
+'
 
 docker exec "$CONTAINER" kouten put --config=/etc/koutendb/client.json \
   --ring=ops/selfhost --payload='{"survives":true}' --codec=json >/dev/null

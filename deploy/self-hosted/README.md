@@ -35,6 +35,11 @@ The bootstrap refuses to overwrite a non-empty output directory. It creates:
 - a pinned GHCR image reference;
 - a bounded health watchdog and optional systemd timer units.
 
+Compose keeps the generated source files at mode `0600`. A one-shot,
+network-disabled initialization service copies them into a dedicated runtime
+volume as UID/GID `10001` with mode `0400`. The database mounts that volume
+read-only, so native Linux does not require making host secrets world-readable.
+
 The CA private key remains under `operator/` and is never mounted into the
 container. Replace the bootstrap PKI with the deployment's approved issuer
 before exposing a production listener.
