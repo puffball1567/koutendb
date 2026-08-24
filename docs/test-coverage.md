@@ -31,6 +31,7 @@ matrix used before releases.
 | Disk-backed ring reads | `tests/tstore.nim`, `tests/tapi.nim`, `scripts/auto_pack_server_smoke.sh` | Matrix-covered: seq-ordered ring metadata, bounded windows, monotonic duplicate-free pagination after old-sequence updates, deletion filtering, reopen stability, and embedded/remote disk-backed count/list behavior. |
 | Compose examples | `scripts/compose_config_smoke.sh` | Smoke-covered: every `examples/compose/*.compose.yml` file parses with Docker Compose, including the optional tools profile |
 | Container persistence and security | `scripts/container_security_matrix.sh` | Manual Docker matrix: TLS-enabled image build, strong disk-backed named-volume persistence, same-container restart, container replacement, network disconnect/reconnect, CA and hostname rejection, expired-certificate rejection, ID/password/secret-key failures, ring authorization denial, credential rotation, offline segment verification, and persisted audit evidence. Not part of normal CI. |
+| Single-node self-host operations | `scripts/container_image_smoke.sh`, `scripts/self_host_bundle_smoke.sh` | CI-covered: TLS/authenticated strong-durability bootstrap, host and runtime secret/private-key permissions, generated certificate verification and SANs, network-disabled secret staging, non-root/read-only Compose runtime, persistent write recovery after an actual `koutend` process crash, invalid-version/non-empty/symlink bootstrap refusal, consecutive-health-failure restart threshold, healthy-state reset, starting-state restraint, and bounded restart-loop failure. |
 | Soak testing | `examples/soak_72h.sh`, `examples/soak_runner.nim` | Optional local release gate: three strong-durability disk-backed nodes with writes, updates, deletes, backfills, point/projection/ring/stellar/retrieval reads, bounded auto-pack, latency percentiles, RSS/disk samples, queue convergence, snapshot, segment-aware offline verify, checkpoint restore, and exact dump equivalence. Not part of CI. |
 | Disk-backed cluster wire reads | `tests/tcluster_disk_backed_reads.nim`, `scripts/cluster_disk_backed_reads_smoke.sh` | Regression-covered: GETID/QRYID, legacy GET, and BGET use the Store read boundary before and after a strong-durability server restart. |
 | Accelerated churn | `examples/accelerated_churn.sh`, `examples/accelerated_churn.nim` | Manual high-density disk-backed validator: seeded writes, updates, deletes, backfills, bounded maintenance, checkpoint retention, reopen, backup/restore, independent full-state comparisons, bounded latency sampling, RSS/storage/fallback metrics, and final offline verification. A 120,000-operation local run completed with 1,202 exact logical-state comparisons, 60 reopens, 30 backup/restore comparisons, zero duplicate or missing records, and zero WAL fallbacks. It remains outside CI. |
@@ -70,6 +71,7 @@ scripts/recovery_smoke.sh
 scripts/universe_sync_failure_smoke.sh
 scripts/universe_sync_remote_smoke.sh
 scripts/compose_config_smoke.sh
+scripts/container_image_smoke.sh
 ```
 
 `scripts/test_all_smoke.sh` runs the same sequence and skips driver
