@@ -226,10 +226,17 @@ checkpoint_export() {
       stage="$2"
       uid="$3"
       gid="$4"
-      mkdir "/transfer/$stage"
-      cp -a "/var/lib/koutendb/checkpoints/$checkpoint_id/." \
-        "/transfer/$stage/"
-      chown -R "$uid:$gid" "/transfer/$stage"
+      stage_path="/transfer/$stage"
+      finish_copy() {
+        status="$?"
+        trap - EXIT
+        chown -R "$uid:$gid" "$stage_path" 2>/dev/null || status=1
+        exit "$status"
+      }
+      trap finish_copy EXIT
+      mkdir "$stage_path"
+      cp -R "/var/lib/koutendb/checkpoints/$checkpoint_id/." \
+        "$stage_path/"
     ' sh "$checkpoint_id" "$(basename "$stage")" "$uid" "$gid" >/dev/null
 
   restore_drill "$stage" "$checkpoint_id"
