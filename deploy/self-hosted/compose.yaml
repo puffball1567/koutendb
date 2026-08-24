@@ -1,0 +1,61 @@
+name: koutendb-selfhost
+
+services:
+  koutendb:
+    image: ${KOUTENDB_IMAGE:?set KOUTENDB_IMAGE in .env}
+    container_name: ${KOUTENDB_CONTAINER_NAME:-koutendb-selfhost}
+    command:
+      - --config=/etc/koutendb/server.json
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    ports:
+      - ${KOUTENDB_BIND_ADDRESS:-127.0.0.1}:${KOUTENDB_PORT:-7301}:7301
+    volumes:
+      - koutendb_data:/var/lib/koutendb
+      - ./config/server.json:/etc/koutendb/server.json:ro
+      - ./config/client.json:/etc/koutendb/client.json:ro
+    secrets:
+      - koutendb_password
+      - koutendb_secret_key
+      - koutendb_ca
+      - koutendb_server_cert
+      - koutendb_server_key
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/kouten
+        - health
+        - --config=/etc/koutendb/client.json
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  koutendb_data:
+
+secrets:
+  koutendb_password:
+    file: ./secrets/password
+  koutendb_secret_key:
+    file: ./secrets/secret-key
+  koutendb_ca:
+    file: ./certs/ca.crt
+  koutendb_server_cert:
+    file: ./certs/server.crt
+  koutendb_server_key:
+    file: ./certs/server.key

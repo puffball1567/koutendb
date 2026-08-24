@@ -1,0 +1,23 @@
+{
+  "id": 0,
+  "peers": ["0.0.0.0:7301"],
+  "dataDir": "/var/lib/koutendb/data",
+  "diskBacked": true,
+  "durability": "strong",
+  "galaxy": "default",
+  "user": "operator",
+  "passwordFile": "/run/secrets/koutendb_password",
+  "secretKeyFile": "/run/secrets/koutendb_secret_key",
+  "tlsCertFile": "/run/secrets/koutendb_server_cert",
+  "tlsKeyFile": "/run/secrets/koutendb_server_key",
+  "tlsCaFile": "/run/secrets/koutendb_ca",
+  "tlsServerName": "koutendb",
+  "autoPack": true,
+  "autoPackInterval": 300,
+  "autoPackWindow": "01:00-04:00",
+  "autoPackStaleRatio": 0.25,
+  "autoPackMinStaleRecords": 256,
+  "autoPackMaxRings": 1,
+  "autoPackMaxBytes": 67108864,
+  "autoPackMaxElapsedMs": 1000
+}

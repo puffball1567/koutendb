@@ -9,6 +9,8 @@ on:
       - config.nims
       - src/**
       - scripts/container_image_smoke.sh
+      - scripts/self_host_bundle_smoke.sh
+      - deploy/self-hosted/**
       - .github/workflows/container.yml
   release:
     types: [published]

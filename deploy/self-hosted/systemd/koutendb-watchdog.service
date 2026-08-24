@@ -1,0 +1,15 @@
+[Unit]
+Description=KoutenDB bounded health watchdog
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/koutendb/watchdog.env
+WorkingDirectory=/opt/koutendb
+ExecStart=/opt/koutendb/watchdog.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/koutendb/state

@@ -18,6 +18,7 @@ downstream AI/RAG or application logic.
 - [Service Trial](service-trial.md)
 - [v1.0 Stabilization Plan](v1-stabilization.md)
 - [v0.14 Self-Hosted Operations](v0.14-self-hosted-operations.md)
+- [Single-Node Self-Host Bundle](https://github.com/puffball1567/koutendb/tree/main/deploy/self-hosted)
 - [Public API](public-api.md)
 - [Configuration Reference](config-reference.md)
 - [CLI Reference](cli-reference.md)

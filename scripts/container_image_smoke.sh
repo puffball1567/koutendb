@@ -32,8 +32,10 @@ if [[ "$BUILD_IMAGE" == "1" ]]; then
 fi
 
 echo "[container-image] verify runtime identity and CLI"
-docker run --rm --entrypoint id "$IMAGE" | grep -q 'uid=10001(koutendb)'
-docker run --rm --entrypoint kouten "$IMAGE" --help | grep -q 'KoutenDB command-line client'
+docker run --rm --entrypoint id "$IMAGE" |
+  grep 'uid=10001(koutendb)' >/dev/null
+docker run --rm --entrypoint kouten "$IMAGE" --help |
+  grep 'KoutenDB command-line client' >/dev/null
 
 echo "[container-image] verify named-volume persistence across containers"
 docker volume create "$VOLUME" >/dev/null
@@ -42,11 +44,13 @@ docker run --rm -v "$VOLUME:/var/lib/koutendb" --entrypoint kouten "$IMAGE" \
   --payload='{"status":"persisted"}' --codec=json >/dev/null
 docker run --rm -v "$VOLUME:/var/lib/koutendb" --entrypoint kouten "$IMAGE" \
   get --data=/var/lib/koutendb/data --ring=ops/container |
-  grep -q '"status": "persisted"'
+  grep '"status": "persisted"' >/dev/null
 
 echo "[container-image] verify persisted data offline"
 docker run --rm -v "$VOLUME:/var/lib/koutendb" --entrypoint kouten "$IMAGE" \
   verify --data=/var/lib/koutendb/data --segments --json |
-  grep -q '"kind": "data"'
+  grep '"kind": "data"' >/dev/null
+
+KOUTEN_CONTAINER_IMAGE="$IMAGE" scripts/self_host_bundle_smoke.sh
 
 echo "[container-image] OK"
