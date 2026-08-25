@@ -46,6 +46,7 @@ if deploy/self-hosted/bootstrap.sh "$WORK/symlink-output" >/dev/null 2>&1; then
 fi
 
 KOUTENDB_VERSION=0.14.0 deploy/self-hosted/bootstrap.sh "$BUNDLE" >/dev/null
+test -x "$BUNDLE/operator.sh"
 test "$(stat -c '%a' "$BUNDLE/secrets/password")" = "600"
 test "$(stat -c '%a' "$BUNDLE/operator/ca.key")" = "600"
 test "$(stat -c '%a' "$BUNDLE/certs/server.key")" = "600"
@@ -121,6 +122,71 @@ if [[ "$RUNNING" != "true" || "$STATUS" != "healthy" ||
 fi
 docker exec "$CONTAINER" kouten get --config=/etc/koutendb/client.json \
   --ring=ops/selfhost | grep '"survives": true' >/dev/null
+
+run_operator() {
+  COMPOSE_PROJECT_NAME="$PROJECT" KOUTENDB_IMAGE="$IMAGE" \
+    KOUTENDB_CONTAINER_NAME="$CONTAINER" \
+    KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS=6 \
+    KOUTENDB_OPERATOR_HEALTH_DELAY=0.5 "$BUNDLE/operator.sh" "$@"
+}
+
+echo "[self-host] validate checkpoint export and independent restore"
+if run_operator checkpoint-create '../invalid' >/dev/null 2>&1; then
+  echo "[self-host] operator accepted an invalid checkpoint ID" >&2
+  exit 1
+fi
+run_operator checkpoint-create smoke-1 >/dev/null
+test "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = "healthy"
+docker exec "$CONTAINER" kouten get --config=/etc/koutendb/client.json \
+  --ring=ops/selfhost | grep '"survives": true' >/dev/null
+
+if run_operator checkpoint-create smoke-1 >/dev/null 2>&1; then
+  echo "[self-host] duplicate checkpoint identity was accepted" >&2
+  exit 1
+fi
+test "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = "healthy"
+docker exec "$CONTAINER" kouten put --config=/etc/koutendb/client.json \
+  --ring=ops/after-failed-checkpoint \
+  --payload='{"writable":true}' --codec=json >/dev/null
+
+mkdir -p "$WORK/exported"
+run_operator checkpoint-export smoke-1 "$WORK/exported" >/dev/null
+test -f "$WORK/exported/smoke-1/checkpoint.json"
+test -f "$WORK/exported/smoke-1/checkpoint.complete"
+if find "$WORK/exported" -mindepth 1 -maxdepth 1 -name '.tmp-*' |
+    grep . >/dev/null; then
+  echo "[self-host] successful export left a staging directory" >&2
+  exit 1
+fi
+run_operator restore-drill "$WORK/exported/smoke-1" >/dev/null
+
+if run_operator checkpoint-export smoke-1 "$WORK/exported" >/dev/null 2>&1; then
+  echo "[self-host] checkpoint export overwrote an existing destination" >&2
+  exit 1
+fi
+cp -a "$WORK/exported/smoke-1" "$WORK/exported/corrupt-1"
+printf 'corrupt\n' >>"$WORK/exported/corrupt-1/kouten.log"
+if run_operator restore-drill "$WORK/exported/corrupt-1" >/dev/null 2>&1; then
+  echo "[self-host] restore drill accepted a corrupt checkpoint" >&2
+  exit 1
+fi
+test "$(grep -c '"outcome":"completed"' \
+  "$BUNDLE/state/operator/operations.jsonl")" -ge 3
+test "$(grep -c '"outcome":"failed"' \
+  "$BUNDLE/state/operator/operations.jsonl")" -ge 3
+if run_operator checkpoint-export smoke-1 "$WORK/exported" >/dev/null 2>&1; then
+  echo "[self-host] repeated export unexpectedly succeeded" >&2
+  exit 1
+fi
+test "$(wc -l <"$BUNDLE/state/operator/operations.jsonl")" = "6"
+test "$(grep -c '"outcome":"completed"' \
+  "$BUNDLE/state/operator/operations.jsonl")" = "2"
+test "$(grep -c '"outcome":"failed"' \
+  "$BUNDLE/state/operator/operations.jsonl")" = "4"
+if docker volume ls --quiet --filter name=koutendb-restore-drill- | grep . >/dev/null; then
+  echo "[self-host] restore drill left a temporary volume" >&2
+  exit 1
+fi
 
 echo "[self-host] validate watchdog threshold and restart-loop guard"
 mkdir -p "$WORK/mock-bin" "$WORK/mock-state"

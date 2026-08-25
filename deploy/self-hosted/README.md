@@ -103,3 +103,43 @@ journalctl -u koutendb-watchdog.service
 Automatic restart is not data recovery. Repeated failure, corruption, capacity
 exhaustion, or an invalid configuration requires operator diagnosis and the
 documented verify/checkpoint/restore workflow.
+
+## Checkpoint And Restore Drill
+
+Create a generation checkpoint through a controlled quiet window:
+
+```sh
+./operator.sh checkpoint-create before-upgrade-2026-08-25
+```
+
+The command requires a healthy service, drains writes, requests a snapshot
+barrier, stops the node, creates and verifies the immutable generation, then
+restarts, health-checks, and resumes the node. A failure after drain triggers a
+best-effort restart and resume before the command returns non-zero.
+
+Export the complete checkpoint to a mounted backup destination:
+
+```sh
+./operator.sh checkpoint-export \
+  before-upgrade-2026-08-25 /mnt/koutendb-backups
+```
+
+The export is copied under a hidden staging name. Before publication, KoutenDB
+verifies the transported artifact, restores it into an independent temporary
+volume, and verifies the restored data and segment layout. The final directory
+appears only after those checks pass. Existing destinations are never
+overwritten.
+
+Repeat the independent restore test without changing the active database:
+
+```sh
+./operator.sh restore-drill \
+  /mnt/koutendb-backups/before-upgrade-2026-08-25
+```
+
+Bounded JSONL evidence is written to `state/operator/operations.jsonl`; paths
+and credentials are not recorded. The default keeps the latest 1,000 records
+and can be changed with `KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS`. A local or
+NFS-mounted destination is the OSS provider-neutral boundary. Object-store
+upload, cloud credentials, fleet scheduling, and hosted retention policy belong
+in external operations tooling.

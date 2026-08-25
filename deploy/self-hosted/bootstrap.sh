@@ -29,6 +29,7 @@ install -m 0644 "$SOURCE/compose.yaml" "$OUTPUT/compose.yaml"
 install -m 0644 "$SOURCE/config/server.json" "$OUTPUT/config/server.json"
 install -m 0644 "$SOURCE/config/client.json" "$OUTPUT/config/client.json"
 install -m 0755 "$SOURCE/watchdog.sh" "$OUTPUT/watchdog.sh"
+install -m 0755 "$SOURCE/operator.sh" "$OUTPUT/operator.sh"
 install -m 0644 "$SOURCE/systemd/koutendb-watchdog.service" \
   "$OUTPUT/systemd/koutendb-watchdog.service"
 install -m 0644 "$SOURCE/systemd/koutendb-watchdog.timer" \
