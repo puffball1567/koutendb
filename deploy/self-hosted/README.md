@@ -180,6 +180,47 @@ before running the command. The single-node bundle does not provide a managed
 PKI, client trust-store rollout, KMS integration, or fleet-wide zero-downtime
 rotation.
 
+## Capacity History And Approval-Gated Plans
+
+Record a live capacity sample on a schedule. The sample contains only numeric
+storage, item/ring, memory, and CPU observations:
+
+```sh
+./capacity.sh sample
+```
+
+After at least two samples spanning the default one-hour minimum, create a plan
+for a seven-day horizon:
+
+```sh
+./capacity.sh plan 604800
+```
+
+The planner uses a least-squares slope over the bounded history, clamps negative
+growth to zero, and reports projected data growth, required free disk, peak
+memory plus headroom, observed CPU plus headroom, and any current disk shortage.
+The defaults retain 1,000 samples and 1,000 plans, require a sample no older
+than 15 minutes, reserve 10% of the data filesystem or at least 1 GiB, and add
+50% memory/CPU headroom. Every setting is configurable through the
+`KOUTENDB_CAPACITY_*` environment variables in `capacity.sh`.
+
+The plan ID is the SHA-256 digest of the complete, versioned plan manifest.
+Approve and execute that exact content:
+
+```sh
+./capacity.sh approve <plan-id>
+./capacity.sh execute <plan-id>
+./capacity.sh status <plan-id>
+```
+
+Execution does not provision a VM, resize a disk, or run an arbitrary hook. It
+revalidates plan identity, approval, expiry, observation freshness, live data
+growth, service health, and the disk/memory/CPU capacity actually available to
+the container. It records success once and rejects modified, stale, repeated,
+unapproved, or under-provisioned plans. Prepare infrastructure with the
+deployment's normal tool, then use this gate to prove that KoutenDB can safely
+consume it.
+
 Bounded JSONL evidence is written to `state/operator/operations.jsonl`; paths
 and credentials are not recorded. The default keeps the latest 1,000 records
 and can be changed with `KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS`. A local or
