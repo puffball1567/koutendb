@@ -137,6 +137,49 @@ Repeat the independent restore test without changing the active database:
   /mnt/koutendb-backups/before-upgrade-2026-08-25
 ```
 
+## Verified Upgrade And Rollback
+
+Upgrade to an explicitly versioned image or immutable digest:
+
+```sh
+./operator.sh upgrade \
+  ghcr.io/puffball1567/koutendb:0.14.0 \
+  before-0.14.0
+```
+
+The operator rejects an unversioned image and the mutable `latest` tag. Before
+replacement, it starts both KoutenDB executables in an isolated container,
+validates the Compose configuration, drains and snapshots the active node, and
+creates a checkpoint. Both the active and target images must verify that
+checkpoint. The target becomes authoritative in `.env` only after those checks.
+
+If the replacement does not become healthy, the operator restores the previous
+image reference, recreates the service, waits for health, and resumes writes.
+The checkpoint remains available for explicit recovery. Use a digest rather
+than a tag when the deployment requires immutable image identity.
+
+## Certificate Rotation
+
+Rotate a server certificate and private key signed by the current CA:
+
+```sh
+./operator.sh certificate-rotate \
+  /mnt/koutendb-pki/server.crt \
+  /mnt/koutendb-pki/server.key
+```
+
+To replace the server certificate, key, and CA together, pass the new CA as the
+third argument. The operator checks certificate validity, CA capability,
+`koutendb` hostname verification, chain validity, and the certificate/key public
+key match before draining the node. It stages the inputs with restricted
+permissions and recreates the runtime secret volume. A failed TLS health check
+restores the previous certificate set and resumes the node.
+
+When changing the CA, distribute the new trust anchor to external clients
+before running the command. The single-node bundle does not provide a managed
+PKI, client trust-store rollout, KMS integration, or fleet-wide zero-downtime
+rotation.
+
 Bounded JSONL evidence is written to `state/operator/operations.jsonl`; paths
 and credentials are not recorded. The default keeps the latest 1,000 records
 and can be changed with `KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS`. A local or

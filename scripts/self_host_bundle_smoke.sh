@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 IMAGE="${KOUTEN_CONTAINER_IMAGE:-koutendb:container-smoke}"
+UPGRADE_IMAGE="${IMAGE}-upgrade"
+FAILING_IMAGE="${IMAGE}-failing"
 PREFIX="koutendb-selfhost-smoke-$$"
 WORK="${KOUTEN_SELFHOST_TEST_ROOT:-$ROOT/.tmp}/$PREFIX"
 BUNDLE="$WORK/bundle"
@@ -17,6 +19,7 @@ cleanup() {
       docker compose -p "$PROJECT" --project-directory "$BUNDLE" \
       -f "$BUNDLE/compose.yaml" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
+  docker image rm "$UPGRADE_IMAGE" "$FAILING_IMAGE" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -46,6 +49,7 @@ if deploy/self-hosted/bootstrap.sh "$WORK/symlink-output" >/dev/null 2>&1; then
 fi
 
 KOUTENDB_VERSION=0.14.0 deploy/self-hosted/bootstrap.sh "$BUNDLE" >/dev/null
+sed -i "s|^KOUTENDB_IMAGE=.*|KOUTENDB_IMAGE=$IMAGE|" "$BUNDLE/.env"
 test -x "$BUNDLE/operator.sh"
 test "$(stat -c '%a' "$BUNDLE/secrets/password")" = "600"
 test "$(stat -c '%a' "$BUNDLE/operator/ca.key")" = "600"
@@ -124,9 +128,18 @@ docker exec "$CONTAINER" kouten get --config=/etc/koutendb/client.json \
   --ring=ops/selfhost | grep '"survives": true' >/dev/null
 
 run_operator() {
-  COMPOSE_PROJECT_NAME="$PROJECT" KOUTENDB_IMAGE="$IMAGE" \
-    KOUTENDB_CONTAINER_NAME="$CONTAINER" \
+  COMPOSE_PROJECT_NAME="$PROJECT" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
     KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS=6 \
+    KOUTENDB_OPERATOR_HEALTH_DELAY=0.5 "$BUNDLE/operator.sh" "$@"
+}
+
+run_operator_with_health_limit() {
+  local attempts="$1"
+  shift
+  COMPOSE_PROJECT_NAME="$PROJECT" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
+    KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS=20 \
+    KOUTENDB_OPERATOR_HEALTH_ATTEMPTS="$attempts" \
+    KOUTENDB_OPERATOR_ROLLBACK_HEALTH_ATTEMPTS=60 \
     KOUTENDB_OPERATOR_HEALTH_DELAY=0.5 "$BUNDLE/operator.sh" "$@"
 }
 
@@ -185,6 +198,99 @@ test "$(grep -c '"outcome":"failed"' \
   "$BUNDLE/state/operator/operations.jsonl")" = "4"
 if docker volume ls --quiet --filter name=koutendb-restore-drill- | grep . >/dev/null; then
   echo "[self-host] restore drill left a temporary volume" >&2
+  exit 1
+fi
+
+echo "[self-host] validate image upgrade and rollback"
+docker tag "$IMAGE" "$UPGRADE_IMAGE"
+cat >"$WORK/failing.Dockerfile" <<'DOCKERFILE'
+ARG BASE_IMAGE=koutendb:container-smoke
+FROM ${BASE_IMAGE}
+USER 0:0
+RUN mv /usr/local/bin/koutend /usr/local/bin/koutend.real \
+ && printf '%s\n' '#!/bin/sh' \
+      'if [ "${1:-}" = "--help" ]; then' \
+      '  exec /usr/local/bin/koutend.real --help' \
+      'fi' \
+      'exit 42' > /usr/local/bin/koutend \
+ && chmod 0755 /usr/local/bin/koutend
+USER 10001:10001
+DOCKERFILE
+docker build --build-arg BASE_IMAGE="$IMAGE" -f "$WORK/failing.Dockerfile" \
+  -t "$FAILING_IMAGE" "$WORK" >/dev/null
+
+if run_operator upgrade 'koutendb:latest' invalid-latest >/dev/null 2>&1; then
+  echo "[self-host] upgrade accepted a mutable latest tag" >&2
+  exit 1
+fi
+grep -Fx "KOUTENDB_IMAGE=$IMAGE" "$BUNDLE/.env" >/dev/null
+
+run_operator upgrade "$UPGRADE_IMAGE" upgrade-ok >/dev/null
+grep -Fx "KOUTENDB_IMAGE=$UPGRADE_IMAGE" "$BUNDLE/.env" >/dev/null
+test "$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")" = "$UPGRADE_IMAGE"
+docker exec "$CONTAINER" kouten get --config=/etc/koutendb/client.json \
+  --ring=ops/selfhost | grep '"survives": true' >/dev/null
+
+if run_operator_with_health_limit 25 upgrade "$FAILING_IMAGE" upgrade-rollback \
+    >/dev/null 2>&1; then
+  echo "[self-host] failing upgrade unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fx "KOUTENDB_IMAGE=$UPGRADE_IMAGE" "$BUNDLE/.env" >/dev/null
+test "$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")" = "$UPGRADE_IMAGE"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = "healthy"
+docker exec "$CONTAINER" kouten put --config=/etc/koutendb/client.json \
+  --ring=ops/after-upgrade-rollback \
+  --payload='{"writable":true}' --codec=json >/dev/null
+
+echo "[self-host] validate certificate rotation and rollback"
+mkdir -p "$WORK/rotation"
+openssl req -nodes -newkey rsa:3072 -sha256 \
+  -keyout "$WORK/rotation/server.key" -out "$WORK/rotation/server.csr" \
+  -subj "/CN=koutendb" >/dev/null 2>&1
+openssl x509 -req -sha256 -days 397 \
+  -in "$WORK/rotation/server.csr" \
+  -CA "$BUNDLE/certs/ca.crt" -CAkey "$BUNDLE/operator/ca.key" \
+  -CAserial "$BUNDLE/certs/ca.srl" -out "$WORK/rotation/server.crt" \
+  -extfile "$BUNDLE/operator/server.ext" >/dev/null 2>&1
+ORIGINAL_CERT="$(openssl x509 -in "$BUNDLE/certs/server.crt" \
+  -noout -fingerprint -sha256)"
+if run_operator certificate-rotate "$WORK/rotation/server.crt" \
+    "$BUNDLE/certs/server.key" >/dev/null 2>&1; then
+  echo "[self-host] mismatched certificate and key were accepted" >&2
+  exit 1
+fi
+test "$(openssl x509 -in "$BUNDLE/certs/server.crt" \
+  -noout -fingerprint -sha256)" = "$ORIGINAL_CERT"
+if run_operator certificate-rotate "$WORK/rotation/server.crt" \
+    "$WORK/rotation/server.key" "$WORK/rotation/server.crt" \
+    >/dev/null 2>&1; then
+  echo "[self-host] non-CA certificate was accepted as a CA" >&2
+  exit 1
+fi
+test "$(openssl x509 -in "$BUNDLE/certs/server.crt" \
+  -noout -fingerprint -sha256)" = "$ORIGINAL_CERT"
+
+if run_operator_with_health_limit 1 certificate-rotate \
+    "$WORK/rotation/server.crt" "$WORK/rotation/server.key" \
+    >/dev/null 2>&1; then
+  echo "[self-host] forced certificate health timeout unexpectedly succeeded" >&2
+  exit 1
+fi
+test "$(openssl x509 -in "$BUNDLE/certs/server.crt" \
+  -noout -fingerprint -sha256)" = "$ORIGINAL_CERT"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = "healthy"
+
+run_operator certificate-rotate "$WORK/rotation/server.crt" \
+  "$WORK/rotation/server.key" >/dev/null
+test "$(openssl x509 -in "$BUNDLE/certs/server.crt" \
+  -noout -fingerprint -sha256)" != "$ORIGINAL_CERT"
+docker exec "$CONTAINER" kouten put --config=/etc/koutendb/client.json \
+  --ring=ops/after-cert-rotation \
+  --payload='{"writable":true}' --codec=json >/dev/null
+if find "$BUNDLE/state/operator" -mindepth 1 -maxdepth 1 \
+    \( -name 'cert-stage-*' -o -name 'cert-rollback-*' \) | grep . >/dev/null; then
+  echo "[self-host] certificate lifecycle left temporary state" >&2
   exit 1
 fi
 

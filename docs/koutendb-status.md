@@ -145,7 +145,7 @@ Translations:
 | Secret key gate | Done | ID/password alone can be insufficient; secret-key without user/password fails closed |
 | nimsodium encryption primitive | Partial | Used for auth transport; scope may expand |
 | Galaxy isolation | Done | Limits blast radius by galaxy |
-| TLS | Done | Standard TCP transport TLS is implemented for `-d:ssl` builds; certificate rotation and managed CA workflows remain operational work |
+| TLS | Done | Standard TCP transport TLS is implemented for `-d:ssl` builds; the single-node self-host operator provides validated server-certificate rotation and health-failure rollback, while managed CA and client trust-store workflows remain external |
 | Ring/galaxy authz | PoC | Ring prefix authorization is implemented for named-ring wire operations; richer role policy is pending |
 | Backup encryption | Done | `backupEncrypted` / `restoreEncryptedBackup` and `kouten backup-encrypted` / `restore-encrypted` use nimsodium secretbox |
 | General audit log | Foundation | Persistent embedded stores append `kouten.audit.jsonl` for direct write/update/delete, backup, restore, compact, and guardrail denial events. Persistent `koutend` nodes also append auth success/failure, authz denial, and retrieve/broad-scan denial events. Full enterprise audit policy remains planned |
@@ -186,7 +186,7 @@ fully covered by the current concepts or code:
 | Read-your-writes across local pending state | Local users should not feel universe-sync delay. The cluster landing-intent fallback is a start; universe-level pending overlays are still missing. |
 | Dynamic node replacement | Managed services must replace failed or upgraded nodes without manual peer-list surgery. Current clusters use static peers. |
 | Automated coordinator orchestration | Fenced primary/standby promotion is implemented. A managed service still needs health policy, operator approval, config rollout, and service discovery around that explicit boundary. |
-| TLS and certificate rotation | Username/password/secret-key auth exists, but managed public or VPC deployments need transport TLS and rotation workflows. |
+| Managed certificate lifecycle | TLS and validated single-node server-certificate rotation exist. Managed public or VPC deployments still need CA policy, expiry automation, client trust-store rollout, and fleet-wide orchestration. |
 | Secret rotation | `authProfiles` reference external secrets, but the server and drivers need an explicit rotation story for username/password/secret-key credentials. |
 | Point-in-time recovery / generation checkpoints | Backup/restore exists. Managed services normally require recoverable generations, restore-point selection, and verification before promotion. |
 | Managed drain / quiesce orchestration | The server has admin-only `DRAIN` / `SNAPSHOT` / `RESUME` primitives. Managed services still need rolling orchestration, promotion policy, and backup scheduling around those primitives. |

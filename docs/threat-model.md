@@ -69,9 +69,10 @@ drivers.
 
 ## Known Gaps
 
-- TLS is implemented for `koutend` TCP transport, but production deployments
-  still need certificate issuance, rotation, expiry monitoring, and policy
-  management.
+- TLS is implemented for `koutend` TCP transport. The single-node self-host
+  operator validates and rolls back server certificate rotation; production
+  deployments still need approved issuance, expiry monitoring, external client
+  trust distribution, and certificate policy management.
 - Rich role policies are intentionally not implemented. KoutenDB's primary
   isolation model is galaxy separation plus ring-prefix scope; roles are kept
   minimal for read/write/admin separation.
