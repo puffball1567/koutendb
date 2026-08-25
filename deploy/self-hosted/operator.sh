@@ -11,6 +11,7 @@ ROLLBACK_HEALTH_ATTEMPTS="${KOUTENDB_OPERATOR_ROLLBACK_HEALTH_ATTEMPTS:-60}"
 HEALTH_DELAY="${KOUTENDB_OPERATOR_HEALTH_DELAY:-1}"
 EVIDENCE_MAX_RECORDS="${KOUTENDB_OPERATOR_EVIDENCE_MAX_RECORDS:-1000}"
 CERT_MIN_VALID_SECONDS="${KOUTENDB_OPERATOR_CERT_MIN_VALID_SECONDS:-86400}"
+SCHEDULED_CHECKPOINT_ROOT="/var/lib/koutendb/scheduled-checkpoints"
 
 # The bundle .env file is the lifecycle source of truth for image replacement.
 unset KOUTENDB_IMAGE
@@ -27,6 +28,7 @@ SUCCEEDED=0
 PREVIOUS_IMAGE=""
 CERT_BACKUP_DIR=""
 CERT_STAGE_DIR=""
+TRANSFER_STAGE=""
 
 fail() {
   echo "[koutendb-operator] $*" >&2
@@ -199,6 +201,7 @@ record_evidence() {
 
 finish() {
   local status=$?
+  local transfer_name transfer_parent
   trap - EXIT INT TERM
 
   if (( status != 0 )) &&
@@ -221,6 +224,17 @@ finish() {
   fi
   if [[ -n "$DRILL_VOLUME" ]]; then
     docker volume rm "$DRILL_VOLUME" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$TRANSFER_STAGE" ]]; then
+    transfer_name="$(basename "$TRANSFER_STAGE")"
+    transfer_parent="$(dirname "$TRANSFER_STAGE")"
+    if [[ "$transfer_name" =~ ^[.]tmp-[A-Za-z0-9][A-Za-z0-9._-]{0,127}-[0-9]+$ &&
+          "$transfer_parent" != "/" && -d "$transfer_parent" &&
+          ! -L "$transfer_parent" ]]; then
+      rm -rf -- "$TRANSFER_STAGE" || status=1
+    else
+      status=1
+    fi
   fi
   if [[ -n "$CERT_STAGE_DIR" && "$CERT_STAGE_DIR" == "$STATE_DIR"/cert-stage-* ]]; then
     rm -rf "$CERT_STAGE_DIR" || status=1
@@ -268,18 +282,17 @@ acquire_lock() {
 
 checkpoint_verify_local() {
   local checkpoint_id="$1"
+  local checkpoint_root="${2:-/var/lib/koutendb/checkpoints}"
   "${COMPOSE[@]}" run --rm --no-deps --entrypoint kouten koutendb \
     checkpoint-verify \
-    --checkpoint="/var/lib/koutendb/checkpoints/$checkpoint_id" \
+    --checkpoint="$checkpoint_root/$checkpoint_id" \
     --json >/dev/null
 }
 
-checkpoint_create() {
+checkpoint_create_locked() {
   local checkpoint_id="$1"
+  local checkpoint_root="${2:-/var/lib/koutendb/checkpoints}"
   validate_checkpoint_id "$checkpoint_id"
-  OPERATION="checkpoint-create"
-  CHECKPOINT_ID="$checkpoint_id"
-  acquire_lock
 
   client health >/dev/null || fail "service is not healthy"
   DRAINED=1
@@ -290,17 +303,26 @@ checkpoint_create() {
 
   "${COMPOSE[@]}" run --rm --no-deps --entrypoint kouten koutendb \
     checkpoint-create --data=/var/lib/koutendb/data \
-    --checkpoint-root=/var/lib/koutendb/checkpoints \
+    --checkpoint-root="$checkpoint_root" \
     --checkpoint-id="$checkpoint_id" --durability=strong --json >/dev/null
-  checkpoint_verify_local "$checkpoint_id"
+  checkpoint_verify_local "$checkpoint_id" "$checkpoint_root"
 
   "${COMPOSE[@]}" up -d koutendb >/dev/null
   wait_healthy || fail "service did not become healthy after checkpoint"
   STOPPED=0
   client resume >/dev/null
   DRAINED=0
-  SUCCEEDED=1
   echo "[koutendb-operator] checkpoint verified id=$checkpoint_id"
+}
+
+checkpoint_create() {
+  local checkpoint_id="$1"
+  validate_checkpoint_id "$checkpoint_id"
+  OPERATION="checkpoint-create"
+  CHECKPOINT_ID="$checkpoint_id"
+  acquire_lock
+  checkpoint_create_locked "$checkpoint_id"
+  SUCCEEDED=1
 }
 
 restore_drill() {
@@ -337,16 +359,8 @@ restore_drill() {
   DRILL_VOLUME=""
 }
 
-checkpoint_export() {
-  local checkpoint_id="$1"
-  local destination="$2"
-  local stage final uid gid
-  validate_checkpoint_id "$checkpoint_id"
-  OPERATION="checkpoint-export"
-  CHECKPOINT_ID="$checkpoint_id"
-  acquire_lock
-  checkpoint_verify_local "$checkpoint_id"
-
+prepare_export_destination() {
+  local destination="$1"
   [[ ! -L "$destination" ]] || fail "destination root must not be a symlink"
   [[ "$destination" != *:* && "$destination" != *$'\n'* ]] ||
     fail "destination root contains unsupported characters"
@@ -354,10 +368,23 @@ checkpoint_export() {
   [[ -d "$destination" ]] || fail "destination root is not a directory"
   destination="$(realpath "$destination")"
   [[ "$destination" != "/" ]] || fail "destination root must not be filesystem root"
+  printf '%s\n' "$destination"
+}
+
+checkpoint_export_locked() {
+  local checkpoint_id="$1"
+  local destination="$2"
+  local checkpoint_root="${3:-/var/lib/koutendb/checkpoints}"
+  local stage final uid gid
+  validate_checkpoint_id "$checkpoint_id"
+  checkpoint_verify_local "$checkpoint_id" "$checkpoint_root"
+
+  destination="$(prepare_export_destination "$destination")"
   stage="$destination/.tmp-$checkpoint_id-$$"
   final="$destination/$checkpoint_id"
   [[ ! -e "$stage" && ! -L "$stage" ]] || fail "export staging path already exists"
   [[ ! -e "$final" && ! -L "$final" ]] || fail "export destination already exists"
+  TRANSFER_STAGE="$stage"
   uid="$(id -u)"
   gid="$(id -g)"
 
@@ -368,6 +395,7 @@ checkpoint_export() {
       stage="$2"
       uid="$3"
       gid="$4"
+      checkpoint_root="$5"
       stage_path="/transfer/$stage"
       finish_copy() {
         status="$?"
@@ -377,14 +405,96 @@ checkpoint_export() {
       }
       trap finish_copy EXIT
       mkdir "$stage_path"
-      cp -R "/var/lib/koutendb/checkpoints/$checkpoint_id/." \
+      cp -R "$checkpoint_root/$checkpoint_id/." \
         "$stage_path/"
-    ' sh "$checkpoint_id" "$(basename "$stage")" "$uid" "$gid" >/dev/null
+    ' sh "$checkpoint_id" "$(basename "$stage")" "$uid" "$gid" \
+      "$checkpoint_root" >/dev/null
 
   restore_drill "$stage" "$checkpoint_id"
   mv "$stage" "$final"
-  SUCCEEDED=1
+  TRANSFER_STAGE=""
   echo "[koutendb-operator] checkpoint exported and restore-tested id=$checkpoint_id"
+}
+
+checkpoint_export() {
+  local checkpoint_id="$1"
+  local destination="$2"
+  validate_checkpoint_id "$checkpoint_id"
+  OPERATION="checkpoint-export"
+  CHECKPOINT_ID="$checkpoint_id"
+  acquire_lock
+  checkpoint_export_locked "$checkpoint_id" "$destination"
+  SUCCEEDED=1
+}
+
+validate_scheduled_backup_id() {
+  [[ "$1" =~ ^scheduled-[0-9]{8}T[0-9]{6}Z$ ]] ||
+    fail "invalid scheduled backup ID"
+}
+
+checkpoint_verify_external() {
+  local checkpoint_path="$1"
+  local checkpoint_id="$2"
+  local container image
+  [[ -d "$checkpoint_path" && ! -L "$checkpoint_path" ]] || return 1
+  [[ "$(basename "$checkpoint_path")" == "$checkpoint_id" ]] || return 1
+  container="$(container_id)"
+  [[ -n "$container" ]] || return 1
+  image="$(docker inspect --format '{{.Config.Image}}' "$container")"
+  [[ -n "$image" ]] || return 1
+  docker run --rm --network none --read-only --cap-drop ALL \
+    --cap-add DAC_READ_SEARCH --user 0:0 \
+    -v "$checkpoint_path:/checkpoint:ro" --entrypoint kouten "$image" \
+    checkpoint-verify --checkpoint=/checkpoint --json >/dev/null 2>&1
+}
+
+prune_scheduled_exports() {
+  local destination="$1"
+  local keep="$2"
+  local verified=0 candidate checkpoint_id
+  local -a candidates=()
+  mapfile -d '' candidates < <(
+    find "$destination" -mindepth 1 -maxdepth 1 -type d \
+      -name 'scheduled-*' -print0 | sort -z -r
+  )
+  for candidate in "${candidates[@]}"; do
+    checkpoint_id="$(basename "$candidate")"
+    [[ "$checkpoint_id" =~ ^scheduled-[0-9]{8}T[0-9]{6}Z$ ]] || continue
+    if checkpoint_verify_external "$candidate" "$checkpoint_id"; then
+      verified="$(( verified + 1 ))"
+      if (( verified > keep )); then
+        rm -rf --one-file-system -- "$candidate"
+      fi
+    else
+      echo "[koutendb-operator] preserving invalid backup evidence id=$checkpoint_id" >&2
+    fi
+  done
+}
+
+scheduled_backup() {
+  local destination="$1"
+  local keep="$2"
+  local checkpoint_id="${3:-scheduled-$(date -u +%Y%m%dT%H%M%SZ)}"
+  is_uint "$keep" && (( keep > 0 && keep <= 3650 )) ||
+    fail "scheduled backup retention must be between 1 and 3650"
+  validate_scheduled_backup_id "$checkpoint_id"
+  destination="$(prepare_export_destination "$destination")"
+  [[ ! -e "$destination/$checkpoint_id" &&
+     ! -L "$destination/$checkpoint_id" ]] ||
+    fail "backup destination already exists"
+  OPERATION="scheduled-backup"
+  CHECKPOINT_ID="$checkpoint_id"
+  acquire_lock
+
+  checkpoint_create_locked "$checkpoint_id" "$SCHEDULED_CHECKPOINT_ROOT"
+  checkpoint_export_locked "$checkpoint_id" "$destination" \
+    "$SCHEDULED_CHECKPOINT_ROOT"
+  prune_scheduled_exports "$destination" "$keep"
+  "${COMPOSE[@]}" run --rm --no-deps --entrypoint kouten koutendb \
+    checkpoint-clean --checkpoint-root="$SCHEDULED_CHECKPOINT_ROOT" \
+    --keep=1 --json >/dev/null
+  SUCCEEDED=1
+  echo "[koutendb-operator] scheduled backup completed id=$checkpoint_id keep=$keep"
 }
 
 upgrade_image() {
@@ -491,6 +601,7 @@ Usage:
   ./operator.sh checkpoint-create CHECKPOINT_ID
   ./operator.sh checkpoint-export CHECKPOINT_ID DESTINATION_ROOT
   ./operator.sh restore-drill CHECKPOINT_DIRECTORY
+  ./operator.sh scheduled-backup DESTINATION_ROOT KEEP [CHECKPOINT_ID]
   ./operator.sh upgrade TARGET_IMAGE CHECKPOINT_ID
   ./operator.sh certificate-rotate SERVER_CERT SERVER_KEY [CA_CERT]
 USAGE
@@ -512,6 +623,10 @@ case "${1:-}" in
     restore_drill "$2"
     SUCCEEDED=1
     echo "[koutendb-operator] independent restore verified id=$CHECKPOINT_ID"
+    ;;
+  scheduled-backup)
+    [[ "$#" == "3" || "$#" == "4" ]] || { usage >&2; exit 2; }
+    scheduled_backup "$2" "$3" "${4:-}"
     ;;
   upgrade)
     [[ "$#" == "3" ]] || { usage >&2; exit 2; }

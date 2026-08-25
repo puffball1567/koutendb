@@ -3,6 +3,7 @@ set -euo pipefail
 
 CONTAINER="${KOUTENDB_CONTAINER_NAME:-koutendb-selfhost}"
 STATE_DIR="${KOUTENDB_WATCHDOG_STATE_DIR:-./state/watchdog}"
+OPERATOR_LOCK_DIR="${KOUTENDB_OPERATOR_LOCK_DIR:-$(dirname "$STATE_DIR")/operator/.lock}"
 FAILURE_THRESHOLD="${KOUTENDB_WATCHDOG_FAILURE_THRESHOLD:-3}"
 MAX_RESTARTS="${KOUTENDB_WATCHDOG_MAX_RESTARTS:-3}"
 WINDOW_SECONDS="${KOUTENDB_WATCHDOG_WINDOW_SECONDS:-3600}"
@@ -28,6 +29,11 @@ command -v docker >/dev/null 2>&1 || fail "docker is required"
 [[ ! -L "$STATE_DIR" ]] || fail "state directory must not be a symlink"
 mkdir -p "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
+
+if [[ -e "$OPERATOR_LOCK_DIR" || -L "$OPERATOR_LOCK_DIR" ]]; then
+  echo "[koutendb-watchdog] operator action is active"
+  exit 0
+fi
 
 LOCK_DIR="$STATE_DIR/.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then

@@ -37,6 +37,12 @@ install -m 0644 "$SOURCE/systemd/koutendb-watchdog.timer" \
   "$OUTPUT/systemd/koutendb-watchdog.timer"
 install -m 0600 "$SOURCE/systemd/watchdog.env" \
   "$OUTPUT/systemd/watchdog.env"
+install -m 0644 "$SOURCE/systemd/koutendb-backup.service" \
+  "$OUTPUT/systemd/koutendb-backup.service"
+install -m 0644 "$SOURCE/systemd/koutendb-backup.timer" \
+  "$OUTPUT/systemd/koutendb-backup.timer"
+install -m 0600 "$SOURCE/systemd/backup.env" \
+  "$OUTPUT/systemd/backup.env"
 
 openssl rand -hex 32 >"$OUTPUT/secrets/password"
 openssl rand -hex 32 >"$OUTPUT/secrets/secret-key"

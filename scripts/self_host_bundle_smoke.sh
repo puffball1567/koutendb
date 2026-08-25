@@ -52,6 +52,12 @@ KOUTENDB_VERSION=0.14.0 deploy/self-hosted/bootstrap.sh "$BUNDLE" >/dev/null
 sed -i "s|^KOUTENDB_IMAGE=.*|KOUTENDB_IMAGE=$IMAGE|" "$BUNDLE/.env"
 test -x "$BUNDLE/operator.sh"
 test -x "$BUNDLE/capacity.sh"
+test -f "$BUNDLE/systemd/koutendb-backup.service"
+test -f "$BUNDLE/systemd/koutendb-backup.timer"
+test "$(stat -c '%a' "$BUNDLE/systemd/backup.env")" = "600"
+grep -F 'Persistent=true' "$BUNDLE/systemd/koutendb-backup.timer" >/dev/null
+grep -F 'scheduled-backup ${KOUTENDB_BACKUP_DESTINATION} ${KOUTENDB_BACKUP_KEEP}' \
+  "$BUNDLE/systemd/koutendb-backup.service" >/dev/null
 test "$(stat -c '%a' "$BUNDLE/secrets/password")" = "600"
 test "$(stat -c '%a' "$BUNDLE/operator/ca.key")" = "600"
 test "$(stat -c '%a' "$BUNDLE/certs/server.key")" = "600"
@@ -201,6 +207,79 @@ if docker volume ls --quiet --filter name=koutendb-restore-drill- | grep . >/dev
   echo "[self-host] restore drill left a temporary volume" >&2
   exit 1
 fi
+
+echo "[self-host] validate scheduled backup retention and recovery"
+SCHEDULED_ROOT="$WORK/scheduled"
+mkdir -p "$SCHEDULED_ROOT"
+if run_operator scheduled-backup "$SCHEDULED_ROOT" 0 \
+    scheduled-20260825T010000Z >/dev/null 2>&1; then
+  echo "[self-host] scheduled backup accepted zero retention" >&2
+  exit 1
+fi
+if run_operator scheduled-backup / 1 \
+    scheduled-20260825T010000Z >/dev/null 2>&1; then
+  echo "[self-host] scheduled backup accepted filesystem root" >&2
+  exit 1
+fi
+ln -s "$SCHEDULED_ROOT" "$WORK/scheduled-link"
+if run_operator scheduled-backup "$WORK/scheduled-link" 1 \
+    scheduled-20260825T010000Z >/dev/null 2>&1; then
+  echo "[self-host] scheduled backup accepted a symlink destination" >&2
+  exit 1
+fi
+mkdir "$BUNDLE/state/operator/.lock"
+if run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+    scheduled-20260825T010000Z >/dev/null 2>&1; then
+  echo "[self-host] scheduled backup bypassed the operator lock" >&2
+  exit 1
+fi
+rmdir "$BUNDLE/state/operator/.lock"
+
+run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+  scheduled-20260825T010000Z >/dev/null
+test -f "$SCHEDULED_ROOT/scheduled-20260825T010000Z/checkpoint.complete"
+run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+  scheduled-20260825T020000Z >/dev/null
+test ! -e "$SCHEDULED_ROOT/scheduled-20260825T010000Z"
+test -f "$SCHEDULED_ROOT/scheduled-20260825T020000Z/checkpoint.complete"
+
+printf 'corrupt\n' >>"$SCHEDULED_ROOT/scheduled-20260825T020000Z/kouten.log"
+run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+  scheduled-20260825T030000Z >/dev/null
+test -d "$SCHEDULED_ROOT/scheduled-20260825T020000Z"
+test -d "$SCHEDULED_ROOT/scheduled-20260825T030000Z"
+run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+  scheduled-20260825T040000Z >/dev/null
+test -d "$SCHEDULED_ROOT/scheduled-20260825T020000Z"
+test ! -e "$SCHEDULED_ROOT/scheduled-20260825T030000Z"
+test -d "$SCHEDULED_ROOT/scheduled-20260825T040000Z"
+if run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+    scheduled-20260825T040000Z >/dev/null 2>&1; then
+  echo "[self-host] scheduled backup accepted a duplicate identity" >&2
+  exit 1
+fi
+mkdir "$SCHEDULED_ROOT/scheduled-20260825T050000Z"
+if run_operator scheduled-backup "$SCHEDULED_ROOT" 1 \
+    scheduled-20260825T050000Z >/dev/null 2>&1; then
+  echo "[self-host] scheduled backup accepted a pre-existing destination" >&2
+  exit 1
+fi
+if docker exec "$CONTAINER" test -e \
+    /var/lib/koutendb/scheduled-checkpoints/scheduled-20260825T050000Z; then
+  echo "[self-host] destination preflight left an internal checkpoint" >&2
+  exit 1
+fi
+rmdir "$SCHEDULED_ROOT/scheduled-20260825T050000Z"
+if find "$SCHEDULED_ROOT" -mindepth 1 -maxdepth 1 -name '.tmp-*' |
+    grep . >/dev/null; then
+  echo "[self-host] scheduled backup left a staging directory" >&2
+  exit 1
+fi
+test "$(docker exec "$CONTAINER" sh -ec \
+  "find /var/lib/koutendb/scheduled-checkpoints -mindepth 1 -maxdepth 1 -type d | wc -l")" = "1"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = "healthy"
+docker exec "$CONTAINER" kouten get --config=/etc/koutendb/client.json \
+  --ring=ops/selfhost | grep '"survives": true' >/dev/null
 
 echo "[self-host] validate image upgrade and rollback"
 docker tag "$IMAGE" "$UPGRADE_IMAGE"
@@ -455,6 +534,15 @@ MOCK
 chmod +x "$WORK/mock-bin/docker"
 printf 'unhealthy\n' >"$WORK/mock-health"
 : >"$WORK/mock-restarts"
+mkdir "$WORK/mock-operator-lock"
+PATH="$WORK/mock-bin:$PATH" MOCK_DOCKER_HEALTH="$WORK/mock-health" \
+  MOCK_DOCKER_RESTARTS="$WORK/mock-restarts" \
+  KOUTENDB_CONTAINER_NAME=watchdog-test \
+  KOUTENDB_WATCHDOG_STATE_DIR="$WORK/mock-state" \
+  KOUTENDB_OPERATOR_LOCK_DIR="$WORK/mock-operator-lock" \
+  deploy/self-hosted/watchdog.sh | grep 'operator action is active' >/dev/null
+test ! -s "$WORK/mock-restarts"
+rmdir "$WORK/mock-operator-lock"
 for _ in 1 2 3; do
   PATH="$WORK/mock-bin:$PATH" MOCK_DOCKER_HEALTH="$WORK/mock-health" \
     MOCK_DOCKER_RESTARTS="$WORK/mock-restarts" \
