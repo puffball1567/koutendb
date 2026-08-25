@@ -70,6 +70,7 @@ Translations:
 | Core test suite | Done | `scripts/test_core.sh` runs orbital core, selection, field, store, and public API tests |
 | Full smoke suite | Done | `scripts/test_all_smoke.sh` runs core tests plus cluster tx, failure retry, authz, wire fuzz, recovery, and remote universe sync smoke; driver compatibility is opt-in |
 | Generation snapshot / checkpoint | Foundation | Immutable `koutendb-checkpoint-v1` generations bind a compact WAL to complete ring segment/index generations through a checksummed manifest and completion marker. Creation, strict verification, listing, fail-safe retention, and atomic-directory restore are exposed through Nim, CLI, and additive C ABI v2 JSON functions. Continuous PITR and managed scheduling remain planned |
+| Self-host capacity plans | Foundation | The generated single-node bundle records bounded credential-free capacity history, calculates least-squares disk-growth forecasts with memory/CPU headroom, binds approval to a content-derived plan ID, and executes only a one-shot prepared-capacity/health verification. Cloud provisioning, fleet policy, and arbitrary hooks remain external. |
 | Kubernetes manifests | Planned | liveness/readiness, PVC, rolling restart |
 
 ## Cluster / Network

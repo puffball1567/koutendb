@@ -51,6 +51,7 @@ fi
 KOUTENDB_VERSION=0.14.0 deploy/self-hosted/bootstrap.sh "$BUNDLE" >/dev/null
 sed -i "s|^KOUTENDB_IMAGE=.*|KOUTENDB_IMAGE=$IMAGE|" "$BUNDLE/.env"
 test -x "$BUNDLE/operator.sh"
+test -x "$BUNDLE/capacity.sh"
 test "$(stat -c '%a' "$BUNDLE/secrets/password")" = "600"
 test "$(stat -c '%a' "$BUNDLE/operator/ca.key")" = "600"
 test "$(stat -c '%a' "$BUNDLE/certs/server.key")" = "600"
@@ -291,6 +292,141 @@ docker exec "$CONTAINER" kouten put --config=/etc/koutendb/client.json \
 if find "$BUNDLE/state/operator" -mindepth 1 -maxdepth 1 \
     \( -name 'cert-stage-*' -o -name 'cert-rollback-*' \) | grep . >/dev/null; then
   echo "[self-host] certificate lifecycle left temporary state" >&2
+  exit 1
+fi
+
+run_capacity() {
+  COMPOSE_PROJECT_NAME="$PROJECT" KOUTENDB_CONTAINER_NAME="$CONTAINER" \
+    KOUTENDB_CAPACITY_MIN_WINDOW_SECONDS=1 \
+    KOUTENDB_CAPACITY_MAX_SAMPLE_AGE_SECONDS="${CAPACITY_MAX_SAMPLE_AGE_SECONDS:-60}" \
+    KOUTENDB_CAPACITY_MAX_SAMPLES="${CAPACITY_MAX_SAMPLES:-2}" \
+    KOUTENDB_CAPACITY_RESERVE_PERCENT="${CAPACITY_RESERVE_PERCENT:-0}" \
+    KOUTENDB_CAPACITY_MIN_RESERVE_BYTES="${CAPACITY_MIN_RESERVE_BYTES:-1}" \
+    KOUTENDB_CAPACITY_PLAN_TTL_SECONDS="${CAPACITY_PLAN_TTL_SECONDS:-60}" \
+    "$BUNDLE/capacity.sh" "$@"
+}
+
+plan_id_from_output() {
+  sed -n 's/.*"planId":"\([0-9a-f]\{64\}\)".*/\1/p'
+}
+
+echo "[self-host] validate capacity history, plans, approval, and execution"
+run_capacity sample >/dev/null
+if run_capacity plan 3600 >/dev/null 2>&1; then
+  echo "[self-host] capacity plan accepted insufficient history" >&2
+  exit 1
+fi
+sleep 1
+docker exec "$CONTAINER" kouten put --config=/etc/koutendb/client.json \
+  --ring=ops/capacity --payload='{"growth":true}' --codec=json >/dev/null
+run_capacity sample >/dev/null
+PLAN_ID="$(run_capacity plan 3600 | plan_id_from_output)"
+[[ "$PLAN_ID" =~ ^[0-9a-f]{64}$ ]]
+run_capacity status "$PLAN_ID" | grep '"status":"planned"' >/dev/null
+WRONG_PLAN_ID="${PLAN_ID%?}$(if [[ "${PLAN_ID: -1}" == "0" ]]; then printf 1; else printf 0; fi)"
+if run_capacity approve "$WRONG_PLAN_ID" >/dev/null 2>&1; then
+  echo "[self-host] capacity approval accepted the wrong plan ID" >&2
+  exit 1
+fi
+if run_capacity execute "$PLAN_ID" >/dev/null 2>&1; then
+  echo "[self-host] unapproved capacity plan was executed" >&2
+  exit 1
+fi
+cp "$BUNDLE/state/operator/capacity/plans/$PLAN_ID.plan" \
+  "$WORK/capacity-plan.backup"
+printf 'tampered=1\n' >>"$BUNDLE/state/operator/capacity/plans/$PLAN_ID.plan"
+if run_capacity approve "$PLAN_ID" >/dev/null 2>&1; then
+  echo "[self-host] modified capacity plan was approved" >&2
+  exit 1
+fi
+cp "$WORK/capacity-plan.backup" \
+  "$BUNDLE/state/operator/capacity/plans/$PLAN_ID.plan"
+run_capacity approve "$PLAN_ID" >/dev/null
+run_capacity status "$PLAN_ID" | grep '"status":"approved"' >/dev/null
+run_capacity execute "$PLAN_ID" >/dev/null
+run_capacity status "$PLAN_ID" | grep '"status":"executed"' >/dev/null
+if run_capacity execute "$PLAN_ID" >/dev/null 2>&1; then
+  echo "[self-host] capacity plan executed twice" >&2
+  exit 1
+fi
+
+sleep 1
+run_capacity sample >/dev/null
+test "$(wc -l <"$BUNDLE/state/operator/capacity/samples.tsv")" = "2"
+CAPACITY_RESERVE_PERCENT=100
+SHORTAGE_ID="$(run_capacity plan 7200 | plan_id_from_output)"
+run_capacity approve "$SHORTAGE_ID" >/dev/null
+if run_capacity execute "$SHORTAGE_ID" >/dev/null 2>&1; then
+  echo "[self-host] capacity execution ignored a disk shortage" >&2
+  exit 1
+fi
+CAPACITY_RESERVE_PERCENT=0
+
+CAPACITY_PLAN_TTL_SECONDS=1
+EXPIRED_ID="$(run_capacity plan 10800 | plan_id_from_output)"
+run_capacity approve "$EXPIRED_ID" >/dev/null
+sleep 2
+if run_capacity execute "$EXPIRED_ID" >/dev/null 2>&1; then
+  echo "[self-host] expired capacity plan was executed" >&2
+  exit 1
+fi
+CAPACITY_PLAN_TTL_SECONDS=60
+
+sleep 1
+run_capacity sample >/dev/null
+CAPACITY_MAX_SAMPLE_AGE_SECONDS=2
+STALE_ID="$(run_capacity plan 14400 | plan_id_from_output)"
+run_capacity approve "$STALE_ID" >/dev/null
+sleep 3
+if run_capacity execute "$STALE_ID" >/dev/null 2>&1; then
+  echo "[self-host] stale capacity observations were executed" >&2
+  exit 1
+fi
+CAPACITY_MAX_SAMPLE_AGE_SECONDS=60
+
+cp "$BUNDLE/state/operator/capacity/samples.tsv" "$WORK/capacity-history.backup"
+IFS=$'\t' read -r SAMPLE_TS SAMPLE_DATA SAMPLE_WAL SAMPLE_SEGMENT SAMPLE_INDEX \
+  SAMPLE_FREE SAMPLE_TOTAL SAMPLE_RSS SAMPLE_CPU SAMPLE_MEMORY SAMPLE_AVAILABLE_CPU \
+  SAMPLE_ITEMS SAMPLE_RINGS < <(tail -n 1 \
+    "$BUNDLE/state/operator/capacity/samples.tsv")
+NOW="$(date +%s)"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "$(( NOW - 2 ))" "$(( SAMPLE_DATA + 1000 ))" "$(( SAMPLE_WAL + 1000 ))" \
+  "$SAMPLE_SEGMENT" "$SAMPLE_INDEX" "$SAMPLE_FREE" "$SAMPLE_TOTAL" \
+  "$SAMPLE_RSS" "$SAMPLE_CPU" "$SAMPLE_MEMORY" "$SAMPLE_AVAILABLE_CPU" \
+  "$SAMPLE_ITEMS" "$SAMPLE_RINGS" \
+  >"$BUNDLE/state/operator/capacity/samples.tsv"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "$(( NOW - 1 ))" "$SAMPLE_DATA" "$SAMPLE_WAL" "$SAMPLE_SEGMENT" \
+  "$SAMPLE_INDEX" "$SAMPLE_FREE" "$SAMPLE_TOTAL" "$SAMPLE_RSS" "$SAMPLE_CPU" \
+  "$SAMPLE_MEMORY" "$SAMPLE_AVAILABLE_CPU" "$SAMPLE_ITEMS" "$SAMPLE_RINGS" \
+  >>"$BUNDLE/state/operator/capacity/samples.tsv"
+run_capacity plan 18000 | grep '"growthBytes":0' >/dev/null
+
+# Keep a large baseline out of the regression calculation. The expected
+# 1,000-byte/second slope must survive floating-point cancellation.
+BASELINE=8000000000000000
+for OFFSET in 0 1 2 3 4 5; do
+  DATA_BYTES="$(( BASELINE + OFFSET * 1000 ))"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(( NOW - 6 + OFFSET ))" "$DATA_BYTES" "$DATA_BYTES" 0 0 \
+    "$SAMPLE_FREE" "$SAMPLE_TOTAL" "$SAMPLE_RSS" "$SAMPLE_CPU" \
+    "$SAMPLE_MEMORY" "$SAMPLE_AVAILABLE_CPU" "$SAMPLE_ITEMS" "$SAMPLE_RINGS"
+done >"$BUNDLE/state/operator/capacity/samples.tsv"
+CAPACITY_MAX_SAMPLES=6 run_capacity plan 10 |
+  grep '"growthBytes":10000' >/dev/null
+cp "$WORK/capacity-history.backup" \
+  "$BUNDLE/state/operator/capacity/samples.tsv"
+
+if grep -F "$(cat "$BUNDLE/secrets/password")" \
+    "$BUNDLE/state/operator/capacity/samples.tsv" \
+    "$BUNDLE/state/operator/capacity/plans/"*.plan >/dev/null; then
+  echo "[self-host] credential leaked into capacity state" >&2
+  exit 1
+fi
+if find "$BUNDLE/state/operator/capacity" -maxdepth 1 -name '.tmp-*' |
+    grep . >/dev/null; then
+  echo "[self-host] capacity workflow left a temporary file" >&2
   exit 1
 fi
 
