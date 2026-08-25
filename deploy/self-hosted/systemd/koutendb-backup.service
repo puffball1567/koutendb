@@ -1,0 +1,15 @@
+[Unit]
+Description=Create and restore-verify a KoutenDB backup
+After=docker.service koutendb-watchdog.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/koutendb/backup.env
+WorkingDirectory=/opt/koutendb
+ExecStart=/opt/koutendb/operator.sh scheduled-backup ${KOUTENDB_BACKUP_DESTINATION} ${KOUTENDB_BACKUP_KEEP}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/koutendb/state /var/backups/koutendb

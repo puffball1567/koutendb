@@ -33,7 +33,7 @@ The bootstrap refuses to overwrite a non-empty output directory. It creates:
   `127.0.0.1`;
 - server and client JSON configurations containing paths, not secret values;
 - a pinned GHCR image reference;
-- a bounded health watchdog and optional systemd timer units.
+- bounded health and verified-backup jobs with optional systemd timer units.
 
 Compose keeps the generated source files at mode `0600`. A one-shot,
 network-disabled initialization service copies them into a dedicated runtime
@@ -136,6 +136,47 @@ Repeat the independent restore test without changing the active database:
 ./operator.sh restore-drill \
   /mnt/koutendb-backups/before-upgrade-2026-08-25
 ```
+
+## Scheduled Verified Backups
+
+Run the complete backup transaction manually:
+
+```sh
+./operator.sh scheduled-backup /var/backups/koutendb 7
+```
+
+The operator holds the same exclusive lifecycle lock used by upgrades and
+certificate rotation. It creates a strong-durability checkpoint in a dedicated
+scheduled-checkpoint root, exports it through a hidden staging directory,
+restores it into an independent Docker volume, verifies the restored data, and
+only then publishes the backup. The internal scheduled-checkpoint root targets
+one verified generation, while the export destination targets the requested
+number of verified generations. Invalid or corrupt generations are preserved as
+diagnostic evidence and do not count toward either retention target.
+
+Install the generated daily systemd timer:
+
+```sh
+sudo install -d -m 0750 /etc/koutendb /var/backups/koutendb
+sudo install -m 0644 systemd/koutendb-backup.service \
+  /etc/systemd/system/koutendb-backup.service
+sudo install -m 0644 systemd/koutendb-backup.timer \
+  /etc/systemd/system/koutendb-backup.timer
+sudo install -m 0600 systemd/backup.env /etc/koutendb/backup.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now koutendb-backup.timer
+```
+
+The default runs daily at `03:17 UTC`, adds up to 15 minutes of randomized
+delay, and keeps seven verified exports. If
+`KOUTENDB_BACKUP_DESTINATION` is changed from `/var/backups/koutendb`, update
+the service's `ReadWritePaths` sandbox boundary to the same absolute path.
+Inspect failures with `systemctl status koutendb-backup.service` and
+`journalctl -u koutendb-backup.service`.
+
+This scheduler writes only to a mounted local destination. Object-store upload,
+cloud credentials, cross-account retention, and fleet scheduling remain outside
+the core bundle.
 
 ## Verified Upgrade And Rollback
 
