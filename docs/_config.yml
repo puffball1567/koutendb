@@ -7,6 +7,7 @@ header_pages:
   - index.md
   - public-api.md
   - config-reference.md
+  - access-control.md
   - cli-reference.md
   - koutendb-status.md
   - koutendb-bench.md

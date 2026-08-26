@@ -56,6 +56,17 @@ Keep production config files outside the repository, lock down file
 permissions, and prefer external secret injection when the deployment platform
 provides it.
 
+`koutend` rejects plaintext password authentication on non-loopback listeners
+unless TLS or the secret-key transport is enabled. The
+`allowInsecureAuth` / `--allow-insecure-auth` escape hatch is intended only for
+an explicitly protected development network. Ring-prefix authorization also
+requires authentication; a prefix list by itself is not an access-control
+boundary.
+
+The current role names and replication-service boundary are
+listed in [Roles And Service Accounts](access-control.md). That page also
+distinguishes fixed role names from deployment-defined usernames.
+
 ## `koutend` Server Flags
 
 `koutend` can load these server defaults from JSON with `--config=FILE` or
@@ -84,18 +95,36 @@ provides it.
   "startDrained": false,
   "durability": "strong",
   "galaxy": "app-main",
-  "user": "app",
-  "passwordFile": "/run/secrets/koutendb-password",
   "secretKeyFile": "/run/secrets/koutendb-secret-key",
-  "allowRing": ["users", "orders"],
   "roles": [
     {
       "user": "reader",
       "passwordFile": "/run/secrets/koutendb-reader-password",
       "role": "reader",
       "prefixes": ["users"]
+    },
+    {
+      "user": "writer",
+      "passwordFile": "/run/secrets/koutendb-writer-password",
+      "role": "writer",
+      "prefixes": ["users", "orders"]
+    },
+    {
+      "user": "replicator",
+      "passwordFile": "/run/secrets/koutendb-replicator-password",
+      "role": "replicator",
+      "prefixes": ["users", "orders"]
+    },
+    {
+      "user": "admin",
+      "passwordFile": "/run/secrets/koutendb-admin-password",
+      "role": "admin"
     }
   ],
+  "peerAuth": {
+    "user": "replicator",
+    "secretKeyFile": "/run/secrets/koutendb-secret-key"
+  },
   "tlsCertFile": "/etc/koutendb/server.crt",
   "tlsKeyFile": "/etc/koutendb/server.key",
   "tlsCaFile": "/etc/koutendb/ca.crt",
@@ -116,7 +145,13 @@ closed; use the explicit stop-the-world workflow documented in
 may be a comma-separated string or an array. `allowRing` / `allow-ring` may be
 a comma-separated string or an array. `roles` may contain either
 `"user:password:role[:prefix1,prefix2]"` strings or objects with `user`,
-`password`, `role`, and optional `prefixes`.
+`password` / `passwordFile`, `role`, and optional `prefixes`. Prefer object
+entries with externally mounted password files in production.
+
+`replicator` and `peerAuth` are documented in
+[Roles And Service Accounts](access-control.md). Multi-node role-based configs
+must select an explicit peer identity. `peerAuth.user` references a configured
+`replicator` or `admin`; its password comes from that role entry.
 
 Validate a server config before startup:
 
@@ -152,6 +187,9 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--password-file=FILE` | Read the server password from a file. Trailing whitespace is stripped. |
 | `--secret-key=TEXT` | Secret-key gate and secure auth transport. Prefer `--secret-key-file` or `KOUTEN_SECRET_KEY` outside local smoke tests. |
 | `--secret-key-file=FILE` | Read the secret-key gate value from a file. |
+| `--peer-user=NAME` | Select the configured `replicator` or `admin` role used for outbound node connections. |
+| `--peer-secret-key=TEXT` | Set the outbound node secret-key. Prefer the file form. |
+| `--peer-secret-key-file=FILE` | Read the outbound node secret-key from a file. It must match the target node's inbound secret. |
 | `--auth-token=TEXT` | Token-style auth convenience path. Prefer `--auth-token-file` or `KOUTEN_AUTH_TOKEN` outside local smoke tests. |
 | `--auth-token-file=FILE` | Read token-style auth value from a file. |
 | `--tls-cert=FILE` / `--tls-key=FILE` | Enable standard TLS for the TCP listener. Requires `-d:ssl`. |
@@ -160,7 +198,7 @@ kouten doctor --server-config=/etc/koutendb/server.json --json
 | `--tls-insecure-skip-verify` | Skip peer certificate verification for local smoke tests only. |
 | `--galaxy=NAME` | Galaxy identity expected by clients. |
 | `--allow-ring=PREFIX[,PREFIX...]` | Ring-prefix authorization boundary. |
-| `--role=user:password:reader|writer|admin[:prefixes]` | Role and optional ring-prefix policy. |
+| `--role=user:password:reader|writer|replicator|admin[:prefixes]` | Role and optional ring-prefix policy. |
 
 Physical ownership is stable inside one placement epoch and is independent of
 logical ring orbit periods. The placement tuple is persisted in the WAL.

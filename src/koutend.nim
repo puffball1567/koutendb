@@ -61,6 +61,15 @@ const
     when defined(koutenTestSmallLimits): 3
     else: 1_000_000
   MaxClusterTxOps = 10_000
+  MaxBatchGetItems = 10_000
+  AuthFailureWindowSec = 60.0
+  MaxAuthFailuresPerPeer =
+    when defined(koutenTestAuthThrottle): 3
+    else: 8
+  AuthBlockSec =
+    when defined(koutenTestAuthThrottle): 0.25
+    else: 5.0
+  MaxAuthThrottlePeers = 4_096
 
 type
   AutoPackConfig = object
@@ -104,6 +113,7 @@ type
     username: string
     password: string
     secretKey: string
+    galaxy: string
     tls: bool
     tlsCaFile: string
     tlsServerName: string
@@ -146,12 +156,17 @@ type
     version: MutationVersion
 
   UserRole = enum
-    roleReader, roleWriter, roleAdmin
+    roleReader, roleWriter, roleReplicator, roleAdmin
 
   UserRule = object
     password: string
     role: UserRole
     prefixes: seq[string]
+
+  AuthThrottle = object
+    failures: int
+    windowStartedAt: float
+    blockedUntil: float
 
   Server = ref object
     myId: int
@@ -223,10 +238,15 @@ type
     authed: Table[int, bool]
     authedUsers: Table[int, string]
     authChallenges: Table[int, string]
+    authChallengeUsers: Table[int, string]
+    galaxyBound: Table[int, bool]
+    authPeers: Table[int, string]
+    authThrottleByPeer: Table[string, AuthThrottle]
     startedAt: float
     requestCount: uint64
     errorResponses: uint64
     authFailures: uint64
+    authThrottled: uint64
     authzDenied: uint64
     drainRejectedWrites: uint64
     connectionsAccepted: uint64
@@ -261,6 +281,7 @@ proc handoffWorker(config: HandoffWorkerConfig) {.thread.} =
                                 username = config.username,
                                 password = config.password,
                                 secretKey = config.secretKey,
+                                galaxy = config.galaxy,
                                 tls = config.tls,
                                 tlsCaFile = config.tlsCaFile,
                                 tlsServerName = config.tlsServerName,
@@ -352,7 +373,8 @@ proc audit(sv: Server, event: string; ok = true; user = ""; ring = "";
   if not extra.isNil:
     node["extra"] = extra
   try:
-    var f = open(sv.dataDir / "kouten.audit.jsonl", fmAppend)
+    let path = sv.dataDir / "kouten.audit.jsonl"
+    var f = openPrivateStoreFile(path, fmAppend)
     try:
       f.writeLine($node)
     finally:
@@ -363,7 +385,12 @@ proc audit(sv: Server, event: string; ok = true; user = ""; ring = "";
 proc readSecretFile(path, label: string): string =
   if path.len == 0:
     return ""
-  result = readFile(path).strip()
+  let info = getFileInfo(path, followSymlink = true)
+  if info.size > 65_536:
+    raise newException(ValueError, label & " file exceeds 64 KiB")
+  result = readFile(path)
+  while result.len > 0 and result[^1] in {'\r', '\n'}:
+    result.setLen(result.len - 1)
   if result.len == 0:
     raise newException(ValueError, label & " file is empty")
 
@@ -469,14 +496,17 @@ proc parseRole(s: string): UserRole =
   case s.toLowerAscii()
   of "reader", "read": roleReader
   of "writer", "write": roleWriter
+  of "replicator", "replicate": roleReplicator
   of "admin": roleAdmin
   else:
-    raise newException(ValueError, "role must be reader, writer, or admin")
+    raise newException(ValueError,
+      "role must be reader, writer, replicator, or admin")
 
 proc roleAllowed(role: UserRole, need: UserRole): bool =
   case need
-  of roleReader: true
+  of roleReader: role in {roleReader, roleWriter, roleAdmin}
   of roleWriter: role in {roleWriter, roleAdmin}
+  of roleReplicator: role in {roleReplicator, roleAdmin}
   of roleAdmin: role == roleAdmin
 
 proc parsePrefixes(s: string): seq[string] =
@@ -598,8 +628,10 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
                       authPasswordFile, authTokenFile, authSecretKey,
                       authSecretKeyFile, tlsCertFile, tlsKeyFile, tlsCaFile,
                       tlsServerName: var string,
-                      tlsInsecureSkipVerify: var bool,
+                      tlsInsecureSkipVerify, allowInsecureAuth: var bool,
                       users: var Table[string, UserRule], galaxy: var string,
+                      peerAuthUser, peerAuthSecretKey,
+                      peerAuthSecretKeyFile: var string,
                       allowedRingPrefixes: var seq[string],
                       durability: var StoreDurability,
                       placementEpoch: var uint32,
@@ -670,6 +702,10 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
                                       tlsInsecureSkipVerify)
   tlsInsecureSkipVerify = jsonBoolOpt(cfg, "tls-insecure-skip-verify",
                                       tlsInsecureSkipVerify)
+  allowInsecureAuth = jsonBoolOpt(cfg, "allowInsecureAuth",
+                                  allowInsecureAuth)
+  allowInsecureAuth = jsonBoolOpt(cfg, "allow-insecure-auth",
+                                  allowInsecureAuth)
   galaxy = jsonStringOpt(cfg, "galaxy", galaxy)
   for prefix in parseStringList(cfg, "allowRing"):
     allowedRingPrefixes.add prefix
@@ -714,18 +750,86 @@ proc loadServerConfig(path: string, id: var int, peersStr, dataDir: var string,
     for item in cfg["roles"]:
       let parsed = parseUserRule(item)
       users[parsed.user] = parsed.rule
-      if authUser.len == 0:
-        authUser = parsed.user
-        authPassword = parsed.rule.password
   if cfg.hasKey("role"):
     let parsed = parseUserRule(cfg["role"])
     users[parsed.user] = parsed.rule
-    if authUser.len == 0:
-      authUser = parsed.user
-      authPassword = parsed.rule.password
+  let peerAuthKey =
+    if cfg.hasKey("peerAuth"): "peerAuth"
+    elif cfg.hasKey("peer-auth"): "peer-auth"
+    else: ""
+  if peerAuthKey.len > 0:
+    let peerAuth = cfg[peerAuthKey]
+    if peerAuth.kind != JObject:
+      raise newException(ValueError, "peerAuth must be an object")
+    if peerAuth.hasKey("password") or peerAuth.hasKey("passwordFile") or
+        peerAuth.hasKey("password-file"):
+      raise newException(ValueError,
+        "peerAuth password is derived from its configured role user")
+    peerAuthUser = jsonStringOpt(peerAuth, "user",
+                   jsonStringOpt(peerAuth, "username", peerAuthUser))
+    peerAuthSecretKey = jsonStringOpt(peerAuth, "secretKey",
+                        jsonStringOpt(peerAuth, "secret-key",
+                                      peerAuthSecretKey))
+    peerAuthSecretKeyFile = jsonStringOpt(peerAuth, "secretKeyFile",
+                            jsonStringOpt(peerAuth, "secret-key-file",
+                                          peerAuthSecretKeyFile))
 
 proc currentUser(sv: Server, sock: Socket): string =
   sv.authedUsers.getOrDefault(sock.getFd.int, sv.authUser)
+
+proc authPeer(sv: Server, fd: int): string =
+  sv.authPeers.getOrDefault(fd, "unknown")
+
+proc authPeerBlocked(sv: Server, peer: string, now: float): bool =
+  if peer notin sv.authThrottleByPeer:
+    return false
+  let state = sv.authThrottleByPeer[peer]
+  if state.blockedUntil > now:
+    return true
+  if now - state.windowStartedAt > AuthFailureWindowSec:
+    sv.authThrottleByPeer.del peer
+  false
+
+proc clearAuthFailures(sv: Server, fd: int) =
+  let peer = sv.authPeer(fd)
+  if peer in sv.authThrottleByPeer:
+    sv.authThrottleByPeer.del peer
+
+proc recordAuthFailure(sv: Server, fd: int, now: float): bool =
+  let peer = sv.authPeer(fd)
+  var state = sv.authThrottleByPeer.getOrDefault(peer)
+  if state.windowStartedAt <= 0 or
+      now - state.windowStartedAt > AuthFailureWindowSec:
+    state = AuthThrottle(failures: 0, windowStartedAt: now,
+                         blockedUntil: 0)
+  inc state.failures
+  if state.failures >= MaxAuthFailuresPerPeer:
+    state.blockedUntil = now + AuthBlockSec
+    result = true
+  if peer notin sv.authThrottleByPeer and
+      sv.authThrottleByPeer.len >= MaxAuthThrottlePeers:
+    var expired: seq[string] = @[]
+    for trackedPeer, tracked in sv.authThrottleByPeer:
+      if tracked.blockedUntil <= now and
+          now - tracked.windowStartedAt > AuthFailureWindowSec:
+        expired.add trackedPeer
+    for trackedPeer in expired:
+      sv.authThrottleByPeer.del trackedPeer
+    if sv.authThrottleByPeer.len >= MaxAuthThrottlePeers:
+      var oldestPeer = ""
+      var oldestWindow = Inf
+      for trackedPeer, tracked in sv.authThrottleByPeer:
+        if tracked.windowStartedAt < oldestWindow:
+          oldestPeer = trackedPeer
+          oldestWindow = tracked.windowStartedAt
+      if oldestPeer.len > 0:
+        sv.authThrottleByPeer.del oldestPeer
+  sv.authThrottleByPeer[peer] = state
+
+proc isLoopbackHost(host: string): bool =
+  let normalized = host.toLowerAscii()
+  normalized == "localhost" or normalized == "::1" or
+    normalized.startsWith("127.")
 
 proc userRule(sv: Server, user: string): UserRule =
   if user.len > 0 and user in sv.users:
@@ -889,8 +993,13 @@ proc rejectIfDraining(sv: Server, sock: Socket, command: string): bool =
   true
 
 proc drainTxCommitOps(sock: Socket, nOps: int) =
+  if nOps < 0 or nOps > MaxClusterTxOps:
+    raise newException(ValueError,
+      "cluster transaction operation count is invalid")
   for _ in 0 ..< nOps:
     let h = sock.readHeader()
+    if h.len == 0 or h[0] notin ["P", "D"]:
+      raise newException(ValueError, "TXCOMMIT op must be P or D")
     let data = if h[0] == "P" or h[0] == "D": 1 else: 0
     requireParts(h, "TXCOMMIT op", data + 7)
     let payloadLen = parseInt(h[data + 5])
@@ -1324,6 +1433,13 @@ proc visibleVectorCount(sv: Server, sock: Socket): int =
     if sv.ringKeyAllowed(sock, ring):
       result += count
 
+proc visibleItemCount(sv: Server, sock: Socket): int =
+  if not sv.authzEnabled:
+    return sv.st.count
+  for ring in sv.st.itemsByRing.keys:
+    if sv.ringKeyAllowed(sock, ring):
+      result += sv.st.ringLiveCount(ring)
+
 proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
   requireParts(parts, "RETRIEVE", 5)
   let hasRing = parts[1] == "1"
@@ -1375,6 +1491,14 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
     if hasRing:
       for p in sv.st.particlesByRing(ringKey):
         scoreParticle(p)
+    elif sv.authzEnabled:
+      # Authorization is a retrieval boundary, not a result filter. Avoid
+      # touching unauthorized rings so payload existence cannot be inferred
+      # from global-retrieval work or latency.
+      for candidateRing in sv.st.vectorCountByRing.keys:
+        if sv.ringKeyAllowed(sock, candidateRing):
+          for p in sv.st.particlesByRing(candidateRing):
+            scoreParticle(p)
     else:
       for p in sv.st.allParticles():
         scoreParticle(p)
@@ -1581,6 +1705,9 @@ proc readClusterTxOps(sv: Server, sock: Socket,
   result.ok = true
   for opIndex in 0 ..< nOps:
     let h = sock.readHeader()
+    if h.len == 0 or h[0] notin ["P", "D"]:
+      raise newException(ValueError,
+        "cluster transaction operation must be P or D")
     let isDelete = h[0] == "D"
     let data = if h[0] == "P" or h[0] == "D": 1 else: 0
     requireParts(h, "cluster transaction op", data + 7)
@@ -1615,21 +1742,64 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     parts = sock.readHeader()
   except IOError, OSError, TimeoutError:
     return false
+  if parts.len == 0:
+    inc sv.errorResponses
+    sock.sendFrame("ERR bad-request")
+    return false
   inc sv.requestCount
   let now = epochTime()
   let fd = sock.getFd.int
   if (sv.authUser.len > 0 or sv.users.len > 0 or sv.authSecretKey.len > 0) and
       not sv.authed.getOrDefault(fd, false):
     if sv.users.len > 0:
-      if parts[0] == "AUTH" and parts.len >= 3 and parts[1] in sv.users and
-          secureEqual(sv.users[parts[1]].password, parts[2]):
-        sv.authed[fd] = true
-        sv.authedUsers[fd] = parts[1]
-        sv.audit("auth-success", user = parts[1])
-        sock.sendFrame("OK auth")
-        return true
+      let candidateUser = if parts.len >= 2: parts[1] else: ""
+      let candidatePassword = if parts.len >= 3: parts[2] else: ""
+      let knownUser = candidateUser in sv.users
+      let expectedPassword =
+        if knownUser: sv.users[candidateUser].password
+        else: "invalid-authentication-candidate"
+      if sv.authSecretKey.len > 0:
+        if parts[0] == "AUTHCHAL" and parts.len >= 2:
+          let challenge = newChallengeHex()
+          sv.authChallenges[fd] = challenge
+          sv.authChallengeUsers[fd] = candidateUser
+          sock.sendFrame("CHAL " & challenge)
+          return true
+        if parts[0] == "AUTHRESP" and parts.len >= 2 and
+            fd in sv.authChallenges and fd in sv.authChallengeUsers:
+          let challenge = sv.authChallenges[fd]
+          let challengedUser = sv.authChallengeUsers[fd]
+          let challengedKnown = challengedUser in sv.users
+          let challengedPassword =
+            if challengedKnown: sv.users[challengedUser].password
+            else: "invalid-authentication-candidate"
+          let responseMatches = verifySecretResponse(
+            challengedUser, challengedPassword, challenge, parts[1],
+            sv.authSecretKey)
+          if challengedKnown and responseMatches:
+            sv.authChallenges.del fd
+            sv.authChallengeUsers.del fd
+            sv.authed[fd] = true
+            sv.authedUsers[fd] = challengedUser
+            sv.clearAuthFailures(fd)
+            sv.audit("auth-success", user = challengedUser)
+            sock.sendFrame("OK auth")
+            sock.enableSecure(sv.authSecretKey, challenge)
+            return true
+      else:
+        let passwordMatches = secureEqual(expectedPassword, candidatePassword)
+        if parts[0] == "AUTH" and parts.len >= 3 and knownUser and
+            passwordMatches:
+          sv.authed[fd] = true
+          sv.authedUsers[fd] = parts[1]
+          sv.clearAuthFailures(fd)
+          sv.audit("auth-success", user = parts[1])
+          sock.sendFrame("OK auth")
+          return true
     elif sv.authSecretKey.len > 0:
-      if parts[0] == "AUTHCHAL" and parts.len >= 2 and parts[1] == sv.authUser:
+      # Return a challenge for every syntactically valid username so the first
+      # response does not disclose whether the configured user exists.
+      if parts[0] == "AUTHCHAL" and parts.len >= 2:
         let challenge = newChallengeHex()
         sv.authChallenges[fd] = challenge
         sock.sendFrame("CHAL " & challenge)
@@ -1641,6 +1811,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
           sv.authChallenges.del fd
           sv.authed[fd] = true
           sv.authedUsers[fd] = sv.authUser
+          sv.clearAuthFailures(fd)
           sv.audit("auth-success", user = sv.authUser)
           sock.sendFrame("OK auth")
           sock.enableSecure(sv.authSecretKey, challenge)
@@ -1651,15 +1822,40 @@ proc handleFrame(sv: Server, sock: Socket): bool =
           secureEqual(parts[2], sv.authPassword):
         sv.authed[fd] = true
         sv.authedUsers[fd] = sv.authUser
+        sv.clearAuthFailures(fd)
         sv.audit("auth-success", user = sv.authUser)
         sock.sendFrame("OK auth")
         return true
     inc sv.authFailures
     inc sv.errorResponses
+    let newlyBlocked = sv.recordAuthFailure(fd, now)
     sv.audit("auth-failure", ok = false,
              user = (if parts.len >= 2: parts[1] else: ""),
              message = "authentication failed or required")
+    if newlyBlocked:
+      sv.audit("auth-throttled", ok = false,
+               message = "authentication retry limit reached")
     sock.sendFrame("ERR auth-required")
+    return false
+  if sv.galaxy.len > 0 and not sv.galaxyBound.getOrDefault(fd, false) and
+      parts[0] != "HELLO":
+    inc sv.errorResponses
+    sv.audit("galaxy-denied", ok = false, user = sv.currentUser(sock),
+             message = "galaxy binding is required before database operations")
+    sock.sendFrame("ERR galaxy-required")
+    return false
+  if sv.users.len > 0 and
+      sv.userRule(sv.currentUser(sock)).role == roleReplicator and
+      parts[0] notin ["FPUT", "FPUTR", "UAPPLY", "APPLYTX", "APPLYTXF",
+                       "TRF", "TRFD", "COORDINATOR",
+                       "TXMIRROR", "TXMIRRORAPPLIED",
+                       "HELLO", "TOPOLOGY", "ACTIVATION", "HEALTH", "WIREVER",
+                       "CODECS", "CODECMETA"]:
+    inc sv.authzDenied
+    inc sv.errorResponses
+    sv.audit("authz-denied", ok = false, user = sv.currentUser(sock),
+             message = "replicator role cannot perform public client operation")
+    sock.sendFrame("ERR authz-denied role=" & $roleReplicator)
     return false
   case parts[0]
   of "AUTH":
@@ -1670,8 +1866,12 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       sock.sendFrame("ERR galaxy-required")
     elif parts[1] != sv.galaxy:
       inc sv.errorResponses
-      sock.sendFrame("ERR wrong-galaxy expected=" & sv.galaxy)
+      sv.audit("galaxy-denied", ok = false, user = sv.currentUser(sock),
+               message = "client requested a different galaxy")
+      sock.sendFrame("ERR wrong-galaxy")
+      return false
     else:
+      sv.galaxyBound[fd] = true
       sock.sendFrame("OK galaxy=" & sv.galaxy)
   of "COORDINATOR":
     sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
@@ -1716,6 +1916,9 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     requireParts(parts, "TXCOMMIT", 3)
     let txid = parseBiggestUInt(parts[1]).uint64
     let nOps = parseInt(parts[2])
+    if nOps < 0 or nOps > MaxClusterTxOps:
+      raise newException(ValueError,
+        "TXCOMMIT operation count must be between 0 and " & $MaxClusterTxOps)
     if sv.myId != sv.coordinatorNode:
       sock.drainTxCommitOps(nOps)
       sock.sendFrame("COORD " & $sv.coordinatorEpoch & " " &
@@ -1742,7 +1945,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         "cluster transaction standby did not durably accept the intent")
     sock.sendFrame("OK")
   of "TXMIRROR":
-    if not sv.requireRole(sock, roleWriter):
+    if not sv.requireRole(sock, roleReplicator):
       return false
     requireParts(parts, "TXMIRROR", 5)
     let epoch = parseCoordinatorEpoch(parts[1])
@@ -1762,7 +1965,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     sv.st.markClusterTxReplicated(txid, epoch, sv.myId)
     sock.sendFrame("OK MIRRORED")
   of "TXMIRRORAPPLIED":
-    if not sv.requireRole(sock, roleWriter):
+    if not sv.requireRole(sock, roleReplicator):
       return true
     requireParts(parts, "TXMIRRORAPPLIED", 4)
     let epoch = parseCoordinatorEpoch(parts[1])
@@ -1793,7 +1996,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     else:
       sock.sendFrame("OK UNKNOWN")
   of "UAPPLY":
-    if not sv.requireRole(sock, roleWriter):
+    if not sv.requireRole(sock, roleReplicator):
       return false
     try:
       requireParts(parts, "UAPPLY", 2)
@@ -2063,9 +2266,9 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       sv.codecMetadata[sock.getFd.int] = true
       sock.sendFrame("OK codec-metadata")
   of "APPLYTX", "APPLYTXF":
-    if not sv.requireRole(sock, roleWriter):
-      return false
     let fenced = parts[0] == "APPLYTXF"
+    if not sv.requireRole(sock, roleReplicator):
+      return false
     requireParts(parts, parts[0], if fenced: 11 else: 9)
     let txid = parseBiggestUInt(parts[1]).uint64
     let coordinatorEpoch =
@@ -2161,6 +2364,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     sock.sendFrame("MISS")
   of "RETRIEVE":
     requireParts(parts, "RETRIEVE", 5)
+    if parts[1] notin ["0", "1"]:
+      raise newException(ValueError, "RETRIEVE ring flag must be 0 or 1")
     let retrieveBodyBytes = checkedVecBytes(parseInt(parts[4]))
     if parts[1] == "1":
       let ringKey = parseBiggestUInt(parts[2]).uint64
@@ -2188,10 +2393,12 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         continue
       sock.sendFrame("RING " & $ring & " " & $rc.n & " " & $rc.c.len,
                      rc.c.vecBytes)
-  of "PUTR":
-    if not sv.requireRole(sock, roleWriter):
+  of "PUTR", "FPUTR":
+    let forwarded = parts[0] == "FPUTR"
+    if not sv.requireRole(sock,
+        if forwarded: roleReplicator else: roleWriter):
       return false
-    requireParts(parts, "PUTR", 3)
+    requireParts(parts, parts[0], 3)
     let ringLen = parseInt(parts[1])
     let payloadLen = parseInt(parts[2])
     let vecDim = if parts.len >= 4: parseInt(parts[3]) else: 0
@@ -2214,7 +2421,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let ri = sv.ringInfo(ringName)
     let owner = int(sv.tbl.placementOwner(ri.key))
     if owner != sv.myId:
-      let id = sv.peerLink.putRingReq(owner, ringName, payload, vec, codec)
+      if forwarded:
+        sock.sendFrame("ERR owner-routing-loop")
+        return true
+      let id = sv.peerLink.forwardPutRingReq(owner, ringName, payload, vec,
+                                             codec)
       sock.sendFrame("ID " & $id.parent & " " & $id.epoch & " " & $id.seq & " " &
                      $id.tWrite & " " & $id.period & " " & $id.head)
     else:
@@ -2226,10 +2437,12 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         sv.fs.observeRingPut(ri.key, vec)
       sock.sendFrame("ID " & $ri.key & " 1 " & $seq & " " & $now & " " &
                      $ri.period & " " & $ri.head)
-  of "PUT":
-    if not sv.requireRole(sock, roleWriter):
+  of "PUT", "FPUT":
+    let forwarded = parts[0] == "FPUT"
+    if not sv.requireRole(sock,
+        if forwarded: roleReplicator else: roleWriter):
       return false
-    requireParts(parts, "PUT", 5)
+    requireParts(parts, parts[0], 5)
     let ringKey = parseBiggestUInt(parts[1]).uint64
     let period = parseFloat(parts[2])
     let head = parseFloat(parts[3])
@@ -2251,8 +2464,11 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       else: sock.readExact(checkedVecBytes(vecDim)).bytesVec(vecDim).normalize()
     let owner = int(sv.tbl.placementOwner(ringKey))
     if owner != sv.myId:
-      let placed = sv.peerLink.putReq(owner, ringKey, period, head, payload,
-                                      vec, codec)
+      if forwarded:
+        sock.sendFrame("ERR owner-routing-loop")
+        return true
+      let placed = sv.peerLink.forwardPutReq(owner, ringKey, period, head,
+                                             payload, vec, codec)
       sock.sendFrame("OK " & $placed.seq & " " & $placed.tWrite)
       return true
     let seq = sv.st.nextSeq(ringKey)
@@ -2396,6 +2612,9 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     let n = parseInt(parts[1])
     let bodyLen = parseInt(parts[2])
     discard checkedWireLen(bodyLen, "bodyLen")
+    if n < 0 or n > MaxBatchGetItems:
+      raise newException(ValueError,
+        "BGET item count must be between 0 and " & $MaxBatchGetItems)
     let body = sock.readExact(bodyLen)
     var payload = ""
     var pos = 0
@@ -2421,7 +2640,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         payload.add "0\n"
     sock.sendFrame("BVAL " & $n & " " & $payload.len, payload)
   of "TRF":
-    if not sv.requireRole(sock, roleWriter):
+    if not sv.requireRole(sock, roleReplicator):
       return false
     requireParts(parts, "TRF", 7)
     var p = Particle(parent: parseBiggestUInt(parts[1]).uint64,
@@ -2442,6 +2661,10 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         (parts.len == 16 and not maintenanceMigration):
       sock.drainBytes(bodyBytes)
       sock.sendFrame("ERR invalid-TRF-frame")
+      return true
+    if maintenanceMigration and not sv.rolePermitted(sock, roleAdmin):
+      sock.drainBytes(bodyBytes)
+      discard sv.requireRole(sock, roleAdmin)
       return true
     if hasPlacementFence:
       let expectedEpoch = parseUInt(parts[12])
@@ -2482,7 +2705,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         discard sv.queueHandoffWork(p.parent, p.seq, owner, false)
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "TRFD":
-    if not sv.requireRole(sock, roleWriter):
+    if not sv.requireRole(sock, roleReplicator):
       return false
     requireParts(parts, "TRFD", 9)
     var tombstone = Tombstone(
@@ -2508,6 +2731,8 @@ proc handleFrame(sv: Server, sock: Socket): bool =
         (parts.len == 15 and not maintenanceMigration):
       sock.sendFrame("ERR invalid-TRFD-frame")
       return true
+    if maintenanceMigration and not sv.requireRole(sock, roleAdmin):
+      return true
     if hasPlacementFence:
       let expectedEpoch = parseUInt(parts[11])
       let expectedNodes = parseUInt(parts[12])
@@ -2531,7 +2756,9 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                                    migration = maintenanceMigration)
     sock.sendFrame("OK " & (if applied: "APPLIED" else: "SKIPPED"))
   of "STATS":
-    sock.sendFrame("OK " & $sv.myId & " " & $sv.st.count)
+    if not sv.requireRole(sock, roleReader):
+      return true
+    sock.sendFrame("OK " & $sv.myId & " " & $sv.visibleItemCount(sock))
   of "HEALTH":
     if sv.users.len > 0 and not roleAllowed(sv.userRule(sv.currentUser(sock)).role,
                                             roleAdmin):
@@ -2549,6 +2776,7 @@ proc handleFrame(sv: Server, sock: Socket): bool =
                    "requests " & $sv.requestCount & " " &
                    "errors " & $sv.errorResponses & " " &
                    "authFailures " & $sv.authFailures & " " &
+                   "authThrottled " & $sv.authThrottled & " " &
                    "authzDenied " & $sv.authzDenied & " " &
                    "draining " & $(if sv.draining: 1 else: 0) & " " &
                    "drainRejectedWrites " & $sv.drainRejectedWrites & " " &
@@ -2782,15 +3010,19 @@ proc printUsage() =
   echo "  --auth-token-file=FILE        Read token-style auth value from file"
   echo "  --secret-key=TEXT             Additional secret-key gate"
   echo "  --secret-key-file=FILE        Read secret-key gate value from file"
+  echo "  --peer-user=NAME              Role user for outbound node authentication"
+  echo "  --peer-secret-key=TEXT        Secret-key gate for outbound node authentication"
+  echo "  --peer-secret-key-file=FILE   Read outbound node secret-key from file"
   echo "  --tls-cert=FILE               Enable TLS with certificate PEM (requires -d:ssl)"
   echo "  --tls-key=FILE                TLS private key PEM (requires -d:ssl)"
   echo "  --tls-ca=FILE                 CA/self-signed PEM for peer TLS verification"
   echo "  --tls-server-name=NAME        Override peer TLS hostname verification / SNI"
   echo "  --tls-insecure-skip-verify    Skip peer certificate verification for local smoke only"
+  echo "  --allow-insecure-auth         Permit plaintext password auth beyond loopback"
   echo "  --galaxy=NAME                 Expected galaxy name"
   echo "  --allow-ring=PREFIX[,PREFIX]  Ring-prefix authorization"
   echo "  --role=user:password:role[:prefixes]"
-  echo "                                Role entry: reader, writer, or admin"
+  echo "                                Role entry: reader, writer, replicator, or admin"
   echo "  -h, --help                    Show this help"
   echo ""
   echo "Example:"
@@ -2817,11 +3049,15 @@ proc main() =
   var authTokenFile = ""
   var authSecretKey = ""
   var authSecretKeyFile = ""
+  var peerAuthUser = ""
+  var peerAuthSecretKey = ""
+  var peerAuthSecretKeyFile = ""
   var tlsCertFile = ""
   var tlsKeyFile = ""
   var tlsCaFile = ""
   var tlsServerName = ""
   var tlsInsecureSkipVerify = false
+  var allowInsecureAuth = false
   var users = initTable[string, UserRule]()
   var galaxy = ""
   var allowedRingPrefixes: seq[string] = @[]
@@ -2843,8 +3079,11 @@ proc main() =
                      diskBacked, autoPack,
                      authUser, authPassword, authPasswordFile, authTokenFile,
                      authSecretKey, authSecretKeyFile, tlsCertFile, tlsKeyFile,
-                     tlsCaFile, tlsServerName, tlsInsecureSkipVerify, users,
-                     galaxy, allowedRingPrefixes, durability, placementEpoch,
+                     tlsCaFile, tlsServerName, tlsInsecureSkipVerify,
+                     allowInsecureAuth, users,
+                     galaxy, peerAuthUser, peerAuthSecretKey,
+                     peerAuthSecretKeyFile, allowedRingPrefixes,
+                     durability, placementEpoch,
                      virtualArcsPerNode, coordinatorEpoch, coordinatorNode,
                      coordinatorReplica, startDrained)
 
@@ -2876,18 +3115,19 @@ proc main() =
       of "password-file": authPasswordFile = val
       of "secret-key": authSecretKey = val
       of "secret-key-file": authSecretKeyFile = val
+      of "peer-user": peerAuthUser = val
+      of "peer-secret-key": peerAuthSecretKey = val
+      of "peer-secret-key-file": peerAuthSecretKeyFile = val
       of "tls-cert": tlsCertFile = val
       of "tls-key": tlsKeyFile = val
       of "tls-ca": tlsCaFile = val
       of "tls-server-name": tlsServerName = val
       of "tls-insecure-skip-verify": tlsInsecureSkipVerify = true
+      of "allow-insecure-auth": allowInsecureAuth = true
       of "galaxy": galaxy = val
       of "role":
         let parsed = parseUserRule(val)
         users[parsed.user] = parsed.rule
-        if authUser.len == 0:
-          authUser = parsed.user
-          authPassword = parsed.rule.password
       of "allow-ring":
         for part in val.split(','):
           let prefix = part.strip()
@@ -2921,6 +3161,9 @@ proc main() =
     authPassword = readSecretFile(authPasswordFile, "password")
   if authSecretKeyFile.len > 0:
     authSecretKey = readSecretFile(authSecretKeyFile, "secret-key")
+  if peerAuthSecretKeyFile.len > 0:
+    peerAuthSecretKey = readSecretFile(peerAuthSecretKeyFile,
+                                       "peer secret-key")
   if authTokenFile.len > 0:
     authUser = "token"
     authPassword = readSecretFile(authTokenFile, "auth-token")
@@ -2933,11 +3176,16 @@ proc main() =
     authPassword = getEnv("KOUTEN_AUTH_TOKEN")
   if authSecretKey.len == 0:
     authSecretKey = getEnv("KOUTEN_SECRET_KEY")
+  if peerAuthUser.len == 0:
+    peerAuthUser = getEnv("KOUTEN_PEER_USER")
+  if peerAuthSecretKey.len == 0:
+    peerAuthSecretKey = getEnv("KOUTEN_PEER_SECRET_KEY")
   if authPassword.len > 0 and authUser.len == 0:
     raise newException(ValueError, "--password requires --user")
   if authUser.len > 0 and authPassword.len == 0:
     raise newException(ValueError, "--user requires --password")
-  if authSecretKey.len > 0 and (authUser.len == 0 or authPassword.len == 0):
+  if users.len == 0 and authSecretKey.len > 0 and
+      (authUser.len == 0 or authPassword.len == 0):
     raise newException(ValueError,
       "--secret-key requires --user and --password")
   if tlsCertFile.len > 0 or tlsKeyFile.len > 0:
@@ -2946,7 +3194,46 @@ proc main() =
     when not defined(ssl):
       raise newException(ValueError, "TLS support requires building koutend with -d:ssl")
   let peers = parsePeers(peersStr)
-  doAssert id >= 0 and id < peers.len, "--id と --peers を指定（id は peers 内の自分の位置）"
+  if id < 0 or id >= peers.len:
+    raise newException(ValueError,
+      "--id must identify this node within --peers")
+  var peerAuthPassword = ""
+  if peerAuthUser.len > 0:
+    if users.len == 0:
+      raise newException(ValueError,
+        "peerAuth requires role-based users")
+    if peerAuthUser notin users:
+      raise newException(ValueError,
+        "peerAuth user must reference an existing role user")
+    if users[peerAuthUser].role notin {roleReplicator, roleAdmin}:
+      raise newException(ValueError,
+        "peerAuth user must have replicator or admin role")
+    peerAuthPassword = users[peerAuthUser].password
+  elif peerAuthSecretKey.len > 0:
+    raise newException(ValueError,
+      "peerAuth secret-key requires peerAuth user")
+  if peerAuthSecretKey.len > 0 and authSecretKey.len == 0:
+    raise newException(ValueError,
+      "peerAuth secret-key requires the server secret-key gate")
+  if users.len > 0 and peers.len > 1 and peerAuthUser.len == 0:
+    raise newException(ValueError,
+      "multi-node role configuration requires explicit peerAuth user")
+  let outboundAuthUser = if users.len > 0: peerAuthUser else: authUser
+  let outboundAuthPassword =
+    if users.len > 0: peerAuthPassword else: authPassword
+  let outboundAuthSecretKey =
+    if users.len > 0: peerAuthSecretKey else: authSecretKey
+  let authEnabled = authUser.len > 0 or users.len > 0 or authSecretKey.len > 0
+  if allowedRingPrefixes.len > 0 and not authEnabled:
+    raise newException(ValueError,
+      "ring-prefix authorization requires authentication")
+  let passwordTransportProtected = tlsCertFile.len > 0 or
+    authSecretKey.len > 0
+  if authEnabled and not peers[id].host.isLoopbackHost and
+      not passwordTransportProtected and not allowInsecureAuth:
+    raise newException(ValueError,
+      "plaintext password authentication outside loopback requires TLS, " &
+      "secret-key transport, or --allow-insecure-auth")
   if virtualArcsPerNode <= 0:
     raise newException(ValueError, "--virtual-arcs-per-node must be positive")
   if coordinatorNode < 0 or coordinatorNode >= peers.len:
@@ -2989,9 +3276,11 @@ proc main() =
                                 mutationOrigin = uint32(id + 1)),
                   dataDir: dataDir,
                   fs: newFieldState(),
-                  peerLink: newClusterClient(peers, username = authUser,
-                                             password = authPassword,
-                                             secretKey = authSecretKey,
+                  peerLink: newClusterClient(peers,
+                                             username = outboundAuthUser,
+                                             password = outboundAuthPassword,
+                                             secretKey = outboundAuthSecretKey,
+                                             galaxy = galaxy,
                                              tls = tlsCertFile.len > 0,
                                              tlsCaFile = tlsCaFile,
                                              tlsServerName = tlsServerName,
@@ -3022,6 +3311,9 @@ proc main() =
                   preparedSelectionLru: @[],
                   preparedSelectionBytes: 0,
                   codecMetadata: initTable[int, bool](),
+                  authPeers: initTable[int, string](),
+                  authThrottleByPeer: initTable[string, AuthThrottle](),
+                  authChallengeUsers: initTable[int, string](),
                   startedAt: epochTime())
   when defined(ssl):
     if sv.tlsEnabled:
@@ -3050,9 +3342,10 @@ proc main() =
   var handoffThread: Thread[HandoffWorkerConfig]
   createThread(handoffThread, handoffWorker, HandoffWorkerConfig(
     peers: peers,
-    username: authUser,
-    password: authPassword,
-    secretKey: authSecretKey,
+    username: outboundAuthUser,
+    password: outboundAuthPassword,
+    secretKey: outboundAuthSecretKey,
+    galaxy: galaxy,
     tls: tlsCertFile.len > 0,
     tlsCaFile: tlsCaFile,
     tlsServerName: tlsServerName,
@@ -3087,8 +3380,9 @@ proc main() =
        (if users.len > 0: " authz=role-ring-prefix"
         elif allowedRingPrefixes.len > 0: " authz=ring-prefix"
         else: " authz=off"),
-       (if authUser.len > 0:
-          " auth=on user=" & authUser &
+       (if authEnabled:
+          " auth=on" &
+          (if authUser.len > 0: " user=" & authUser else: " users=" & $users.len) &
           (if authSecretKey.len > 0: " secret=on" else: " secret=off")
         else: " auth=off"),
        (if tlsCertFile.len > 0: " tls=on" else: " tls=off")
@@ -3121,6 +3415,20 @@ proc main() =
           continue
         client.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
         client.setSocketTimeouts(SocketReadTimeoutMs, SocketWriteTimeoutMs)
+        let clientPeer =
+          try: client.getPeerAddr()[0]
+          except CatchableError: "unknown"
+        if sv.authPeerBlocked(clientPeer, epochTime()):
+          inc sv.errorResponses
+          inc sv.connectionsRejected
+          inc sv.authThrottled
+          if not sv.tlsEnabled:
+            try:
+              client.sendFrame("ERR auth-throttled")
+            except CatchableError:
+              discard
+          client.close()
+          continue
         when defined(ssl):
           if sv.tlsEnabled:
             try:
@@ -3130,9 +3438,11 @@ proc main() =
               client.close()
               continue
         conns[client.getFd.int] = client
+        sv.authPeers[client.getFd.int] = clientPeer
         inc sv.connectionsAccepted
         sv.activeConnections = conns.len
-        if sv.authUser.len == 0:
+        if sv.authUser.len == 0 and sv.users.len == 0 and
+            sv.authSecretKey.len == 0:
           sv.authed[client.getFd.int] = true
         sel.registerHandle(client.getFd, {Event.Read}, 0)
       else:
@@ -3155,6 +3465,9 @@ proc main() =
           sv.authedUsers.del fd
           sv.codecMetadata.del fd
           sv.authChallenges.del fd
+          sv.authChallengeUsers.del fd
+          sv.galaxyBound.del fd
+          sv.authPeers.del fd
           sock.disableSecure()
           sock.close()
     # Run bounded migration, retry, and tombstone work at the maintenance

@@ -1,6 +1,8 @@
 ## kouten/store の永続化テスト
 
-import std/[algorithm, os, osproc, random, sequtils, strutils, tables, tempfiles, unittest]
+import std/[algorithm, os, osproc, posix, random, sequtils, strutils, tables,
+            tempfiles, unittest]
+import nimsodium
 import ../src/kouten/store
 
 if paramCount() == 2 and paramStr(1) == "--lock-child":
@@ -25,10 +27,85 @@ proc diskRingSignature(st: Store, ring: uint64): seq[string] =
     result.add $p.seq & "|" & p.payload & "|" & $p.version
   result.sort()
 
+proc legacyEncryptedBackup(plaintext, passphrase: string): string =
+  let key = secretBoxKeyFromBytes(
+    genericHash("koutendb-backup-v1\0" & passphrase, SecretBoxKeyBytes))
+  result = "KOUTENDB-BACKUP-SECRETBOX-V1\n" &
+    encryptSecretBox(plaintext, key)
+
 proc mutationVersion(n: int64, origin = 1'u32): MutationVersion =
   MutationVersion(physicalMicros: n, logical: 0, origin: origin)
 
 suite "store persistence":
+  test "closed store transactions return validation errors":
+    let dir = createTempDir("kouten-store", "closed-transaction")
+    var st = openStore(dir)
+    let tx = st.beginTxn()
+    tx.commit()
+    expect ValueError:
+      tx.commit()
+    expect ValueError:
+      tx.upsert Particle(parent: 1'u64, seq: 0'u32, period: 60.0,
+                         head: 0.0, tWrite: 1.0, payload: "late")
+    st.close()
+    removeDir(dir)
+
+  test "persistent artifacts use owner-only POSIX permissions":
+    when not defined(windows):
+      let dir = createTempDir("kouten-store", "private-modes")
+      let backupDir = createTempDir("kouten-store", "private-backup")
+      removeDir(dir)
+      removeDir(backupDir)
+
+      var st = openStore(dir, diskBacked = true)
+      st.upsert Particle(parent: 1'u64, seq: 0'u32, period: 60.0,
+                         head: 0.0, tWrite: 1.0, payload: "private")
+      st.sync()
+      discard st.backup(backupDir)
+      check getFilePermissions(dir) ==
+        {fpUserRead, fpUserWrite, fpUserExec}
+      check getFilePermissions(dir / "kouten.log") ==
+        {fpUserRead, fpUserWrite}
+      check getFilePermissions(dir / "segments") ==
+        {fpUserRead, fpUserWrite, fpUserExec}
+      for kind, path in walkDir(dir / "segments"):
+        if kind == pcFile:
+          check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+      check getFilePermissions(backupDir) ==
+        {fpUserRead, fpUserWrite, fpUserExec}
+      check getFilePermissions(backupDir / "kouten.log") ==
+        {fpUserRead, fpUserWrite}
+      st.close()
+      removeDir(dir)
+      removeDir(backupDir)
+
+  test "private files ignore a permissive parent directory":
+    when not defined(windows):
+      let dir = createTempDir("kouten-store", "private-create")
+      setFilePermissions(dir, {
+        fpUserRead, fpUserWrite, fpUserExec,
+        fpGroupRead, fpGroupWrite, fpGroupExec,
+        fpOthersRead, fpOthersWrite, fpOthersExec
+      })
+      let path = dir / "artifact.bin"
+      var file = openPrivateStoreFile(path, fmWrite)
+      file.write("secret")
+      file.close()
+      check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+      removeDir(dir)
+
+  test "private file open rejects symbolic-link destinations":
+    when not defined(windows) and declared(O_NOFOLLOW):
+      let dir = createTempDir("kouten-store", "private-symlink")
+      let target = dir / "target.bin"
+      let link = dir / "link.bin"
+      writeFile(target, "unchanged")
+      createSymlink(target, link)
+      expect OSError:
+        discard openPrivateStoreFile(link, fmWrite)
+      check readFile(target) == "unchanged"
+      removeDir(dir)
+
   test "placement topology is durable and epoch-fenced":
     let dir = createTempDir("kouten-store", "placement")
     var st = openStore(dir)
@@ -1837,7 +1914,9 @@ suite "store persistence":
     check fileExists(backupDir / "kouten.backup")
     check not fileExists(backupDir / "kouten.verify.tmp")
     check not fileExists(backupDir / "kouten.log.tmp")
-    check not readFile(backupDir / "kouten.backup").contains("secret")
+    let encryptedBlob = readFile(backupDir / "kouten.backup")
+    check encryptedBlob.startsWith("KOUTENDB-BACKUP-ARGON2ID-V2\n")
+    check not encryptedBlob.contains("secret")
     st.close()
 
     removeDir(restoredDir)
@@ -1877,6 +1956,32 @@ suite "store persistence":
     check target.items[(11'u64, 0'u32)].payload == "stable"
     target.close()
 
+    removeDir(backupDir)
+    removeDir(targetDir)
+
+  test "legacy encrypted backup remains readable after Argon2id migration":
+    let sourceDir = createTempDir("kouten-store", "legacy-enc-source")
+    let plainDir = createTempDir("kouten-store", "legacy-enc-plain")
+    let backupDir = createTempDir("kouten-store", "legacy-enc-backup")
+    let targetDir = createTempDir("kouten-store", "legacy-enc-target")
+    var source = openStore(sourceDir, durability = durStrong)
+    source.upsert Particle(parent: 15'u64, seq: 0'u32, period: 60.0,
+                           head: 0.1, tWrite: 1.0,
+                           payload: "legacy-secret")
+    discard source.backup(plainDir)
+    source.close()
+
+    writeFile(backupDir / "kouten.backup",
+      legacyEncryptedBackup(readFile(plainDir / "kouten.log"),
+                            "legacy-passphrase"))
+    check verifyEncryptedBackup(backupDir, "legacy-passphrase").items == 1
+    discard restoreEncryptedBackup(backupDir, targetDir, "legacy-passphrase")
+    var restored = openStore(targetDir)
+    check restored.getParticle(15'u64, 0'u32).payload == "legacy-secret"
+    restored.close()
+
+    removeDir(sourceDir)
+    removeDir(plainDir)
     removeDir(backupDir)
     removeDir(targetDir)
 

@@ -37,6 +37,12 @@ proc checkAlive(peers: seq[Peer], label: string) =
   check got.value == "ok-" & label
   c.close()
 
+proc checkNodeAlive(peers: seq[Peer], node: int) =
+  var c = newClusterClient(peers, username = "alice", password = "secret")
+  check c.wireVersionReq(node) == WireProtocolVersion
+  check c.healthReq(node).contains("node=" & $node)
+  c.close()
+
 suite "cluster wire fuzz":
   test "malformed frames close only the offending connection":
     let peers = getEnv("KOUTEN_TEST_PEERS",
@@ -65,8 +71,12 @@ suite "cluster wire fuzz":
                header: "QRY 1 0 60 0 1 999999999"),
       FuzzCase(name: "huge-bget", header: "BGET 1 999999999"),
       FuzzCase(name: "negative-bget", header: "BGET 1 -1"),
+      FuzzCase(name: "huge-bget-count", header: "BGET 10001 0"),
+      FuzzCase(name: "negative-bget-count", header: "BGET -1 0"),
       FuzzCase(name: "huge-retrieve-vector",
                header: "RETRIEVE 1 1 3 999999999"),
+      FuzzCase(name: "invalid-retrieve-scope",
+               header: "RETRIEVE 2 1 3 0"),
       FuzzCase(name: "short-uapply", header: "UAPPLY"),
       FuzzCase(name: "huge-uapply", header: "UAPPLY 999999999"),
       FuzzCase(name: "bad-uapply-json", header: "UAPPLY 8",
@@ -98,6 +108,9 @@ suite "cluster wire fuzz":
                header: "TRFD 1 0 60 0 1 1 0 1 0 nan"),
       FuzzCase(name: "unknown-command", header: "WHAT_IS_THIS 1 2 3"),
       FuzzCase(name: "bad-codec-negotiation", header: "CODECMETA MAYBE"),
+      FuzzCase(name: "negative-tx-count", header: "TXCOMMIT 1 -1"),
+      FuzzCase(name: "huge-tx-count", header: "TXCOMMIT 1 4097"),
+      FuzzCase(name: "invalid-tx-op", header: "TXCOMMIT 1 1\nX 1 2 3 4 0 0"),
       FuzzCase(name: "truncated-txcommit", header: "TXCOMMIT 1 1",
                closeAfterSend: true)
     ]
@@ -116,6 +129,20 @@ suite "cluster wire fuzz":
     check badResp == @["ERR", "bad-request"]
     bad.close()
     checkAlive(ps, "stable-error-category")
+
+    for command in [
+        "TXBEGIN",
+        "TXRESERVE 1 1 60 0",
+        "TXCOMMIT 1 0",
+        "TXSTATUS 1",
+        "TXGETID 1 0 0 60 0 1",
+        "TXQRYID 1 0 0 60 0 1 0"]:
+      var wrongNode = authSocket(ps[1])
+      wrongNode.sendFrame(command)
+      check wrongNode.readHeader(timeoutMs = 1_000) ==
+        @["COORD", "1", "0", "-1"]
+      wrongNode.close()
+      checkNodeAlive(ps, 1)
 
     var c = newClusterClient(ps, username = "alice", password = "secret")
     let id = c.putRingReq(0, "allowed/fuzz/selection-limit",

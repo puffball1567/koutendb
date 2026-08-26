@@ -33,9 +33,12 @@ Rules:
   can safely ignore them.
 - Any incompatible frame, payload, numeric, or response change must bump
   `WireProtocolVersion`.
-- Drivers should prefer high-level named-ring commands such as `PUTR`, `GETID`,
-  `QRYID`, `BGET`, `UAPPLY`, and `USTATUS` instead of constructing internal
-  placement metadata themselves.
+- Drivers should prefer public named-ring commands such as `PUTR`, `GETID`,
+  `QRYID`, and `BGET` instead of constructing placement metadata themselves.
+- `FPUT`, `FPUTR`, `APPLYTX`, `TRF`, `TRFD`, and `UAPPLY` are internal
+  replication/apply commands. They require a `replicator` or `admin` identity
+  and are not application-driver CRUD APIs. Topology-fenced migration remains
+  admin-only.
 - `CODECS` reports the payload format identifiers accepted by the node.
 - Oversized `RETRIEVE` work is rejected with the existing stable error path
   (`ERR bad-request`). The response shape of successful `RHIT` frames is not

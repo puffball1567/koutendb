@@ -192,8 +192,9 @@ kouten recovery-restore --universe-config=/etc/koutendb/recovery.json \
 ```
 
 Do not store passphrases in the recovery topology file. Use
-`--passphrase=TEXT`, a secret manager, or a wrapper script that injects the
-secret at runtime.
+`--passphrase-file=FILE`, `KOUTEN_BACKUP_PASSPHRASE`, or a secret manager that
+injects the secret at runtime. Avoid command-line passphrases because process
+arguments may be visible to other local users.
 
 Each universe is a logical parallel recovery universe. Its `galaxies` array
 names the KoutenDB galaxies protected by that universe and the archive location

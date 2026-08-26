@@ -234,10 +234,13 @@ proc synodicPeriod*(t1, t2: float): float =
 
 proc conjunctions*(o1, o2: Orbit, fromT, horizon: float): seq[float] =
   ## e=0 の2軌道が同角度（⇒同弧⇒同ノード⇒ローカル JOIN 窓）になる時刻列。閉じた式。
-  doAssert o1.e == 0.0 and o2.e == 0.0,
-    "e>0 の会合予測は nextArrival の反復で行う（Step 4 以降）"
+  if o1.e != 0.0 or o2.e != 0.0:
+    raise newException(ValueError,
+      "conjunctions requires circular orbits; use nextArrival for e > 0")
   let rate = TAU * (1.0 / o1.period - 1.0 / o2.period)
-  doAssert rate != 0.0, "同周期は位相差で常時会合/非会合が決まる（会合『時刻列』はない）"
+  if rate == 0.0:
+    raise newException(ValueError,
+      "conjunctions is undefined for equal orbital periods")
   # φ₁ + 2π·t/T₁ = φ₂ + 2π·t/T₂ + 2π·k を t について解く
   let dphi = o2.phi - o1.phi
   let tEnd = fromT + horizon

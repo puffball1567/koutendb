@@ -18,6 +18,7 @@ trap cleanup EXIT
 
 cd "$ROOT"
 mkdir -p "$DATA"
+export KOUTEN_SECRET_KEY="rbac-transport-secret"
 
 echo "[cluster-rbac] build koutend"
 nim c -d:release --nimcache:/tmp/nimcache_koutend_rbac -o:src/koutend src/koutend.nim
@@ -27,12 +28,14 @@ nim c -d:release --nimcache:/tmp/nimcache_koutencli_rbac -o:src/koutencli src/ko
 
 echo "[cluster-rbac] start node on $PEERS"
 printf 'read\n' > "$DATA/reader-password"
+printf '%s\n' "$KOUTEN_SECRET_KEY" > "$DATA/peer-secret"
 cat >"$DATA/server.json" <<JSON
 {
   "id": 0,
   "peers": "$PEERS",
   "data": "$DATA/node0",
   "slow-tick": 0.05,
+  "secretKeyFile": "$DATA/peer-secret",
   "roles": [
     {
       "user": "reader",
@@ -41,10 +44,16 @@ cat >"$DATA/server.json" <<JSON
       "prefixes": ["allowed"]
     },
     "writer:write:writer:allowed",
-    "admin:admin:admin:allowed"
-  ]
+    "replicator:replicate:replicator:allowed",
+    "admin:admin:admin"
+  ],
+  "peerAuth": {
+    "user": "replicator",
+    "secretKeyFile": "$DATA/peer-secret"
+  }
 }
 JSON
+src/koutencli verify --server-config="$DATA/server.json" >/dev/null
 src/koutend --config="$DATA/server.json" &
 PID="$!"
 
