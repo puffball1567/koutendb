@@ -594,28 +594,32 @@ proc verifyServerConfigFile(path: string): tuple[ok: bool,
                                       "secret-key-file")
     let hasUserPassword = user.len > 0 and password.hasValue
     let hasToken = token.hasValue
+    let hasRolesConfig = cfg.hasKey("roles")
     let secretSourceOk = (password.source.len == 0 or password.hasValue) and
                          (token.source.len == 0 or token.hasValue) and
                          (secretKey.source.len == 0 or secretKey.hasValue)
     let authOk = secretSourceOk and
                  ((user.len == 0 and not password.hasValue and
                    not secretKey.hasValue and not token.hasValue) or
-                  hasUserPassword or hasToken)
+                  hasUserPassword or hasToken or hasRolesConfig)
     result.checks.addConfigCheck("auth", authOk,
       if hasToken: "auth token configured via " & token.source
       elif hasUserPassword: "username/password configured; password source=" & password.source
+      elif hasRolesConfig: "role-based authentication configured"
       elif user.len == 0 and not password.hasValue and not secretKey.hasValue:
         "auth disabled"
       elif user.len == 0: "password or secret-key requires user"
       else: "user requires password or passwordFile")
     result.checks.addConfigCheck("secret-key-gate",
-      secretKey.source.len == 0 or hasUserPassword or hasToken,
+      secretKey.source.len == 0 or hasUserPassword or hasToken or
+        hasRolesConfig,
       if secretKey.source.len == 0: "secret-key gate disabled"
       elif secretKey.hasValue: "secret-key gate configured via " & secretKey.source
       else: secretKey.source)
 
     var roleOk = true
     var roleCount = 0
+    var roleByUser = initTable[string, string]()
     if cfg.hasKey("roles"):
       if cfg["roles"].kind != JArray:
         roleOk = false
@@ -624,27 +628,72 @@ proc verifyServerConfigFile(path: string): tuple[ok: bool,
           inc roleCount
           if item.kind == JString:
             let parts = item.getStr().split(':', maxsplit = 3)
-            if parts.len < 3 or parts[0].len == 0 or parts[1].len == 0:
+            if parts.len < 3 or parts[0].len == 0 or parts[1].len == 0 or
+                parts[2].toLowerAscii() notin
+                  ["reader", "read", "writer", "write", "replicator",
+                   "replicate", "admin"]:
               roleOk = false
+            else:
+              roleByUser[parts[0]] = parts[2].toLowerAscii()
           elif item.kind == JObject:
             let roleUser = jsonStringOpt(item, "user",
               jsonStringOpt(item, "username", ""))
             let rolePassword = configSecretValue(item, "password",
               "passwordFile", "password-file")
+            let roleName = jsonStringOpt(item, "role", "").toLowerAscii()
             if roleUser.len == 0 or not rolePassword.hasValue or
-                jsonStringOpt(item, "role", "").len == 0:
+                roleName notin ["reader", "read", "writer", "write",
+                                 "replicator", "replicate", "admin"]:
               roleOk = false
+            else:
+              roleByUser[roleUser] = roleName
           else:
             roleOk = false
     result.checks.addConfigCheck("roles", roleOk,
       if roleOk: &"roles={roleCount}"
       else: "roles must be strings or objects with user/password/role")
 
+    let peerAuthKey =
+      if cfg.hasKey("peerAuth"): "peerAuth"
+      elif cfg.hasKey("peer-auth"): "peer-auth"
+      else: ""
+    var peerAuthOk = true
+    var peerAuthMessage = "peerAuth not required"
+    if peerAuthKey.len > 0:
+      let peerAuth = cfg[peerAuthKey]
+      if peerAuth.kind != JObject or peerAuth.hasKey("password") or
+          peerAuth.hasKey("passwordFile") or peerAuth.hasKey("password-file"):
+        peerAuthOk = false
+        peerAuthMessage =
+          "peerAuth must be an object without duplicate password fields"
+      else:
+        let peerUser = jsonStringOpt(peerAuth, "user",
+          jsonStringOpt(peerAuth, "username", ""))
+        let peerRole = roleByUser.getOrDefault(peerUser, "")
+        let peerSecret = configSecretValue(peerAuth, "secretKey",
+          "secretKeyFile", "secret-key-file")
+        peerAuthOk = peerUser.len > 0 and
+          peerRole in ["replicator", "replicate", "admin"] and
+          (peerSecret.source.len == 0 or peerSecret.hasValue) and
+          (peerSecret.source.len == 0 or secretKey.hasValue)
+        peerAuthMessage =
+          if peerAuthOk: "peerAuth user=" & peerUser & " role=" & peerRole
+          else: "peerAuth must reference a replicator or admin role user; " &
+                "an outbound secret requires the server secret-key gate"
+    elif roleCount > 0 and peerCount > 1:
+      peerAuthOk = false
+      peerAuthMessage =
+        "multi-node role configuration requires explicit peerAuth"
+    result.checks.addConfigCheck("peer-auth", peerAuthOk, peerAuthMessage)
+
     let prefixes = jsonStringListOpt(cfg, "allowRing") &
                    jsonStringListOpt(cfg, "allow-ring")
-    result.checks.addConfigCheck("ring-prefix-authz", true,
-      if prefixes.len > 0: &"prefixes={prefixes.len}"
-      else: "no ring-prefix boundary configured")
+    let ringAuthzOk = prefixes.len == 0 or hasUserPassword or hasToken or
+      hasRolesConfig
+    result.checks.addConfigCheck("ring-prefix-authz", ringAuthzOk,
+      if prefixes.len == 0: "no ring-prefix boundary configured"
+      elif ringAuthzOk: &"prefixes={prefixes.len} with authentication"
+      else: "ring-prefix authorization requires authentication")
 
     let placementEpoch = jsonIntOpt(cfg, "placementEpoch",
       jsonIntOpt(cfg, "placement-epoch", 1))
@@ -2322,7 +2371,7 @@ proc runBackupEncrypted(dataDir, backupDir, passphrase: string,
                         durability: KoutenDurability) =
   if dataDir.len == 0 or backupDir.len == 0 or passphrase.len == 0:
     raise newException(ValueError,
-      "backup-encrypted requires --data=DIR --backup=DIR --passphrase=TEXT")
+      "backup-encrypted requires --data=DIR --backup=DIR and a passphrase")
   var db = open(dataDir = dataDir, durability = durability)
   let stats = db.backupEncrypted(backupDir, passphrase)
   db.close()
@@ -2332,7 +2381,7 @@ proc runRestoreEncrypted(backupDir, dataDir, passphrase: string,
                          overwrite: bool, durability: KoutenDurability) =
   if dataDir.len == 0 or backupDir.len == 0 or passphrase.len == 0:
     raise newException(ValueError,
-      "restore-encrypted requires --backup=DIR --data=DIR --passphrase=TEXT")
+      "restore-encrypted requires --backup=DIR --data=DIR and a passphrase")
   let stats = restoreEncryptedBackup(backupDir, dataDir, passphrase,
                                      overwrite = overwrite,
                                      durability = durability)
@@ -3213,7 +3262,12 @@ proc parseDurability(value: string): KoutenDurability =
 proc readSecretFile(path, label: string): string =
   if path.len == 0:
     return ""
-  result = readFile(path).strip()
+  let info = getFileInfo(path, followSymlink = true)
+  if info.size > 65_536:
+    raise newException(ValueError, label & " file exceeds 64 KiB")
+  result = readFile(path)
+  while result.len > 0 and result[^1] in {'\r', '\n'}:
+    result.setLen(result.len - 1)
   if result.len == 0:
     raise newException(ValueError, label & " file is empty")
 
@@ -3275,6 +3329,7 @@ proc printHelp() =
   echo "Cluster commands use --peers=host:port,... or --config=FILE."
   echo "KOUTEN_CONFIG can point to the same JSON config file."
   echo "Auth can use --user/--password-file/--secret-key-file or KOUTEN_USER, KOUTEN_PASSWORD, KOUTEN_SECRET_KEY, KOUTEN_AUTH_TOKEN."
+  echo "Backup passphrases should use --passphrase-file or KOUTEN_BACKUP_PASSPHRASE."
   echo "Get uses --view=auto by default; payload codec is inferred from stored metadata."
   echo "--where is accepted as an alias for --filter. --id is a low-level shortcut for scripts."
   echo "Cluster get/query requires --ring=RING so the CLI can reconstruct ring placement metadata."
@@ -3350,6 +3405,7 @@ proc main() =
   var tlsServerName = ""
   var tlsInsecureSkipVerify = false
   var backupPassphrase = ""
+  var backupPassphraseFile = ""
   var galaxy = ""
   var universeName = ""
   var universeLocation = "local"
@@ -3436,6 +3492,10 @@ proc main() =
                                         tlsInsecureSkipVerify)
     tlsInsecureSkipVerify = jsonBoolOpt(cfg, "tls-insecure-skip-verify",
                                         tlsInsecureSkipVerify)
+    backupPassphraseFile = jsonStringOpt(cfg, "passphraseFile",
+                                         backupPassphraseFile)
+    backupPassphraseFile = jsonStringOpt(cfg, "passphrase-file",
+                                         backupPassphraseFile)
     if cfg.hasKey("durability") and cfg["durability"].kind == JString:
       durability = parseDurability(cfg["durability"].getStr())
 
@@ -3565,6 +3625,7 @@ proc main() =
       of "tls-server-name": tlsServerName = val
       of "tls-insecure-skip-verify": tlsInsecureSkipVerify = true
       of "passphrase": backupPassphrase = val
+      of "passphrase-file": backupPassphraseFile = val
       of "galaxy": galaxy = val
       of "universe", "lane": universeName = val
       of "location": universeLocation = val
@@ -3608,6 +3669,9 @@ proc main() =
     authToken = readSecretFile(authTokenFile, "auth-token")
   if secretKeyFile.len > 0:
     secretKey = readSecretFile(secretKeyFile, "secret-key")
+  if backupPassphraseFile.len > 0:
+    backupPassphrase = readSecretFile(backupPassphraseFile,
+                                      "backup passphrase")
   if username.len == 0:
     username = getEnv("KOUTEN_USER")
   if password.len == 0:
@@ -3616,6 +3680,8 @@ proc main() =
     authToken = getEnv("KOUTEN_AUTH_TOKEN")
   if secretKey.len == 0:
     secretKey = getEnv("KOUTEN_SECRET_KEY")
+  if backupPassphrase.len == 0:
+    backupPassphrase = getEnv("KOUTEN_BACKUP_PASSPHRASE")
   if help or cmd.len == 0:
     printHelp()
     quit 0

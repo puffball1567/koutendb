@@ -109,6 +109,23 @@ suite "public api":
     check db.locate(id) == predicted
     db.close()
 
+  test "orbital API rejects non-finite and out-of-range inputs":
+    var db = open(nodes = 2)
+    let id = db.put("x", ring = "safe")
+    expect KoutenValidationError:
+      db.configureRing("zero", 0.0)
+    expect KoutenValidationError:
+      db.configureRing("nan", NaN)
+    expect KoutenValidationError:
+      db.advance(-1.0)
+    expect KoutenValidationError:
+      discard db.locate(id, at = NaN)
+    expect KoutenValidationError:
+      discard db.nextVisit(id, -1)
+    expect KoutenValidationError:
+      discard db.nextVisit(id, 2)
+    db.close()
+
   test "半周期後には反対側のノードにいる":
     var db = open(nodes = 8)
     db.configureRing("r", 60.0)
@@ -1341,6 +1358,9 @@ suite "永続化":
       check path == auditLogPath(dir)
       db.close()
 
+      when not defined(windows):
+        check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+
       discard restoreBackup(backupDir, restoredDir)
 
       let lines = readFile(path).strip().splitLines()
@@ -2079,6 +2099,25 @@ suite "永続化":
     removeDir(dir)
 
 suite "transaction":
+  test "public state validation never relies on process-ending assertions":
+    var db = open()
+    let tx = db.beginTransaction()
+    discard tx.put("once")
+    tx.commit()
+    expect KoutenValidationError:
+      tx.commit()
+    expect KoutenValidationError:
+      discard tx.put("after-close")
+    expect KoutenValidationError:
+      discard db.shutdownCluster()
+    expect KoutenValidationError:
+      discard db.coordinatorStatus()
+    expect KoutenValidationError:
+      discard db.promoteCoordinator(2, 0, -1)
+    expect KoutenValidationError:
+      discard db.waitClusterTxApplied(1'u64, timeoutMs = 1)
+    db.close()
+
   test "commit まで書き込みは見えず、commit 後に永続化される":
     let dir = createTempDir("koutendb", "tx")
     var db = open(dataDir = dir)

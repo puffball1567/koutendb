@@ -370,8 +370,8 @@ For scripts and reproducible examples, prefer the single-shot commands above.
 | `locality` | `--data=DIR`; optional `--metrics` | Inspect physical WAL locality by ring. |
 | `backup` | `--data=DIR --backup=DIR` | Create backup. |
 | `restore` | `--backup=DIR --data=DIR` | Restore backup. |
-| `backup-encrypted` | `--data=DIR --backup=DIR --passphrase=TEXT` | Create encrypted backup. |
-| `restore-encrypted` | `--backup=DIR --data=DIR --passphrase=TEXT` | Restore encrypted backup. |
+| `backup-encrypted` | `--data=DIR --backup=DIR`; `--passphrase-file=FILE`, `KOUTEN_BACKUP_PASSPHRASE`, or legacy `--passphrase=TEXT` | Create an Argon2id-derived authenticated encrypted backup. |
+| `restore-encrypted` | `--backup=DIR --data=DIR`; same passphrase sources as backup | Restore an encrypted backup. |
 | `verify` | `--data=DIR` or `--backup=DIR`; optional `--segments`, `--max-wal-bytes=N`, `--max-segment-bytes=N`, `--max-dead-records=N`, `--max-dead-ratio=F`, `--max-segment-generation=N`, `--max-segment-files=N`, `--max-items=N`, `--max-rings=N`, `--metrics`, `--json` | Open and inspect a persistent data directory or backup. Data-dir verification checks WAL replay, lock, metadata, locality, capacity thresholds, and rebuildable segment layout. Backup verification checks restore readability without writing into the live data directory. |
 | `dump` | `--data=DIR` | Export JSONL. |
 | `import-jsonl` | `--data=DIR --in=FILE`; optional `--batch-size=N` | Import JSONL with chunked commits. |
@@ -401,7 +401,9 @@ source data directory. See [Generation Checkpoints](generation-checkpoints.md).
 
 Recovery commands accept `--mirror`, `--universe-config`, `--universe`,
 `--galaxy`, `--location`, `--failure-domain`, `--priority`, `--snapshot-seq`,
-`--auth-ref`, `--readonly`, and `--passphrase` where applicable.
+`--auth-ref`, `--readonly`, and passphrase sources where applicable. Prefer
+`--passphrase-file` or `KOUTEN_BACKUP_PASSPHRASE`; command-line passphrases can
+be visible in the process list.
 
 ## Universe Sync Commands
 

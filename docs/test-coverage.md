@@ -23,7 +23,7 @@ matrix used before releases.
 | Placement epoch migration | `tests/tplacement_migration.nim`, `tests/twire_driver.nim`, `scripts/placement_migration_smoke.sh` | Integration-covered: short logical periods do not generate physical handoff, persistent drain before topology change, one-by-one mixed-epoch 2-to-3-node restart, wrong-epoch resume rejection, destination-down source retention/retry, admin-only maintenance transfer, preflight and apply-time topology fencing, unsupported in-place scale-in rejection, bounded convergence, activation preflight, post-resume writes, owner-routed reads, and settled-topology restart |
 | Explicit scale-in migration | `tests/tscale_in_migration.nim`, `scripts/scale_in_migration_smoke.sh` | Integration-covered: persistent drain marker, 3-to-2-node migration, checkpoint/resume, target outage, mixed/wrong epoch, source fingerprint mismatch, versioned records and tombstones, metadata transfer and independent verification, pending operational queue rejection, malformed frame recovery, and idempotent rerun |
 | Cluster transactions | `tests/tcluster_tx.nim`, `scripts/cluster_tx_smoke.sh` | Smoke-covered: landing intent, apply retry, basic owner failure path |
-| Cluster auth / RBAC | `tests/tcluster_authz.nim`, `tests/tcluster_rbac.nim`, related scripts | Smoke-covered: username/password/secret key, unusable auth config fail-fast, server JSON config loading, role/ring-prefix authorization, admin-only metrics/drain/snapshot, minimal non-admin health, drain-mode write rejection with readable connection preservation, forged writer-level maintenance migration rejection, and auth/authz server audit emission |
+| Cluster auth / RBAC | `tests/tcluster_authz.nim`, `tests/tcluster_rbac.nim`, related scripts | Smoke-covered: explicit rejection of unauthenticated database commands, username/password/secret key, unusable auth config fail-fast, server JSON config loading, role/ring-prefix authorization, admin-only metrics/drain/snapshot, minimal non-admin health, drain-mode write rejection with readable connection preservation, forged writer-level maintenance migration rejection, and auth/authz server audit emission |
 | Cluster failure | `tests/tcluster_failure.nim`, `scripts/cluster_failure_smoke.sh` | Smoke-covered: owner restart and retry boundaries |
 | Universe sync | `examples/universe_sync_demo.nim`, `scripts/universe_sync_*_smoke.sh` | Smoke-covered: local export/apply, remote apply, idempotency, retry/dead-letter handling, applied-key retention, malformed JSONL handling |
 | Recovery | `scripts/recovery_smoke.sh` | Smoke-covered: backup/restore, recovery status, checksum/item/tombstone manifest mismatch rejection, and encrypted/readonly mirror paths |
@@ -74,7 +74,8 @@ scripts/compose_config_smoke.sh
 scripts/container_image_smoke.sh
 ```
 
-`scripts/test_all_smoke.sh` runs the same sequence and skips driver
+`scripts/test_all_smoke.sh` covers the same core release-gate surfaces, with
+some unit checks reached through `scripts/test_core.sh`, and skips driver
 compatibility by default. Set `KOUTEN_TEST_DRIVERS=1` when the local driver
 toolchains are available.
 

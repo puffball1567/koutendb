@@ -9,7 +9,7 @@
 ##   - 例外は境界を越えない: すべて捕捉し、エラーはリターンコード / nil で返す。
 ##   - kouten_get が返すバッファは呼び出し側が kouten_free で解放する。
 
-import std/[base64, json, tables]
+import std/[base64, json, locks, tables]
 import koutendb
 
 type
@@ -54,10 +54,16 @@ const
   KoutenOk = cint(0)
   KoutenErr = cint(-1)
   KoutenAbiVersion = cint(2)
+  MaxCInputBytes = 64 * 1024 * 1024
+  MaxCVectorDim = 1_000_000
+  MaxCBatchItems = 10_000
+  MaxCStringBytes = 1024 * 1024
 
 var lastError {.threadvar.}: string
 var runtimeReady = false
 var handles = initTable[pointer, KoutenCHandle]()
+var handlesLock: Lock
+initLock(handlesLock)
 
 proc NimMain() {.cdecl, importc.}
 
@@ -76,18 +82,20 @@ proc setError(e: ref CatchableError) =
 proc ensureHandle(h: pointer): KoutenDb =
   if h == nil:
     raise newException(ValueError, "db handle is nil")
-  if h notin handles:
-    raise newException(ValueError, "db handle is unknown or closed")
-  let handle = handles[h]
-  if handle.closed or handle.db.isNil:
-    raise newException(ValueError, "db handle is closed")
-  handle.db
+  withLock handlesLock:
+    if h notin handles:
+      raise newException(ValueError, "db handle is unknown or closed")
+    let handle = handles[h]
+    if handle.closed or handle.db.isNil:
+      raise newException(ValueError, "db handle is closed")
+    result = handle.db
 
 proc registerHandle(db: KoutenDb): pointer =
   let handle = KoutenCHandle(db: db)
   GC_ref(handle)
   result = cast[pointer](handle)
-  handles[result] = handle
+  withLock handlesLock:
+    handles[result] = handle
 
 proc initRuntime() =
   if not runtimeReady:
@@ -99,7 +107,14 @@ proc cstringToString(s: cstring, name: string, allowNil = true): string =
     if allowNil:
       return ""
     raise newException(ValueError, name & " is nil")
-  $s
+  var length = 0
+  while length <= MaxCStringBytes and s[length] != '\0':
+    inc length
+  if length > MaxCStringBytes:
+    raise newException(ValueError, name & " exceeds max C string bytes")
+  result = newString(length)
+  if length > 0:
+    copyMem(addr result[0], s, length)
 
 proc copyStringToShared(s: string): pointer =
   result = allocShared0(s.len + 1)
@@ -121,10 +136,7 @@ proc fromC(id: KoutenCId): KoutenId =
   fromRaw(id.parent, id.epoch, id.seq, id.t_write)
 
 proc optStr(s: cstring): string =
-  if s == nil:
-    ""
-  else:
-    $s
+  cstringToString(s, "string")
 
 proc codecFromC(value: cint): PayloadCodec =
   case value
@@ -151,8 +163,8 @@ proc payloadCodecName(value: PayloadCodec): string =
 proc bytesFromC(data: pointer, len: csize_t): string =
   if len > 0 and data == nil:
     raise newException(ValueError, "data is nil")
-  if len > csize_t(high(int)):
-    raise newException(ValueError, "data length is too large")
+  if len > csize_t(MaxCInputBytes):
+    raise newException(ValueError, "data length exceeds max C input bytes")
   result = newString(int(len))
   if len > 0:
     copyMem(addr result[0], data, int(len))
@@ -162,6 +174,11 @@ proc countFromC(len: csize_t, name: string): int =
     raise newException(ValueError, name & " is too large")
   int(len)
 
+proc boundedCountFromC(len: csize_t, maxCount: int, name: string): int =
+  result = countFromC(len, name)
+  if result > maxCount:
+    raise newException(ValueError, name & " exceeds max count " & $maxCount)
+
 proc allocBytesFor(count: int, elemSize: int, name: string): int =
   if count < 0:
     raise newException(ValueError, name & " count is negative")
@@ -170,6 +187,11 @@ proc allocBytesFor(count: int, elemSize: int, name: string): int =
   if count > high(int) div elemSize:
     raise newException(ValueError, name & " allocation is too large")
   count * elemSize
+
+proc requireCBool(value: cint, name: string): bool =
+  if value notin [cint(0), cint(1)]:
+    raise newException(ValueError, name & " must be 0 or 1")
+  value != 0
 
 proc kouten_abi_version(): cint {.exportc, cdecl, dynlib.} =
   KoutenAbiVersion
@@ -261,16 +283,19 @@ proc kouten_connect_auth_tls(peers, username, password, authToken, secretKey,
   try:
     initRuntime()
     clearError()
+    let useTls = requireCBool(tls, "tls")
+    let insecureSkipVerify = requireCBool(
+      tlsInsecureSkipVerify, "tls_insecure_skip_verify")
     let db = koutendb.connect(optStr(peers),
                              username = optStr(username),
                              password = optStr(password),
                              authToken = optStr(authToken),
                              secretKey = optStr(secretKey),
                              galaxy = optStr(galaxy),
-                             tls = tls != 0,
+                             tls = useTls,
                              tlsCaFile = optStr(tlsCaFile),
                              tlsServerName = optStr(tlsServerName),
-                             tlsInsecureSkipVerify = tlsInsecureSkipVerify != 0)
+                             tlsInsecureSkipVerify = insecureSkipVerify)
     return registerHandle(db)
   except CatchableError as e:
     setError(e)
@@ -282,11 +307,13 @@ proc kouten_close(h: pointer) {.exportc, cdecl, dynlib.} =
     clearError()
     if h == nil:
       return
-    if h notin handles:
-      setError("db handle is unknown or closed")
-      return
-    let handle = handles[h]
-    handles.del h
+    var handle: KoutenCHandle
+    withLock handlesLock:
+      if h notin handles:
+        setError("db handle is unknown or closed")
+        return
+      handle = handles[h]
+      handles.del h
     if not handle.closed and not handle.db.isNil:
       handle.db.close()
     handle.closed = true
@@ -378,7 +405,7 @@ proc kouten_put_vec(h: pointer, ring: cstring, data: pointer, len: csize_t,
     if vecLen > 0 and vec == nil:
       raise newException(ValueError, "vec is nil")
     let payload = bytesFromC(data, len)
-    let nVec = countFromC(vecLen, "vec_len")
+    let nVec = boundedCountFromC(vecLen, MaxCVectorDim, "vec_len")
     var values = newSeq[float32](nVec)
     let rawVec = cast[ptr UncheckedArray[cfloat]](vec)
     for i in 0 ..< nVec:
@@ -399,7 +426,7 @@ proc kouten_put_vec_codec(h: pointer, ring: cstring, data: pointer, len: csize_t
       raise newException(ValueError, "out_id is nil")
     if vecLen > 0 and vec == nil:
       raise newException(ValueError, "vec is nil")
-    let nVec = countFromC(vecLen, "vec_len")
+    let nVec = boundedCountFromC(vecLen, MaxCVectorDim, "vec_len")
     var values = newSeq[float32](nVec)
     let rawVec = cast[ptr UncheckedArray[cfloat]](vec)
     for i in 0 ..< nVec:
@@ -499,7 +526,7 @@ proc kouten_batch_get(h: pointer, ids: ptr KoutenCId,
     if idsLen > 0 and ids == nil:
       raise newException(ValueError, "ids is nil")
     let db = ensureHandle(h)
-    let nIds = countFromC(idsLen, "ids_len")
+    let nIds = boundedCountFromC(idsLen, MaxCBatchItems, "ids_len")
     var nimIds = newSeq[KoutenId](nIds)
     let rawIds = cast[ptr UncheckedArray[KoutenCId]](ids)
     for i in 0 ..< nIds:
@@ -587,6 +614,8 @@ proc kouten_read_ring_json(h: pointer, ring, filterJson, selection: cstring,
     clearError()
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
+    let paginationEnabled = requireCBool(pagination, "pagination")
+    let descending = requireCBool(sortDesc, "sort_desc")
     let filterText = optStr(filterJson)
     let filterNode =
       if filterText.len == 0: newJObject()
@@ -598,11 +627,11 @@ proc kouten_read_ring_json(h: pointer, ring, filterJson, selection: cstring,
       selection: optStr(selection),
       limit: int(limit),
       cursor: optStr(cursor),
-      pagination: if pagination == 0: rpOff else: rpOn,
+      pagination: if paginationEnabled: rpOn else: rpOff,
       page: int(page),
       pageLimit: int(pageLimit),
       sortField: optStr(sortField),
-      sortDirection: if sortDesc == 0: rsAsc else: rsDesc)
+      sortDirection: if descending: rsDesc else: rsAsc)
     let pageResult = ensureHandle(h).readRing(
       cstringToString(ring, "ring", allowNil = false), opts)
     let s = koutenReadPageJson(pageResult)
@@ -617,7 +646,7 @@ proc vecFromC(vec: ptr cfloat, vecLen: csize_t): seq[float32] =
     return @[]
   if vec == nil:
     raise newException(ValueError, "vec is nil")
-  let nVec = countFromC(vecLen, "vec_len")
+  let nVec = boundedCountFromC(vecLen, MaxCVectorDim, "vec_len")
   result = newSeq[float32](nVec)
   let rawVec = cast[ptr UncheckedArray[cfloat]](vec)
   for i in 0 ..< nVec:

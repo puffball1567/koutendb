@@ -55,6 +55,95 @@ import ./[payload, mutation]
 export payload
 export mutation
 
+const
+  PrivateFilePermissions = {fpUserRead, fpUserWrite}
+  PrivateDirPermissions = {fpUserRead, fpUserWrite, fpUserExec}
+
+proc secureStoreFile*(path: string) =
+  ## Store payloads, indexes, and backups can contain application secrets.
+  ## Do not rely on the embedding process' umask for their final mode.
+  when not defined(windows):
+    setFilePermissions(path, PrivateFilePermissions)
+
+proc openPrivateStoreFile*(path: string, mode: FileMode): File =
+  ## Create confidential store artifacts with owner-only permissions from the
+  ## first observable instant.  Opening first and chmodding by pathname leaves
+  ## a short umask-dependent window in caller-provided directories.
+  when defined(windows):
+    result = open(path, mode)
+  else:
+    var flags = case mode
+      of fmRead:
+        O_RDONLY
+      of fmWrite:
+        O_WRONLY or O_CREAT or O_TRUNC
+      of fmReadWrite:
+        O_RDWR or O_CREAT or O_TRUNC
+      of fmReadWriteExisting:
+        O_RDWR
+      of fmAppend:
+        O_WRONLY or O_CREAT or O_APPEND
+    when declared(O_CLOEXEC):
+      flags = flags or O_CLOEXEC
+    when declared(O_NOFOLLOW):
+      flags = flags or O_NOFOLLOW
+    let fd = posix.open(path.cstring, flags,
+                        Mode(S_IRUSR or S_IWUSR))
+    if fd < 0:
+      let errorCode = osLastError()
+      raise newException(IOError,
+        "cannot open private store file: " & path & ": " &
+        osErrorMsg(errorCode))
+    if fchmod(fd, Mode(S_IRUSR or S_IWUSR)) != 0:
+      let errorCode = osLastError()
+      discard posix.close(fd)
+      raise newException(IOError,
+        "cannot secure store file: " & path & ": " & osErrorMsg(errorCode))
+    var file: File
+    if not system.open(file, FileHandle(fd), mode):
+      let errorCode = osLastError()
+      discard posix.close(fd)
+      raise newException(IOError,
+        "cannot attach private store file: " & path & ": " &
+        osErrorMsg(errorCode))
+    if mode == fmAppend:
+      try:
+        # O_APPEND controls each write, but fdopen does not initialize the
+        # stream position at EOF. WAL offset accounting uses getFilePos().
+        file.setFilePos(0, fspEnd)
+      except CatchableError:
+        file.close()
+        raise
+    result = file
+
+proc copyPrivateStoreFile*(src, dst: string) =
+  ## Stream a copy into a destination that is private at creation time.
+  var input = open(src, fmRead)
+  var output: File
+  try:
+    output = openPrivateStoreFile(dst, fmWrite)
+    var buffer: array[64 * 1024, byte]
+    while true:
+      let count = input.readBuffer(addr buffer[0], buffer.len)
+      if count == 0:
+        break
+      if output.writeBuffer(addr buffer[0], count) != count:
+        raise newException(IOError, "short write while copying private store file")
+  finally:
+    input.close()
+    if output != nil:
+      output.close()
+
+proc secureStoreDir*(path: string) =
+  when not defined(windows):
+    setFilePermissions(path, PrivateDirPermissions)
+
+proc createPrivateStoreDir(path: string) =
+  let created = not dirExists(path)
+  createDir(path)
+  if created:
+    secureStoreDir(path)
+
 when defined(koutenTestStorageFailures):
   type
     TestWalFailure* = enum
@@ -373,7 +462,9 @@ const
   MaxStoreVectorDim = MaxStoreRecordBytes div sizeof(float32)
   WalMagicLine = "!KOUTENDB-WAL 2"
   WalRecordTag = "@"
-  EncryptedBackupMagic = "KOUTENDB-BACKUP-SECRETBOX-V1\n"
+  EncryptedBackupMagicV1 = "KOUTENDB-BACKUP-SECRETBOX-V1\n"
+  EncryptedBackupMagic = "KOUTENDB-BACKUP-ARGON2ID-V2\n"
+  EncryptedBackupAssociatedData = "KOUTENDB-BACKUP-ARGON2ID-V2"
   CheckpointFormat = "koutendb-checkpoint-v1"
   CheckpointManifestName = "checkpoint.json"
   CheckpointCompleteName = "checkpoint.complete"
@@ -838,7 +929,7 @@ proc loadSegmentManifest(s: Store): bool =
 proc writeSegmentManifest(s: Store) =
   if s.segmentDir.len == 0:
     raise newException(IOError, "ring segment directory is not configured")
-  createDir(s.segmentDir)
+  createPrivateStoreDir(s.segmentDir)
   let path = s.segmentManifestPath()
   let tmp = path & ".tmp"
   var rings: seq[uint64] = @[]
@@ -846,7 +937,7 @@ proc writeSegmentManifest(s: Store) =
     if s.segmentGenerations[ring] > 0:
       rings.add ring
   rings.sort()
-  var file = open(tmp, fmWrite)
+  var file = openPrivateStoreFile(tmp, fmWrite)
   try:
     file.write("!KOUTENDB-SEGMENTS 1\n")
     for ring in rings:
@@ -860,17 +951,18 @@ proc writeSegmentManifest(s: Store) =
 proc segmentFileForAppend(s: Store, ring: uint64): File =
   if s.segmentDir.len == 0:
     raise newException(IOError, "ring segment directory is not configured")
-  createDir(s.segmentDir)
+  createPrivateStoreDir(s.segmentDir)
   if ring notin s.segmentFiles:
-    s.segmentFiles[ring] = open(s.segmentPath(ring), fmAppend)
+    s.segmentFiles[ring] = openPrivateStoreFile(s.segmentPath(ring), fmAppend)
   s.segmentFiles[ring]
 
 proc segmentIndexFileForAppend(s: Store, ring: uint64): File =
   if s.segmentDir.len == 0:
     raise newException(IOError, "ring segment directory is not configured")
-  createDir(s.segmentDir)
+  createPrivateStoreDir(s.segmentDir)
   if ring notin s.segmentIndexFiles:
-    s.segmentIndexFiles[ring] = open(s.segmentIndexPath(ring), fmAppend)
+    s.segmentIndexFiles[ring] = openPrivateStoreFile(
+      s.segmentIndexPath(ring), fmAppend)
   s.segmentIndexFiles[ring]
 
 proc closeSegmentFiles(s: Store) =
@@ -1055,7 +1147,8 @@ proc appendPackRecord(s: Store,
                       record: string): int64 =
   if ring notin writerIndexes:
     writerIndexes[ring] = writers.len
-    writers.add SegmentPackWriter(file: open(s.segmentPath(ring), fmWrite),
+    let path = s.segmentPath(ring)
+    writers.add SegmentPackWriter(file: openPrivateStoreFile(path, fmWrite),
                                   pos: 0,
                                   buffer: "")
   let idx = writerIndexes[ring]
@@ -1387,7 +1480,8 @@ proc rebuildSegmentIndexes(s: Store) =
       if k notin s.itemOffsets:
         continue
       if k[0] notin files:
-        files[k[0]] = open(s.segmentIndexPath(k[0]), fmWrite)
+        let path = s.segmentIndexPath(k[0])
+        files[k[0]] = openPrivateStoreFile(path, fmWrite)
       var file = files[k[0]]
       file.write("P " & $k[0] & " " & $k[1] & " " & $s.itemOffsets[k] &
                  " " & $segmentOffset & "\n")
@@ -1406,7 +1500,7 @@ proc rebuildRingSegments*(s: Store): SegmentPackStats {.discardable.} =
   s.closeSegmentReadStreams()
   if dirExists(s.segmentDir):
     removeDir(s.segmentDir)
-  createDir(s.segmentDir)
+  createPrivateStoreDir(s.segmentDir)
   s.segmentGenerations.clear()
   s.segmentRecordCounts.clear()
   s.itemSegmentOffsets.clear()
@@ -1473,8 +1567,8 @@ proc packRingSegment*(s: Store, ring: uint64; maxBytes = 0'i64;
   var keys = s.itemsByRing.getOrDefault(ring, @[])
   keys.sort(proc(a, b: (uint64, uint32)): int = cmp(a[1], b[1]))
   var offsets = initTable[(uint64, uint32), int64]()
-  var segment = open(tmpSegment, fmWrite)
-  var index = open(tmpIndex, fmWrite)
+  var segment = openPrivateStoreFile(tmpSegment, fmWrite)
+  var index = openPrivateStoreFile(tmpIndex, fmWrite)
   var wal: FileStream = nil
   try:
     if keys.len > 0:
@@ -1717,7 +1811,7 @@ proc replaceFileAtomic(src, dst: string) =
       raiseOSError(osLastError())
 
 proc writeFileDurable(path, data: string) =
-  var file = open(path, fmWrite)
+  var file = openPrivateStoreFile(path, fmWrite)
   try:
     file.write(data)
     file.syncFile()
@@ -1819,11 +1913,22 @@ proc releaseDataDirLock(dataDirLock: var DataDirLock) =
   unregisterDataDir(dataDirLock.identity)
   dataDirLock = DataDirLock(fd: -1, guardFd: -1)
 
-proc backupKey(passphrase: string): SecretBoxKey =
+proc legacyBackupKey(passphrase: string): SecretBoxKey =
   if passphrase.len == 0:
     raise newException(ValueError, "backup passphrase is empty")
   secretBoxKeyFromBytes(genericHash("koutendb-backup-v1\0" & passphrase,
                                     SecretBoxKeyBytes))
+
+proc decryptBackupPayload(blob, passphrase: string): string =
+  if passphrase.len == 0:
+    raise newException(ValueError, "backup passphrase is empty")
+  if blob.startsWith(EncryptedBackupMagic):
+    return decryptWithPassword(blob[EncryptedBackupMagic.len .. ^1], passphrase,
+                               associatedData = EncryptedBackupAssociatedData)
+  if blob.startsWith(EncryptedBackupMagicV1):
+    return decryptSecretBox(blob[EncryptedBackupMagicV1.len .. ^1],
+                            legacyBackupKey(passphrase))
+  raise newException(IOError, "invalid encrypted backup header")
 
 proc endsWithNewline(path: string): bool =
   if not fileExists(path) or getFileSize(path) == 0:
@@ -2359,7 +2464,7 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
                  diskBacked: diskBacked,
                  mutationOrigin: mutationOrigin)
   if dir.len > 0:
-    createDir(dir)
+    createPrivateStoreDir(dir)
     result.dataDirLock = acquireDataDirLock(dir)
     let path = dir / "kouten.log"
     if diskBacked:
@@ -2382,7 +2487,7 @@ proc openStore*(dir: string, durability: StoreDurability = durBuffered,
           # Existing v0.10 stores have no sidecar index, so they take one
           # migration rebuild. Subsequent opens reuse validated ring segments.
           result.rebuildRingSegments()
-      result.logFile = open(path, fmAppend)
+      result.logFile = openPrivateStoreFile(path, fmAppend)
       if newLog:
         result.logFile.write(WalMagicLine & "\n")
         result.flushMaybe(force = true)
@@ -2558,7 +2663,7 @@ proc close*(s: Store) =
   releaseDataDirLock(s.dataDirLock)
 
 proc writeSnapshotFile(s: Store, path: string) =
-  var file = open(path, fmWrite)
+  var file = openPrivateStoreFile(path, fmWrite)
   try:
     file.write(WalMagicLine & "\n")
     if s.galaxy.len > 0:
@@ -2819,15 +2924,15 @@ proc pathsOverlap(a, b: string): bool =
   pathContains(a, b) or pathContains(b, a)
 
 proc syncPath(path: string) =
-  var file = open(path, fmAppend)
+  var file = openPrivateStoreFile(path, fmAppend)
   try:
     file.syncFile()
   finally:
     file.close()
 
 proc copyFileDurable(src, dst: string) =
-  createDir(dst.parentDir)
-  copyFile(src, dst)
+  createPrivateStoreDir(dst.parentDir)
+  copyPrivateStoreFile(src, dst)
   syncPath(dst)
 
 proc moveDirAtomic(src, dst: string) =
@@ -3241,7 +3346,7 @@ proc createCheckpoint*(s: Store; root = ""; id = ""):
   if pathsOverlap(sourceDir, checkpointRoot):
     raise newException(ValueError,
       "checkpoint root must be outside the source data directory")
-  createDir(checkpointRoot)
+  createPrivateStoreDir(checkpointRoot)
   let finalDir = checkpointRoot / checkpointId
   let stageDir = checkpointRoot / (".tmp-" & checkpointId)
   if dirExists(finalDir) or fileExists(finalDir) or symlinkExists(finalDir):
@@ -3251,7 +3356,7 @@ proc createCheckpoint*(s: Store; root = ""; id = ""):
       "checkpoint staging directory already exists: " & stageDir)
   s.sync()
   let sourceHighWater = s.logSize().int64
-  createDir(stageDir)
+  createPrivateStoreDir(stageDir)
   let stageGuardPath = dataDirGuardPath(expandFilename(stageDir))
   try:
     s.writeSnapshotFile(stageDir / "kouten.log")
@@ -3373,7 +3478,7 @@ proc restoreCheckpoint*(checkpointDir, targetDir: string;
     # Materialize the identity long enough to take both the stable sibling
     # guard and the legacy in-directory lock. The empty placeholder is then
     # removed while the stable guard remains held across publication.
-    createDir(targetDir)
+    createPrivateStoreDir(targetDir)
     targetLock = acquireDataDirLock(targetDir)
     removePlaceholder = true
   var previousPublished = false
@@ -3385,7 +3490,7 @@ proc restoreCheckpoint*(checkpointDir, targetDir: string;
         symlinkExists(stageDir) or dirExists(previousDir) or
         fileExists(previousDir) or symlinkExists(previousDir):
       raise newException(IOError, "checkpoint restore staging collision")
-    createDir(stageDir)
+    createPrivateStoreDir(stageDir)
     for file in sourceStatus.files:
       copyFileDurable(checkpointDir / file.path, stageDir / file.path)
     copyFileDurable(checkpointDir / CheckpointManifestName,
@@ -3605,7 +3710,7 @@ proc compact*(s: Store): StoreCompactStats =
   replaceFileAtomic(tmp, path)
   result.afterBytes = getFileSize(path)
   syncDir(parentDir(path))
-  s.logFile = open(path, fmAppend)
+  s.logFile = openPrivateStoreFile(path, fmAppend)
   s.persistent = true
   s.dirty = 0
   s.lastFlush = getMonoTime()
@@ -3624,7 +3729,7 @@ proc backup*(s: Store, dstDir: string): StoreBackupStats =
   ## 元の WAL は書き換えないため、通常運用中の backup に使える。
   if dstDir.len == 0:
     raise newException(ValueError, "backup destination is empty")
-  createDir(dstDir)
+  createPrivateStoreDir(dstDir)
   let dst = dstDir / "kouten.log"
   let tmp = dst & ".tmp"
   if s.persistent:
@@ -3642,7 +3747,7 @@ proc backupEncrypted*(s: Store, dstDir, passphrase: string): StoreBackupStats =
   ## 現在の Store 状態を secretbox で暗号化した snapshot として dstDir/kouten.backup に退避する。
   if dstDir.len == 0:
     raise newException(ValueError, "backup destination is empty")
-  createDir(dstDir)
+  createPrivateStoreDir(dstDir)
   let dst = dstDir / "kouten.backup"
   let tmpPlain = dstDir / "kouten.log.tmp"
   let tmpEnc = dst & ".tmp"
@@ -3651,8 +3756,12 @@ proc backupEncrypted*(s: Store, dstDir, passphrase: string): StoreBackupStats =
   s.writeSnapshotFile(tmpPlain)
   try:
     let plaintext = readFile(tmpPlain)
+    if passphrase.len == 0:
+      raise newException(ValueError, "backup passphrase is empty")
     writeFileDurable(tmpEnc, EncryptedBackupMagic &
-      encryptSecretBox(plaintext, backupKey(passphrase)))
+      encryptWithPassword(plaintext, passphrase,
+                          associatedData = EncryptedBackupAssociatedData,
+                          profile = pepInteractive))
     replaceFileAtomic(tmpEnc, dst)
     syncDir(dstDir)
     result = s.snapshotStats(dst, s.logPath)
@@ -3680,10 +3789,7 @@ proc verifyEncryptedBackup*(backupDir, passphrase: string): StoreBackupStats =
   if not fileExists(src):
     raise newException(IOError, "encrypted backup not found: " & src)
   let blob = readFile(src)
-  if not blob.startsWith(EncryptedBackupMagic):
-    raise newException(IOError, "invalid encrypted backup header")
-  let plaintext = decryptSecretBox(blob[EncryptedBackupMagic.len .. ^1],
-                                   backupKey(passphrase))
+  let plaintext = decryptBackupPayload(blob, passphrase)
   let validateDir = createTempDir("kouten-verify", "")
   let validateTmp = validateDir / "kouten.log"
   writeFile(validateTmp, plaintext)
@@ -3705,14 +3811,14 @@ proc restoreBackup*(backupDir, targetDir: string, overwrite = false,
   if not fileExists(src):
     raise newException(IOError, "backup kouten.log not found: " & src)
   discard verifyBackup(backupDir)
-  createDir(targetDir)
+  createPrivateStoreDir(targetDir)
   let dst = targetDir / "kouten.log"
   if fileExists(dst) and not overwrite:
     raise newException(IOError, "target kouten.log already exists: " & dst)
   let tmp = dst & ".restore"
   try:
-    copyFile(src, tmp)
-    var file = open(tmp, fmAppend)
+    copyPrivateStoreFile(src, tmp)
+    var file = openPrivateStoreFile(tmp, fmAppend)
     try:
       file.syncFile()
     finally:
@@ -3738,12 +3844,9 @@ proc restoreEncryptedBackup*(backupDir, targetDir, passphrase: string,
   if not fileExists(src):
     raise newException(IOError, "encrypted backup not found: " & src)
   let blob = readFile(src)
-  if not blob.startsWith(EncryptedBackupMagic):
-    raise newException(IOError, "invalid encrypted backup header")
-  let plaintext = decryptSecretBox(blob[EncryptedBackupMagic.len .. ^1],
-                                   backupKey(passphrase))
+  let plaintext = decryptBackupPayload(blob, passphrase)
   discard verifyEncryptedBackup(backupDir, passphrase)
-  createDir(targetDir)
+  createPrivateStoreDir(targetDir)
   let dst = targetDir / "kouten.log"
   if fileExists(dst) and not overwrite:
     raise newException(IOError, "target kouten.log already exists: " & dst)
@@ -4092,6 +4195,10 @@ proc beginTxn*(s: Store): StoreTxn =
   result = StoreTxn(store: s, id: s.nextTxId)
   inc s.nextTxId
 
+proc requireOpen(tx: StoreTxn) =
+  if tx.isNil or tx.closed:
+    raise newException(ValueError, "transaction is closed")
+
 proc reserveTxId*(s: Store): uint64 =
   result = s.nextTxId
   inc s.nextTxId
@@ -4112,14 +4219,14 @@ proc reserveCoordinatorTxId*(s: Store, epoch: uint32): uint64 =
   (uint64(epoch) shl 32) or uint64(seq)
 
 proc upsert*(tx: StoreTxn, p: Particle) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   var effective = p
   effective.version = tx.store.nextMutationVersion()
   tx.ops.add TxOp(kind: txUpsert, p: effective, walOffset: -1'i64,
                   segmentOffset: -1'i64, segmentBody: "")
 
 proc remove*(tx: StoreTxn, parent: uint64, seq: uint32) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   let s = tx.store
   let k = key(parent, seq)
   var source = Particle()
@@ -4157,27 +4264,27 @@ proc remove*(tx: StoreTxn, parent: uint64, seq: uint32) =
   tx.ops.add TxOp(kind: txRemove, tombstone: tombstone)
 
 proc putForwarder*(tx: StoreTxn, oldParent: uint64, oldSeq: uint32, f: Forwarder) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   tx.ops.add TxOp(kind: txForwarder, oldParent: oldParent, oldSeq: oldSeq, f: f)
 
 proc putUniverseSyncEvent*(tx: StoreTxn, eventId: uint64, blob: string) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   if blob.len == 0:
     raise newException(ValueError, "universe sync event blob is empty")
   tx.ops.add TxOp(kind: txUniverseSyncEvent, universeEventId: eventId,
                   universeEventBlob: blob)
 
 proc deleteUniverseSyncEvent*(tx: StoreTxn, eventId: uint64) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   tx.ops.add TxOp(kind: txUniverseSyncDelete, universeDeleteEventId: eventId)
 
 proc putRingMeta*(tx: StoreTxn, ringKey: uint64, period, head: float) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   tx.ops.add TxOp(kind: txRingMeta, ringKey: ringKey,
                   ringPeriod: period, ringHead: head)
 
 proc putRingName*(tx: StoreTxn, ringKey: uint64, name: string) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   if name.len > 0:
     tx.ops.add TxOp(kind: txRingName, ringNameKey: ringKey, ringName: name)
 
@@ -4188,7 +4295,7 @@ proc rollback*(tx: StoreTxn) =
 proc packCommittedSegments*(tx: StoreTxn)
 
 proc commit*(tx: StoreTxn) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   let s = tx.store
   s.ensureWritable()
   if s.persistent:
