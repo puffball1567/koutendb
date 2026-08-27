@@ -102,6 +102,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - v0.12 implementation and validation record: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
 - Coordinator failover: [docs/coordinator-failover.md](docs/coordinator-failover.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
+- v0.14.0 release notes: [docs/github-release-v0.14.0.md](docs/github-release-v0.14.0.md)
 - v0.13.0 release notes: [docs/github-release-v0.13.0.md](docs/github-release-v0.13.0.md)
 - v0.12.1 release notes: [docs/github-release-v0.12.1.md](docs/github-release-v0.12.1.md)
 - v0.12.0 release notes: [docs/github-release-v0.12.0.md](docs/github-release-v0.12.0.md)
@@ -717,12 +718,16 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.13.0 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.14.0 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster
-transaction coordinator failover, and documented crash, corruption, container,
-driver, and 72-hour endurance validation.
+transaction coordinator failover, role-separated peer traffic, hardened
+confidentiality boundaries, and documented crash, corruption, container,
+driver, security, and 72-hour endurance validation. The official self-host path
+adds versioned multi-architecture images, supervised restart, verified scheduled
+backups, rollback-safe upgrades and certificate rotation, and approval-gated
+capacity plans.
 
 It is designed for teams that can express a meaningful locality boundary and
 want to evaluate a smaller-working-set retrieval architecture. Multi-machine
