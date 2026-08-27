@@ -21,7 +21,8 @@
 ## 永続化は open/サーバ起動時にディレクトリを渡すだけ:
 ## `koutendb.open(dataDir = "/var/lib/kouten")` / `koutend --data=DIR`
 
-import std/[algorithm, tables, hashes, json, times, monotimes, strutils, os, net]
+import std/[algorithm, tables, hashes, json, math, times, monotimes, strutils,
+            os, net]
 import kouten/[core, store, select, wire, field, vector_backend,
               planner_backend, payload, metrics_format]
 
@@ -588,6 +589,20 @@ proc stageUniverseSyncEvent(db: KoutenDb, tx: StoreTxn, sourceUniverse,
                             eventKey = ""): tuple[event: UniverseSyncEvent,
                                                    removed: seq[int]]
 
+proc requireEmbedded(db: KoutenDb, operation: string) =
+  if db.isNil or db.mode != mEmbedded:
+    raise newException(KoutenValidationError,
+      operation & " is available only in embedded mode")
+
+proc requireCluster(db: KoutenDb, operation: string) =
+  if db.isNil or db.mode != mCluster:
+    raise newException(KoutenValidationError,
+      operation & " is available only in cluster mode")
+
+proc requireOpen(tx: KoutenTx) =
+  if tx.isNil or tx.closed:
+    raise newException(KoutenValidationError, "transaction is closed")
+
 proc defaultRetrievalTuning*(): RetrievalTuning =
   RetrievalTuning(budget: 8, focus: 0, topRings: 0, branchBudget: 0,
                   maxDepth: 0, includeChildren: false, note: "default")
@@ -618,7 +633,7 @@ proc appendAudit(dataDir, event: string; ok = true; ring = ""; id = "";
   if not extra.isNil:
     node["extra"] = extra
   let path = dataDir / "kouten.audit.jsonl"
-  var f = open(path, fmAppend)
+  var f = openPrivateStoreFile(path, fmAppend)
   try:
     f.writeLine($node)
   finally:
@@ -750,7 +765,7 @@ proc newLockToken(db: KoutenDb, keys: seq[string]): tuple[token: string, fence: 
 proc acquireLockKeys(db: KoutenDb, scope: KoutenLockScope, coordinate: string,
                      keys: seq[string], ttlSeconds = 30.0,
                      waitMs = 0): KoutenLockToken =
-  doAssert db.mode == mEmbedded, "coordinate locks are embedded mode only in this release"
+  db.requireEmbedded("coordinate locks")
   if ttlSeconds <= 0:
     raise newException(KoutenValidationError, "ttlSeconds must be positive")
   let deadline = epochTime() + float(max(waitMs, 0)) / 1000.0
@@ -1793,7 +1808,7 @@ proc dump*(db: KoutenDb, path: string = "", includeVectors = true): DumpStats =
     let parent = parentDir(path)
     if parent.len > 0:
       createDir(parent)
-    outFile = open(path, fmWrite)
+    outFile = openPrivateStoreFile(path, fmWrite)
     result.destination = path
 
   try:
@@ -2018,14 +2033,14 @@ proc clampTopRings*(topRings: int): int
 proc packDiskBackedSegments*(db: KoutenDb): SegmentPackStats {.discardable.} =
   ## Build ring-local physical segment files for disk-backed embedded reads.
   ## WAL remains the source of truth; segments are rebuildable read layout.
-  doAssert db.mode == mEmbedded, "packDiskBackedSegments は組み込みモード専用"
+  db.requireEmbedded("packDiskBackedSegments")
   if db.st.diskBacked:
     result = db.st.rebuildRingSegments()
 
 proc packDiskBackedRing*(db: KoutenDb, ring: string): SegmentPackStats {.discardable.} =
   ## Merge one ring into a new complete segment generation without rewriting
   ## unrelated rings.
-  doAssert db.mode == mEmbedded, "packDiskBackedRing は組み込みモード専用"
+  db.requireEmbedded("packDiskBackedRing")
   if db.st.diskBacked:
     result = db.st.packRingSegment(db.ringKey(ring, persist = false))
 
@@ -2107,7 +2122,10 @@ proc now*(db: KoutenDb): float =
 
 proc advance*(db: KoutenDb, dt: float) =
   ## 時計を dt 秒進める（組み込みモード専用。クラスタは実時間で回る）。
-  doAssert db.mode == mEmbedded, "advance は組み込みモード専用（クラスタは実時間）"
+  db.requireEmbedded("advance")
+  if dt < 0.0 or dt.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(KoutenValidationError,
+      "advance dt must be finite and non-negative")
   db.clock += dt
 
 # ---------------------------------------------------------------- 内部
@@ -2176,6 +2194,9 @@ proc orbitOf(db: KoutenDb, id: KoutenId): Orbit =
 proc configureRing*(db: KoutenDb, ring: string, period: float) =
   ## 環の公転周期を設定（省略時 60s）。JOIN したい2環は 1:2 等の整数比にすると
   ## 会合が規則化される（設計書 §8）。put より先に呼ぶこと（周期は ID の意味を変える）。
+  if period <= 0.0 or period.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(KoutenValidationError,
+      "ring period must be finite and positive")
   let key = db.ringKey(ring)
   db.rings[key].period = period
   if db.mode == mEmbedded:
@@ -2252,7 +2273,7 @@ proc waitClusterTxApplied*(db: KoutenDb, txid: uint64,
                            pollMs = 20): bool =
   ## cluster landing intent が owner に apply されるまで待つ。
   ## timeout 時は false。呼び出し側は accepted 済みとして後で status / get を再試行できる。
-  doAssert db.mode == mCluster, "waitClusterTxApplied は cluster mode 専用"
+  db.requireCluster("waitClusterTxApplied")
   let landing =
     if coordinatorNode >= 0: coordinatorNode
     else: db.client.discoverCoordinator().node
@@ -2401,7 +2422,7 @@ proc putSynced*(db: KoutenDb, encoded: EncodedPayload,
                 logicalKey = ""): KoutenId =
   ## embedded put と universe outbox 登録を同時に行う。
   ## 既存 put の意味は変えず、Universe 同期したい write path だけで使う。
-  doAssert db.mode == mEmbedded, "putSynced は embedded mode 専用"
+  db.requireEmbedded("putSynced")
   db.checkWriteGuardrails(encoded, ring, vec.len)
   let key = db.ringKey(ring, persist = false)
   let ri = db.rings[key]
@@ -2477,7 +2498,7 @@ proc beginTransaction*(db: KoutenDb): KoutenTx =
 proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
   ## transaction 内の書き込み。commit まで DB 本体には見えない。
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   tx.db.checkWriteGuardrails(encoded, ring, vec.len)
   let key = tx.db.ringKey(ring, persist = false)
   let ri = tx.db.rings[key]
@@ -2524,7 +2545,7 @@ proc put*(tx: KoutenTx, doc: JsonNode, ring: string = "default",
 
 proc remove*(tx: KoutenTx, id: KoutenId) =
   ## transaction 内の削除。commit まで DB 本体には反映されない。
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   case tx.db.mode
   of mEmbedded:
     tx.tx.remove(id.parent, id.seq)
@@ -2537,7 +2558,7 @@ proc remove*(tx: KoutenTx, id: KoutenId) =
 proc update*(tx: KoutenTx, id: KoutenId, encoded: EncodedPayload,
              vec: seq[float32] = @[]) =
   ## transaction 内の置換更新。commit まで DB 本体には反映されない。
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   tx.db.checkPayloadGuardrails(encoded, vec.len)
   let normVec = vec.normalize()
   case tx.db.mode
@@ -2569,7 +2590,7 @@ proc update*(tx: KoutenTx, id: KoutenId, doc: JsonNode,
   tx.update(id, encodedPayload($doc, pcJson), vec)
 
 proc commit*(tx: KoutenTx) =
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   case tx.db.mode
   of mEmbedded:
     tx.tx.commit()
@@ -2590,7 +2611,7 @@ proc commit*(tx: KoutenTx) =
 
 proc commit*(tx: KoutenTx, ackMode: WriteAckMode) =
   ## この transaction だけ応答タイミングを上書きして commit する。
-  doAssert not tx.closed, "transaction is closed"
+  tx.requireOpen()
   case tx.db.mode
   of mEmbedded:
     tx.commit()
@@ -2626,7 +2647,7 @@ proc batchPutAtomic*(db: KoutenDb, payloads: seq[string],
                      vecs: seq[seq[float32]] = @[]): seq[KoutenId] =
   ## Embedded all-or-nothing bulk insert. If any staged write or commit fails,
   ## no partial payloads become visible.
-  doAssert db.mode == mEmbedded, "batchPutAtomic is embedded mode only"
+  db.requireEmbedded("batchPutAtomic")
   let tx = db.beginTransaction()
   try:
     for i, payload in payloads:
@@ -2642,7 +2663,7 @@ proc batchPutAtomic*(db: KoutenDb, docs: seq[JsonNode],
                      ring: string = "default",
                      vecs: seq[seq[float32]] = @[]): seq[KoutenId] =
   ## Embedded all-or-nothing bulk JSON insert.
-  doAssert db.mode == mEmbedded, "batchPutAtomic is embedded mode only"
+  db.requireEmbedded("batchPutAtomic")
   let tx = db.beginTransaction()
   try:
     for i, doc in docs:
@@ -2658,7 +2679,7 @@ proc batchUpdateAtomic*(db: KoutenDb, ids: seq[KoutenId],
                         payloads: seq[string],
                         vecs: seq[seq[float32]] = @[]) =
   ## Embedded all-or-nothing bulk replace. Every ID must exist before commit.
-  doAssert db.mode == mEmbedded, "batchUpdateAtomic is embedded mode only"
+  db.requireEmbedded("batchUpdateAtomic")
   if ids.len != payloads.len:
     raise newException(KoutenValidationError, "ids and payloads length mismatch")
   let tx = db.beginTransaction()
@@ -2675,7 +2696,7 @@ proc batchUpdateAtomic*(db: KoutenDb, ids: seq[KoutenId],
                         docs: seq[JsonNode],
                         vecs: seq[seq[float32]] = @[]) =
   ## Embedded all-or-nothing bulk JSON replace.
-  doAssert db.mode == mEmbedded, "batchUpdateAtomic is embedded mode only"
+  db.requireEmbedded("batchUpdateAtomic")
   if ids.len != docs.len:
     raise newException(KoutenValidationError, "ids and docs length mismatch")
   let tx = db.beginTransaction()
@@ -2690,7 +2711,7 @@ proc batchUpdateAtomic*(db: KoutenDb, ids: seq[KoutenId],
 
 proc batchDeleteAtomic*(db: KoutenDb, ids: seq[KoutenId]) =
   ## Embedded all-or-nothing bulk delete. Every remove is committed together.
-  doAssert db.mode == mEmbedded, "batchDeleteAtomic is embedded mode only"
+  db.requireEmbedded("batchDeleteAtomic")
   let tx = db.beginTransaction()
   try:
     for id in ids:
@@ -3800,7 +3821,7 @@ proc enqueueUniverseSyncEvent*(db: KoutenDb, sourceUniverse, sourceGalaxy,
                                eventKey = ""): uint64 =
   ## Universe 間の durable eventual sync 用イベントを登録する。
   ## これは global commit ではなく、別 universe に後で配送するための WAL-backed outbox。
-  doAssert db.mode == mEmbedded, "universe sync event queue は embedded mode 専用"
+  db.requireEmbedded("universe sync event queue")
   if ring.len == 0:
     raise newException(ValueError, "universe sync event ring is empty")
   if op != "put":
@@ -3845,7 +3866,7 @@ proc stageUniverseSyncEvent(db: KoutenDb, tx: StoreTxn, sourceUniverse,
                             timestamp = -1.0,
                             eventKey = ""): tuple[event: UniverseSyncEvent,
                                                    removed: seq[int]] =
-  doAssert db.mode == mEmbedded, "universe sync event queue は embedded mode 専用"
+  db.requireEmbedded("universe sync event queue")
   if ring.len == 0:
     raise newException(ValueError, "universe sync event ring is empty")
   if op != "put":
@@ -3895,7 +3916,7 @@ proc universeSyncEvents*(db: KoutenDb,
 proc applyUniverseSyncEvent*(db: KoutenDb, event: UniverseSyncEvent): bool =
   ## 別 universe から受け取った event を idempotent に適用する。
   ## true は今回適用、false は既に適用済み。
-  doAssert db.mode == mEmbedded, "universe sync event apply は embedded mode 専用"
+  db.requireEmbedded("universe sync event apply")
   if event.eventKey.len == 0:
     raise newException(ValueError, "universe sync event key is empty")
   if db.st.isUniverseSyncEventApplied(event.eventKey):
@@ -3935,8 +3956,8 @@ proc syncUniverseOnce*(source, target: KoutenDb,
                        pruneAcked = false): UniverseSyncStats =
   ## source outbox から target store へ一度だけ event を配送する。
   ## Transport / scheduling は呼び出し側が担当し、core は durable event 境界だけを提供する。
-  doAssert source.mode == mEmbedded, "source universe sync は embedded mode 専用"
-  doAssert target.mode == mEmbedded, "target universe sync は embedded mode 専用"
+  source.requireEmbedded("source universe sync")
+  target.requireEmbedded("target universe sync")
   for event in source.universeSyncEvents(includeDeadLetter = false):
     inc result.read
     if not universeSyncDispatchable(event):
@@ -4091,7 +4112,7 @@ proc warpDrain*(db: KoutenDb, jobId: uint64, maxSteps = 1000,
 
 proc batchRemove*(db: KoutenDb, ids: seq[KoutenId]) =
   ## 複数 ID を削除する。v1 は embedded 専用。
-  doAssert db.mode == mEmbedded, "batchRemove は embedded mode 専用"
+  db.requireEmbedded("batchRemove")
   for id in ids:
     db.remove(id)
 
@@ -4930,7 +4951,7 @@ proc isValidRetrievalEnvelope*(env: JsonNode): bool =
 
 proc ringMetrics*(db: KoutenDb): seq[RingMetric] =
   ## 環ごとの意味的一貫性。coherence は 0..1 目安で、高いほど vec がまとまっている。
-  doAssert db.mode == mEmbedded, "ringMetrics v1 は組み込みモード専用"
+  db.requireEmbedded("ringMetrics")
   var sums = initTable[uint64, tuple[c: seq[float32], n: int]]()
   for _, p in db.st.items:
     if p.vec.len == 0:
@@ -4962,10 +4983,16 @@ proc locate*(db: KoutenDb, id: KoutenId, at: float = -1.0): int =
   ## その ID が「どのノードにあるか」。at 省略で現在、未来時刻も渡せる。
   ## どちらのモードでも問い合わせゼロ・ローカル計算のみ（概念書 2章）。
   let t = if at < 0.0: db.nowT else: at
+  if t.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(KoutenValidationError,
+      "location time must be finite")
   int(db.tbl.node(db.orbitOf(id), t))
 
 proc nextVisit*(db: KoutenDb, id: KoutenId, node: int): float =
   ## その ID が指定ノードに次に到着する時刻（プリフェッチ・バッチの予定表）。
+  if node < 0 or node >= int(db.tbl.nNodes):
+    raise newException(KoutenValidationError,
+      "node must be within the configured topology")
   db.orbitOf(id).nextArrival(db.tbl.arcStart(NodeId(node)), db.nowT)
 
 proc nextJoin*(db: KoutenDb, a, b: KoutenId): float =
@@ -5050,21 +5077,21 @@ proc metricsText*(db: KoutenDb;
 
 proc shutdownCluster*(db: KoutenDb): seq[string] =
   ## 運用・テスト用の graceful shutdown。認証導入までは信頼ネットワーク前提。
-  doAssert db.mode == mCluster, "shutdownCluster はクラスタモード専用"
+  db.requireCluster("shutdownCluster")
   for i in countdown(db.client.peers.high, 0):
     result.add db.client.shutdownReq(i)
 
 proc drainCluster*(db: KoutenDb): seq[string] =
   ## Rolling maintenance / backup 用に全ノードを書き込み拒否状態へ移す。
   ## 読み取りは継続し、未読 payload はサーバ側で drain して wire 境界を守る。
-  doAssert db.mode == mCluster, "drainCluster はクラスタモード専用"
+  db.requireCluster("drainCluster")
   for i in 0 ..< db.client.peers.len:
     result.add db.client.drainReq(i)
 
 proc coordinatorStatus*(db: KoutenDb): KoutenCoordinatorStatus =
   ## Return the highest non-conflicting coordinator assignment reported by
   ## reachable peers.
-  doAssert db.mode == mCluster, "coordinatorStatus is cluster mode only"
+  db.requireCluster("coordinatorStatus")
   let status = db.client.discoverCoordinator()
   KoutenCoordinatorStatus(epoch: status.epoch, node: status.node,
                            replica: status.replica)
@@ -5073,7 +5100,7 @@ proc promoteCoordinator*(db: KoutenDb, epoch: uint32, coordinatorNode,
                          replica: int): seq[string] =
   ## Explicit, fenced failover. Ordinary writes do not run quorum consensus;
   ## quorum is required only while changing the coordinator assignment.
-  doAssert db.mode == mCluster, "promoteCoordinator is cluster mode only"
+  db.requireCluster("promoteCoordinator")
   let peerCount = db.client.peers.len
   if epoch == 0:
     raise newException(ValueError, "coordinator epoch must be positive")
@@ -5135,7 +5162,7 @@ proc promoteCoordinator*(db: KoutenDb, epoch: uint32, coordinatorNode,
 proc resumeCluster*(db: KoutenDb): seq[string] =
   ## drainCluster 後に全ノードの書き込み受け入れを再開する。
   ## 先に全ノードが同じ topology で移送完了していることを検証する。
-  doAssert db.mode == mCluster, "resumeCluster はクラスタモード専用"
+  db.requireCluster("resumeCluster")
   var expectedEpoch = 0'u32
   var expectedNodes = 0'u16
   var expectedVirtualArcs = 0
@@ -5161,7 +5188,7 @@ proc resumeCluster*(db: KoutenDb): seq[string] =
 proc snapshotCluster*(db: KoutenDb): seq[string] =
   ## 全ノードを flush し、バックアップ前の軽量 barrier 情報を返す。
   ## 一貫した静止点が必要な場合は drainCluster 後に呼ぶ。
-  doAssert db.mode == mCluster, "snapshotCluster はクラスタモード専用"
+  db.requireCluster("snapshotCluster")
   for i in 0 ..< db.client.peers.len:
     result.add db.client.snapshotReq(i)
 

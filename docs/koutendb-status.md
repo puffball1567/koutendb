@@ -5,7 +5,14 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
-Current release evidence: [v0.13.0 release notes](./github-release-v0.13.0.md)
+Current release evidence: [v0.14.0 release notes](./github-release-v0.14.0.md)
+
+Current v1.0 preparation: [v1.0 stabilization plan](./v1-stabilization.md)
+
+Current self-host operations: [v0.14 self-hosted operations](./v0.14-self-hosted-operations.md)
+
+Human evaluation path: [hands-on evaluation](./hands-on-evaluation.md) and
+[service trial](./service-trial.md)
 
 Current persistence-cycle record: [v0.12 implementation and validation](./v0.12-roadmap.md)
 
@@ -62,7 +69,9 @@ Translations:
 | Strong durability / fsync knob | Done | `open(dataDir=..., durability=durStrong)` and `koutend --durability=strong`; store/API tests cover reopen, transaction, compact |
 | Core test suite | Done | `scripts/test_core.sh` runs orbital core, selection, field, store, and public API tests |
 | Full smoke suite | Done | `scripts/test_all_smoke.sh` runs core tests plus cluster tx, failure retry, authz, wire fuzz, recovery, and remote universe sync smoke; driver compatibility is opt-in |
-| Generation snapshot / checkpoint | Foundation | Immutable `koutendb-checkpoint-v1` generations bind a compact WAL to complete ring segment/index generations through a checksummed manifest and completion marker. Creation, strict verification, listing, fail-safe retention, and atomic-directory restore are exposed through Nim, CLI, and additive C ABI v2 JSON functions. Continuous PITR and managed scheduling remain planned |
+| Generation snapshot / checkpoint | Foundation | Immutable `koutendb-checkpoint-v1` generations bind a compact WAL to complete ring segment/index generations through a checksummed manifest and completion marker. Creation, strict verification, listing, fail-safe retention, and atomic-directory restore are exposed through Nim, CLI, and additive C ABI v2 JSON functions. Continuous PITR and managed fleet scheduling remain planned |
+| Self-host capacity plans | Foundation | The generated single-node bundle records bounded credential-free capacity history, calculates least-squares disk-growth forecasts with memory/CPU headroom, binds approval to a content-derived plan ID, and executes only a one-shot prepared-capacity/health verification. Cloud provisioning, fleet policy, and arbitrary hooks remain external. |
+| Scheduled verified backups | Foundation | The single-node bundle can execute checkpoint, staged export, independent restore verification, publication, and bounded verified-generation retention under one operator lock, with a hardened daily systemd timer. Provider object-store transfer and fleet policy remain external. |
 | Kubernetes manifests | Planned | liveness/readiness, PVC, rolling restart |
 
 ## Cluster / Network
@@ -76,7 +85,7 @@ Translations:
 | Health / metrics / rings | Done | CLI and wire protocol; legacy key/value plus Prometheus/OpenMetrics text. Metrics include uptime, request/error/auth counters, connection counts, WAL bytes, warp backlog, universe apply counters, cluster tx backlog, storage/ring counts, physical/scored retrieval work, segment/WAL fallback reasons, maintenance state, and aggregate checkpoint health. Default labels exclude ring names and checkpoint IDs. |
 | Authn + secret key | Done | username/password/secret-key; unusable credential combinations fail at startup |
 | TLS | Done | Standard TLS transport for `koutend` and CLI/client connections when built with `-d:ssl`; `scripts/cluster_tls_smoke.sh` covers authenticated TLS, secret-key transport, JSON put/get, and plain-client rejection |
-| Authz / RBAC | PoC | `koutend --allow-ring=prefix[,prefix...]` and `--role=user:password:reader|writer|admin[:prefixes]`; `scripts/cluster_authz_smoke.sh` and `scripts/cluster_rbac_smoke.sh` cover prefix and role matrix behavior |
+| Authz / RBAC | Foundation | `koutend --allow-ring=prefix[,prefix...]` and `--role=user:password:reader|writer|replicator|admin[:prefixes]`; explicit `peerAuth` separates node credentials from application writers, and the authz/RBAC smoke suites cover startup, prefix, role, secret-key, and migration boundaries |
 | Wire fuzz smoke | Done | `scripts/cluster_wire_fuzz_smoke.sh` runs deterministic malformed-frame cases, including oversized headers and deep JSON, and verifies the cluster stays healthy |
 | Server resource guardrails | Foundation | Accepted sockets have receive/send deadlines and a fixed active-connection cap; rejected admission has a dedicated counter and plain connections receive `ERR overloaded`. Ring-list pages and retrieval work are bounded. `scripts/concurrency_backpressure_smoke.sh` covers slow input/output, admission recovery, concurrent readers/writers, automatic maintenance, metrics/snapshot barriers, and offline reopen. Per-tenant quotas remain planned |
 | Embedded write guardrails | Foundation | Opt-in `KoutenGuardrails` can cap payload bytes, vector dimension, ring count, and records per ring for production trials; default zero values preserve existing behavior |
@@ -138,11 +147,12 @@ Translations:
 | Secret key gate | Done | ID/password alone can be insufficient; secret-key without user/password fails closed |
 | nimsodium encryption primitive | Partial | Used for auth transport; scope may expand |
 | Galaxy isolation | Done | Limits blast radius by galaxy |
-| TLS | Done | Standard TCP transport TLS is implemented for `-d:ssl` builds; certificate rotation and managed CA workflows remain operational work |
+| TLS | Done | Standard TCP transport TLS is implemented for `-d:ssl` builds; the single-node self-host operator provides validated server-certificate rotation and health-failure rollback, while managed CA and client trust-store workflows remain external |
 | Ring/galaxy authz | PoC | Ring prefix authorization is implemented for named-ring wire operations; richer role policy is pending |
-| Backup encryption | Done | `backupEncrypted` / `restoreEncryptedBackup` and `kouten backup-encrypted` / `restore-encrypted` use nimsodium secretbox |
+| Backup encryption | Done | `backupEncrypted` / `restoreEncryptedBackup` and `kouten backup-encrypted` / `restore-encrypted` use Argon2id password derivation plus nimsodium secretbox; legacy V1 backups remain readable |
 | General audit log | Foundation | Persistent embedded stores append `kouten.audit.jsonl` for direct write/update/delete, backup, restore, compact, and guardrail denial events. Persistent `koutend` nodes also append auth success/failure, authz denial, and retrieve/broad-scan denial events. Full enterprise audit policy remains planned |
-| Threat model document | Draft | `docs/threat-model.md` covers assets, trust boundaries, current controls, and known gaps |
+| Security hardening | Foundation | Galaxy-bound authenticated sessions, fail-closed remote password transport, bounded auth throttling, authorization-aware retrieval/statistics, symmetric wire bounds, owner-only POSIX artifact modes, and Argon2id encrypted backups are covered by `docs/security-validation.md` |
+| Threat model document | Maintained | `docs/threat-model.md` covers assets, trust boundaries, current controls, and known gaps |
 
 ## Post-v0.1 Roadmap Candidates
 
@@ -179,7 +189,7 @@ fully covered by the current concepts or code:
 | Read-your-writes across local pending state | Local users should not feel universe-sync delay. The cluster landing-intent fallback is a start; universe-level pending overlays are still missing. |
 | Dynamic node replacement | Managed services must replace failed or upgraded nodes without manual peer-list surgery. Current clusters use static peers. |
 | Automated coordinator orchestration | Fenced primary/standby promotion is implemented. A managed service still needs health policy, operator approval, config rollout, and service discovery around that explicit boundary. |
-| TLS and certificate rotation | Username/password/secret-key auth exists, but managed public or VPC deployments need transport TLS and rotation workflows. |
+| Managed certificate lifecycle | TLS and validated single-node server-certificate rotation exist. Managed public or VPC deployments still need CA policy, expiry automation, client trust-store rollout, and fleet-wide orchestration. |
 | Secret rotation | `authProfiles` reference external secrets, but the server and drivers need an explicit rotation story for username/password/secret-key credentials. |
 | Point-in-time recovery / generation checkpoints | Backup/restore exists. Managed services normally require recoverable generations, restore-point selection, and verification before promotion. |
 | Managed drain / quiesce orchestration | The server has admin-only `DRAIN` / `SNAPSHOT` / `RESUME` primitives. Managed services still need rolling orchestration, promotion policy, and backup scheduling around those primitives. |

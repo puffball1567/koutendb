@@ -14,6 +14,11 @@ downstream AI/RAG or application logic.
 
 - [Concept](koutendb-concept.md)
 - [Installation](installation.md)
+- [Hands-on Evaluation](hands-on-evaluation.md)
+- [Service Trial](service-trial.md)
+- [v1.0 Stabilization Plan](v1-stabilization.md)
+- [v0.14 Self-Hosted Operations](v0.14-self-hosted-operations.md)
+- [Single-Node Self-Host Bundle](https://github.com/puffball1567/koutendb/tree/main/deploy/self-hosted)
 - [Public API](public-api.md)
 - [Configuration Reference](config-reference.md)
 - [CLI Reference](cli-reference.md)
@@ -46,7 +51,9 @@ downstream AI/RAG or application logic.
 - [Container Persistence and Security Validation](container-security-validation.md)
 - [External Driver Validation](external-driver-validation.md)
 - [Cloud Operations Metrics](cloud-operations.md)
+- [Roles And Service Accounts](access-control.md)
 - [Threat Model](threat-model.md)
+- [Security Validation Matrix](security-validation.md)
 - [Test Coverage](test-coverage.md)
 - [Audit Remediation Tracker](audit-remediation.md)
 - [Development Workflow](development-workflow.md)
@@ -64,6 +71,7 @@ downstream AI/RAG or application logic.
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.14.0 Release Notes](github-release-v0.14.0.md)
 - [v0.13.0 Release Notes](github-release-v0.13.0.md)
 - [v0.12.1 Release Notes](github-release-v0.12.1.md)
 - [v0.12.0 Release Notes](github-release-v0.12.0.md)

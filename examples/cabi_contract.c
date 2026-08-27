@@ -194,15 +194,42 @@ int main(void) {
   err = kouten_last_error();
   if (!err || strstr(err, "length") == NULL) return fail("last_error should mention length");
 
+  if (kouten_put(db, "docs/api", payload, KOUTEN_MAX_INPUT_BYTES + 1u,
+                 &dummy) != KOUTEN_ERR)
+    return fail("bounded oversized payload length should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "max C input") == NULL)
+    return fail("last_error should mention max C input");
+
   if (kouten_put_vec(db, "docs/api", payload, strlen(payload), vec, (size_t)-1, &dummy) != KOUTEN_ERR)
     return fail("oversized vector length should fail");
   err = kouten_last_error();
   if (!err || strstr(err, "vec_len") == NULL) return fail("last_error should mention vec_len");
 
+  if (kouten_put_vec(db, "docs/api", payload, strlen(payload), vec,
+                     KOUTEN_MAX_VECTOR_DIM + 1u, &dummy) != KOUTEN_ERR)
+    return fail("bounded oversized vector length should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "max count") == NULL)
+    return fail("last_error should mention max vector count");
+
   if (kouten_put_codec(db, "docs/api", payload, strlen(payload), 9999, &dummy) != KOUTEN_ERR)
     return fail("invalid codec should fail");
   err = kouten_last_error();
   if (!err || strstr(err, "codec") == NULL) return fail("last_error should mention codec");
+
+  char *oversized_ring = malloc(KOUTEN_MAX_CSTRING_BYTES + 2u);
+  if (!oversized_ring) return fail("oversized C string allocation failed");
+  memset(oversized_ring, 'r', KOUTEN_MAX_CSTRING_BYTES + 1u);
+  oversized_ring[KOUTEN_MAX_CSTRING_BYTES + 1u] = '\0';
+  if (kouten_ring_configure(db, oversized_ring, 60.0) != KOUTEN_ERR) {
+    free(oversized_ring);
+    return fail("oversized C string should fail");
+  }
+  free(oversized_ring);
+  err = kouten_last_error();
+  if (!err || strstr(err, "max C string") == NULL)
+    return fail("last_error should mention max C string");
 
   if (kouten_get(db, id, NULL) != NULL)
     return fail("NULL out_len should fail for get");
@@ -219,10 +246,34 @@ int main(void) {
   err = kouten_last_error();
   if (!err || strstr(err, "ids_len") == NULL) return fail("last_error should mention ids_len");
 
+  if (kouten_batch_get(db, &id, KOUTEN_MAX_BATCH_ITEMS + 1u) != NULL)
+    return fail("bounded oversized batch length should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "max count") == NULL)
+    return fail("last_error should mention max batch count");
+
   if (kouten_retrieve(db, vec, (size_t)-1, "docs/api", 1, 1, 50) != NULL)
     return fail("oversized retrieve vector length should fail");
   err = kouten_last_error();
   if (!err || strstr(err, "vec_len") == NULL) return fail("last_error should mention retrieve vec_len");
+
+  read_page = kouten_read_ring_json(
+    db, "docs/api", "", "", 1, "", 2, 1, 20, "time", 0, &read_len);
+  if (read_page != NULL) return fail("invalid pagination boolean should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "pagination") == NULL)
+    return fail("last_error should mention pagination");
+
+  if (kouten_next_visit(db, id, 8) != -1.0)
+    return fail("out-of-range next_visit node should fail");
+  err = kouten_last_error();
+  if (!err || strstr(err, "node") == NULL)
+    return fail("last_error should mention next_visit node");
+
+  kouten_advance(db, -1.0);
+  err = kouten_last_error();
+  if (!err || strstr(err, "non-negative") == NULL)
+    return fail("negative advance should set last_error");
 
   kouten_id mutable_id;
   if (kouten_put(db, "docs/mutable", "before", 6, &mutable_id) != KOUTEN_OK)

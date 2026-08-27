@@ -1,7 +1,10 @@
 # Operational Trials
 
-KoutenDB v0.10 adds an operational evaluation path for users who want to try a
-persistent deployment shape before putting important data behind it.
+KoutenDB provides this short operational evaluation path for users who want to
+try a persistent deployment shape before putting important data behind it.
+Start with the [Hands-on Evaluation](hands-on-evaluation.md). Use this Compose
+trial as the next rehearsal, then follow the longer
+[Service Trial](service-trial.md) before the v1.0 RC gate.
 
 The goal is not to pretend that a Compose file is a managed service. The goal is
 to make a small trial repeatable:
@@ -124,5 +127,5 @@ It does not prove:
 - multi-region disaster recovery;
 - enterprise audit policy completeness.
 
-Those are larger deployment topics. The v0.10 trial is deliberately smaller:
+Those are larger deployment topics. This Compose trial is deliberately smaller:
 it should be easy to run, inspect, and challenge.

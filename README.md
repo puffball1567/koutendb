@@ -87,6 +87,9 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 
 - Documentation site entry point: [docs/index.md](docs/index.md)
 - Installation: [docs/installation.md](docs/installation.md)
+- Hands-on evaluation: [docs/hands-on-evaluation.md](docs/hands-on-evaluation.md)
+- Service operation trial: [docs/service-trial.md](docs/service-trial.md)
+- v1.0 stabilization plan: [docs/v1-stabilization.md](docs/v1-stabilization.md)
 - Public API reference: [docs/public-api.md](docs/public-api.md)
 - Configuration reference: [docs/config-reference.md](docs/config-reference.md)
 - CLI reference: [docs/cli-reference.md](docs/cli-reference.md)
@@ -99,6 +102,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - v0.12 implementation and validation record: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
 - Coordinator failover: [docs/coordinator-failover.md](docs/coordinator-failover.md)
 - Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
+- v0.14.0 release notes: [docs/github-release-v0.14.0.md](docs/github-release-v0.14.0.md)
 - v0.13.0 release notes: [docs/github-release-v0.13.0.md](docs/github-release-v0.13.0.md)
 - v0.12.1 release notes: [docs/github-release-v0.12.1.md](docs/github-release-v0.12.1.md)
 - v0.12.0 release notes: [docs/github-release-v0.12.0.md](docs/github-release-v0.12.0.md)
@@ -113,6 +117,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 - Use case recipes: [docs/use-case-recipes.md](docs/use-case-recipes.md)
 - Universe sync: [docs/universe-sync.md](docs/universe-sync.md)
 - Threat model: [docs/threat-model.md](docs/threat-model.md)
+- Security validation matrix: [docs/security-validation.md](docs/security-validation.md)
 - Benchmark notes: [docs/koutendb-bench.md](docs/koutendb-bench.md)
 - Effect validation: [docs/effect-validation.md](docs/effect-validation.md)
 - Generation checkpoints: [docs/generation-checkpoints.md](docs/generation-checkpoints.md)
@@ -574,7 +579,7 @@ bin/koutend --id=0 --peers=127.0.0.1:7301 \
   --allow-ring=allowed
 ```
 
-Minimal RBAC plus ring-prefix authorization:
+Minimal single-node RBAC plus ring-prefix authorization:
 
 ```sh
 bin/koutend --id=0 --peers=127.0.0.1:7301 \
@@ -583,16 +588,25 @@ bin/koutend --id=0 --peers=127.0.0.1:7301 \
   --role=admin:admin:admin:allowed
 ```
 
+Multi-node role deployments add a dedicated `replicator` account and explicit
+`peerAuth`; see [Roles And Service Accounts](docs/access-control.md).
+
 Encrypted backup / restore:
 
 ```sh
-kouten backup-encrypted --data=data --backup=backup.enc --passphrase=change-me
-kouten restore-encrypted --backup=backup.enc --data=restored --passphrase=change-me --durability=strong
+printf '%s\n' 'change-me' > /run/secrets/kouten_backup_passphrase
+kouten backup-encrypted --data=data --backup=backup.enc \
+  --passphrase-file=/run/secrets/kouten_backup_passphrase
+kouten restore-encrypted --backup=backup.enc --data=restored \
+  --passphrase-file=/run/secrets/kouten_backup_passphrase --durability=strong
 ```
 
 `backup`, `backup-encrypted`, `restore`, and `restore-encrypted` use
 temporary files plus atomic replacement. Snapshot files are fsynced before they
-are made visible.
+are made visible. Encrypted backups use Argon2id password derivation and
+authenticated secretbox encryption. Prefer `--passphrase-file` or
+`KOUTEN_BACKUP_PASSPHRASE` so the passphrase is not exposed in process
+arguments.
 
 Immutable generation checkpoints preserve one verified WAL and ring-local
 segment/index generation together:
@@ -704,17 +718,24 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.13.0 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.14.0 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster
-transaction coordinator failover, and documented crash, corruption, container,
-driver, and 72-hour endurance validation.
+transaction coordinator failover, role-separated peer traffic, hardened
+confidentiality boundaries, and documented crash, corruption, container,
+driver, security, and 72-hour endurance validation. The official self-host path
+adds versioned multi-architecture images, supervised restart, verified scheduled
+backups, rollback-safe upgrades and certificate rotation, and approval-gated
+capacity plans.
 
 It is designed for teams that can express a meaningful locality boundary and
 want to evaluate a smaller-working-set retrieval architecture. Multi-machine
 and multi-region endurance testing and broader external production reports
 remain active validation tracks. See
+[Hands-on Evaluation](docs/hands-on-evaluation.md),
+[Service Trial](docs/service-trial.md),
+[v1.0 Stabilization](docs/v1-stabilization.md),
 [Operational Trials](docs/operational-trials.md),
 [Soak Testing](docs/soak-testing.md), and
 [Feature Status](docs/koutendb-status.md) for the current evidence and roadmap.

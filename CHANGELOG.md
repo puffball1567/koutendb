@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## v0.14.0 - 2026-08-27
+
+### Added
+
+- Added an official TLS-enabled multi-architecture OCI image release path for
+  `linux/amd64` and `linux/arm64` through GHCR.
+- Added a single-node self-host bundle with non-root/read-only containers,
+  persistent strong-durability storage, generated TLS/auth configuration,
+  health checks, and bounded supervised restart integration.
+- Added operator-controlled checkpoint export, independent restore
+  verification, scheduled verified backups, and fail-safe retention.
+- Added rollback-safe image upgrades and certificate rotation with preflight,
+  recovery-generation verification, and post-change health checks.
+- Added bounded capacity history, growth forecasts, content-derived plan IDs,
+  explicit approval, and one-shot prepared-capacity verification.
+- Added documented `reader`, `writer`, `replicator`, and `admin` roles plus
+  explicit peer service credentials for node-to-node traffic.
+
+### Changed
+
+- Authenticated connections are bound to one galaxy, and ring-scoped reads,
+  retrieval, statistics, migration, and replication paths enforce their
+  declared authorization boundaries.
+- New encrypted backups derive keys with Argon2id and authenticated secretbox
+  encryption while retaining read compatibility with legacy V1 backups.
+- Newly created POSIX data directories and managed artifacts use owner-only
+  permissions, and managed output paths reject symbolic-link targets.
+- Remote password authentication now refuses non-loopback plaintext deployment
+  unless TLS, secret-key transport, or the explicit development override is
+  configured.
+
+### Fixed / Hardened
+
+- Added authentication throttling and equivalent first-response behavior for
+  configured and unknown identities.
+- Added symmetric request/response framing limits, bounded C ABI allocation
+  inputs, validated handles, and catchable public API failures.
+- Prevented application writers from invoking replication, owner-apply,
+  coordinator, Universe, and topology-maintenance operations.
+- Replaced remotely exposed internal exception text with stable error
+  categories and restricted non-admin health/statistics disclosure.
+- Added focused confidentiality, RBAC, malformed-frame, backup-migration,
+  artifact-permission, C ABI, TLS, and multi-node peer-role validation.
+
 ## v0.13.0 - 2026-08-21
 
 ### Added

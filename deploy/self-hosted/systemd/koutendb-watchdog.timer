@@ -1,0 +1,11 @@
+[Unit]
+Description=Run KoutenDB health watchdog
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=20s
+AccuracySec=2s
+Unit=koutendb-watchdog.service
+
+[Install]
+WantedBy=timers.target

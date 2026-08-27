@@ -316,6 +316,21 @@ bin/kouten verify --backup="$WORK/verify-backup" --metrics |
   grep -q "verifyBackup 1"
 bin/kouten verify --backup="$WORK/verify-backup" --json |
   grep -q '"kind": "backup"'
+echo "[cli-crud] encrypted backup secret sources"
+printf ' backup-secret with spaces \n' > "$WORK/backup-passphrase"
+bin/kouten backup-encrypted --data="$KOUTEN_DATA" \
+  --backup="$WORK/encrypted-backup" \
+  --passphrase-file="$WORK/backup-passphrase" >/dev/null
+grep -a -q '^KOUTENDB-BACKUP-ARGON2ID-V2$' \
+  "$WORK/encrypted-backup/kouten.backup"
+KOUTEN_BACKUP_PASSPHRASE=' backup-secret with spaces ' \
+  bin/kouten verify --backup="$WORK/encrypted-backup" |
+  grep -q "verify status: ok"
+bin/kouten restore-encrypted --backup="$WORK/encrypted-backup" \
+  --data="$WORK/encrypted-restored" \
+  --passphrase-file="$WORK/backup-passphrase" >/dev/null
+bin/kouten get --data="$WORK/encrypted-restored" --ring=docs/japan --limit=1 |
+  grep -q '"status": "draft"'
 bin/kouten doctor --data="$KOUTEN_DATA" |
   grep -q "verify status: ok"
 printf 'right\n' > "$WORK/server-password"
@@ -428,5 +443,8 @@ KOUTEN_CONFIG="$WORK/cluster-config.json" bin/kouten get \
 auth_out="$(bin/kouten health --peers="127.0.0.1:${BASE_PORT}" \
   --user=app --password=wrong --secret-key=secret 2>&1 >/dev/null || true)"
 grep -q '^error: AUTHRESP failed: ERR auth-required$' <<<"$auth_out"
+unknown_auth_out="$(bin/kouten health --peers="127.0.0.1:${BASE_PORT}" \
+  --user=unknown --password=wrong --secret-key=secret 2>&1 >/dev/null || true)"
+grep -q '^error: AUTHRESP failed: ERR auth-required$' <<<"$unknown_auth_out"
 
 echo "[cli-crud] OK"

@@ -71,6 +71,8 @@ export mutation
 const
   WireProtocolVersion* = 1
   MaxWireHeaderBytes* = 8 * 1024
+  MaxWireBodyBytes* = 64 * 1024 * 1024
+  MaxWireResponseItems* = 1_000_000
   MaxSecureFrameBytes = 64 * 1024 * 1024 + MaxWireHeaderBytes
 
 type
@@ -178,9 +180,17 @@ proc parsePeers*(s: string): seq[Peer] =
   ## "host:port,host:port,..." を解析。リスト内の位置 = ノードID。
   for part in s.split(','):
     let hp = part.strip().rsplit(':', maxsplit = 1)
-    doAssert hp.len == 2, "peers は host:port,host:port,... 形式: " & part
-    result.add (hp[0], parseInt(hp[1]))
-  doAssert result.len > 0, "peers が空"
+    if hp.len != 2:
+      raise newException(ValueError,
+        "peers must use host:port,host:port,... format: " & part)
+    if hp[0].len == 0:
+      raise newException(ValueError, "peer host must not be empty")
+    let port = parseInt(hp[1])
+    if port < 1 or port > 65_535:
+      raise newException(ValueError, "peer port is outside 1..65535")
+    result.add (hp[0], port)
+  if result.len == 0:
+    raise newException(ValueError, "peers must not be empty")
 
 proc newClusterClient*(peers: seq[Peer], username: string = "",
                        password: string = "", authToken: string = "",
@@ -188,6 +198,8 @@ proc newClusterClient*(peers: seq[Peer], username: string = "",
                        tls: bool = false, tlsCaFile: string = "",
                        tlsServerName: string = "",
                        tlsInsecureSkipVerify: bool = false): ClusterClient =
+  if peers.len == 0:
+    raise newException(ValueError, "at least one cluster peer is required")
   if authToken.len > 0 and username.len == 0:
     return ClusterClient(peers: peers, username: "token", password: authToken,
                          secretKey: secretKey, galaxy: galaxy, tls: tls,
@@ -220,7 +232,8 @@ proc rawReadExact(sock: Socket, n: int): string =
 proc readSecureFrame(sock: Socket) =
   let fd = sock.getFd.int
   var st = secureConns[fd]
-  let line = sock.recvLine(timeout = 10_000)
+  let line = sock.recvLine(timeout = 10_000,
+                           maxLength = MaxWireHeaderBytes)
   if line.len == 0 or line == "\r\n":
     raise newException(IOError, "接続が切断された")
   if line.len > MaxWireHeaderBytes:
@@ -243,6 +256,8 @@ proc disableSecure*(sock: Socket) =
   secureConns.del sock.getFd.int
 
 proc readExact*(sock: Socket, n: int): string =
+  if n < 0 or n > MaxWireBodyBytes:
+    raise newException(IOError, "wire body length is outside allowed bounds")
   let fd = sock.getFd.int
   if fd notin secureConns:
     return sock.rawReadExact(n)
@@ -286,7 +301,9 @@ proc vecBytes*(vec: seq[float32]): string =
 
 proc bytesVec*(bytes: string, dim: int): seq[float32] =
   ## Decode canonical little-endian IEEE-754 float32 values from the wire.
-  doAssert bytes.len == dim * sizeof(float32), "vec bytes length mismatch"
+  if dim < 0 or dim > MaxWireBodyBytes div sizeof(float32) or
+      bytes.len != dim * sizeof(float32):
+    raise newException(ValueError, "vec bytes length mismatch")
   result = newSeq[float32](dim)
   var pos = 0
   for i in 0 ..< dim:
@@ -311,7 +328,8 @@ proc splitHeaderLine(line: string): seq[string] =
 proc readHeader*(sock: Socket, timeoutMs = 10_000): seq[string] =
   let fd = sock.getFd.int
   if fd notin secureConns:
-    let line = sock.recvLine(timeout = timeoutMs)
+    let line = sock.recvLine(timeout = timeoutMs,
+                             maxLength = MaxWireHeaderBytes)
     if line.len == 0 or line == "\r\n":
       raise newException(IOError, "接続が切断された")
     return splitHeaderLine(line)
@@ -334,11 +352,21 @@ proc readHeader*(sock: Socket, timeoutMs = 10_000): seq[string] =
 
 # ---------------------------------------------------------------- クライアント
 
-proc expect(r: seq[string], tag, op: string) =
-  if r.len == 0 or r[0] != tag:
+proc expect(r: seq[string], tag, op: string, minFields = 1) =
+  if r.len < minFields or r[0] != tag:
     raise newException(IOError, op & " failed: " & r.join(" "))
 
+proc responseInt(value, field: string, maximum = int.high): int =
+  try:
+    result = parseInt(value)
+  except ValueError:
+    raise newException(IOError, "invalid " & field & " in server response")
+  if result < 0 or result > maximum:
+    raise newException(IOError, field & " is outside allowed bounds")
+
 proc socketFor(c: ClusterClient, node: int): Socket =
+  if node < 0 or node >= c.peers.len:
+    raise newException(ValueError, "cluster node index is outside peer bounds")
   if node in c.socks:
     return c.socks[node]
   result = newSocket()
@@ -362,7 +390,7 @@ proc socketFor(c: ClusterClient, node: int): Socket =
     if c.secretKey.len > 0:
       result.sendFrame("AUTHCHAL " & c.username)
       let chal = result.readHeader()
-      expect(chal, "CHAL", "AUTHCHAL")
+      expect(chal, "CHAL", "AUTHCHAL", 2)
       result.sendFrame("AUTHRESP " &
                        secretResponseHex(c.username, c.password, chal[1],
                                          c.secretKey))
@@ -398,7 +426,10 @@ proc rpc(c: ClusterClient, node: int, header: string,
     let sock = c.socketFor(node)
     try:
       sock.sendFrame(header, payload)
-      return sock.readHeader(timeoutMs)
+      let response = sock.readHeader(timeoutMs)
+      if response.len == 0:
+        raise newException(IOError, "server returned an empty response")
+      return response
     except IOError, OSError, TimeoutError:
       sock.disableSecure()
       sock.close()
@@ -415,7 +446,7 @@ proc putReq*(c: ClusterClient, node: int, ringKey: uint64,
     else: payload & vec.vecBytes
   let r = c.rpc(node, "PUT " & $ringKey & " " & $period & " " & $head & " " &
                 $payload.len & " " & $vec.len & " " & codec.payloadCodecName, body)
-  expect(r, "OK", "PUT")
+  expect(r, "OK", "PUT", 3)
   (parseUInt(r[1]).uint32, parseFloat(r[2]))
 
 proc putRingReq*(c: ClusterClient, node: int, ring: string, payload: string,
@@ -427,7 +458,43 @@ proc putRingReq*(c: ClusterClient, node: int, ring: string, payload: string,
   let r = c.rpc(node, "PUTR " & $ring.len & " " & $payload.len & " " & $vec.len &
                 " " & codec.payloadCodecName,
                 body)
-  expect(r, "ID", "PUTR")
+  expect(r, "ID", "PUTR", 7)
+  WireId(parent: parseBiggestUInt(r[1]).uint64,
+         epoch: parseUInt(r[2]).uint32,
+         seq: parseUInt(r[3]).uint32,
+         tWrite: parseFloat(r[4]),
+         period: parseFloat(r[5]),
+         head: parseFloat(r[6]))
+
+proc forwardPutReq*(c: ClusterClient, node: int, ringKey: uint64,
+                    period, head: float, payload: string,
+                    vec: seq[float32] = @[], codec = pcRaw): tuple[
+                    seq: uint32, tWrite: float] =
+  ## Internal owner-routing variant of PUT. The server restricts this command
+  ## to peer credentials with the replicator role.
+  let body =
+    if vec.len == 0: payload
+    else: payload & vec.vecBytes
+  let r = c.rpc(node,
+    "FPUT " & $ringKey & " " & $period & " " & $head & " " &
+      $payload.len & " " & $vec.len & " " & codec.payloadCodecName,
+    body)
+  expect(r, "OK", "FPUT", 3)
+  (parseUInt(r[1]).uint32, parseFloat(r[2]))
+
+proc forwardPutRingReq*(c: ClusterClient, node: int, ring: string,
+                        payload: string, vec: seq[float32] = @[],
+                        codec = pcRaw): WireId =
+  ## Internal owner-routing variant of PUTR. It is intentionally separate
+  ## from the public writer command so peerAuth remains least-privileged.
+  let body =
+    if vec.len == 0: ring & payload
+    else: ring & payload & vec.vecBytes
+  let r = c.rpc(node,
+    "FPUTR " & $ring.len & " " & $payload.len & " " & $vec.len & " " &
+      codec.payloadCodecName,
+    body)
+  expect(r, "ID", "FPUTR", 7)
   WireId(parent: parseBiggestUInt(r[1]).uint64,
          epoch: parseUInt(r[2]).uint32,
          seq: parseUInt(r[3]).uint32,
@@ -446,6 +513,7 @@ proc getIdReq*(c: ClusterClient, node: int, id: WireId,
   if r[0] == "GONE":
     return WireGetResult(found: false, node: node, deleted: true)
   if r[0] == "FWD":
+    expect(r, "FWD", "GETID", 7)
     let forwardedId = WireId(parent: parseBiggestUInt(r[1]).uint64,
                              epoch: parseUInt(r[2]).uint32,
                              seq: parseUInt(r[3]).uint32,
@@ -457,9 +525,10 @@ proc getIdReq*(c: ClusterClient, node: int, id: WireId,
       return c.getIdReq(targetNode, forwardedId, redirectsLeft - 1)
     return WireGetResult(found: false, node: node, forwarded: true,
                          id: forwardedId, targetNode: targetNode)
-  expect(r, "VAL", "GETID")
+  expect(r, "VAL", "GETID", 3)
   WireGetResult(found: true, node: parseInt(r[1]),
-                value: c.socks[node].readExact(parseInt(r[2])),
+                value: c.socks[node].readExact(
+                  responseInt(r[2], "GETID payload length", MaxWireBodyBytes)),
                 codec: if r.len >= 4: parsePayloadCodec(r[3]) else: pcRaw)
 
 proc queryIdReq*(c: ClusterClient, node: int, id: WireId,
@@ -471,6 +540,7 @@ proc queryIdReq*(c: ClusterClient, node: int, id: WireId,
   if r[0] == "MISS":
     return WireGetResult(found: false, node: node)
   if r[0] == "FWD":
+    expect(r, "FWD", "QRYID", 7)
     let forwardedId = WireId(parent: parseBiggestUInt(r[1]).uint64,
                              epoch: parseUInt(r[2]).uint32,
                              seq: parseUInt(r[3]).uint32,
@@ -485,9 +555,11 @@ proc queryIdReq*(c: ClusterClient, node: int, id: WireId,
                          id: forwardedId, targetNode: targetNode)
   if r[0] == "ERR":
     raise newException(ValueError, "query: " & r[1 .. ^1].join(" "))
-  expect(r, "VAL", "QRYID")
+  expect(r, "VAL", "QRYID", 3)
   WireGetResult(found: true, node: parseInt(r[1]),
-                value: c.socks[node].readExact(parseInt(r[2])), codec: pcJson)
+                value: c.socks[node].readExact(
+                  responseInt(r[2], "QRYID payload length", MaxWireBodyBytes)),
+                codec: pcJson)
 
 proc txGetIdReq*(c: ClusterClient, node: int, id: WireId,
                  selection: string = ""): WireGetResult =
@@ -506,9 +578,10 @@ proc txGetIdReq*(c: ClusterClient, node: int, id: WireId,
     return WireGetResult(found: false, node: node, deleted: true)
   if r[0] == "ERR":
     raise newException(ValueError, "tx-get: " & r[1 .. ^1].join(" "))
-  expect(r, "VAL", op)
+  expect(r, "VAL", op, 3)
   WireGetResult(found: true, node: parseInt(r[1]),
-                value: c.socks[node].readExact(parseInt(r[2])),
+                value: c.socks[node].readExact(
+                  responseInt(r[2], op & " payload length", MaxWireBodyBytes)),
                 codec: if selection.len > 0: pcJson
                        elif r.len >= 4: parsePayloadCodec(r[3])
                        else: pcRaw)
@@ -524,11 +597,13 @@ proc getReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                 $head & " " & $tWrite)
   if r[0] == "MISS": return (false, node, "", pcRaw, false, 0'u64, 0'u32, 0.0, -1)
   if r[0] == "FWD":
+    expect(r, "FWD", "GET", 4)
     return (false, node, "", pcRaw, true, parseBiggestUInt(r[1]).uint64,
             parseUInt(r[2]).uint32, parseFloat(r[3]),
             if r.len >= 5: parseInt(r[4]) else: -1)
-  expect(r, "VAL", "GET")
-  (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])),
+  expect(r, "VAL", "GET", 3)
+  (true, parseInt(r[1]), c.socks[node].readExact(
+     responseInt(r[2], "GET payload length", MaxWireBodyBytes)),
    (if r.len >= 4: parsePayloadCodec(r[3]) else: pcRaw),
    false, 0'u64, 0'u32, 0.0, -1)
 
@@ -547,11 +622,13 @@ proc getValueReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
   if r[0] == "MISS":
     return (false, node, "", false, 0'u64, 0'u32, 0.0, -1)
   if r[0] == "FWD":
+    expect(r, "FWD", "GET", 4)
     return (false, node, "", true, parseBiggestUInt(r[1]).uint64,
             parseUInt(r[2]).uint32, parseFloat(r[3]),
             if r.len >= 5: parseInt(r[4]) else: -1)
-  expect(r, "VAL", "GET")
-  (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])),
+  expect(r, "VAL", "GET", 3)
+  (true, parseInt(r[1]), c.socks[node].readExact(
+     responseInt(r[2], "GET payload length", MaxWireBodyBytes)),
    false, 0'u64, 0'u32, 0.0, -1)
 
 proc batchGetReq*(c: ClusterClient, node: int,
@@ -562,31 +639,41 @@ proc batchGetReq*(c: ClusterClient, node: int,
     body.add($id.parent & " " & $id.seq & " " & $id.period & " " &
              $id.head & " " & $id.tWrite & "\n")
   let r = c.rpc(node, "BGET " & $ids.len & " " & $body.len, body)
-  expect(r, "BVAL", "BGET")
-  let n = parseInt(r[1])
-  let payloadLen = parseInt(r[2])
+  expect(r, "BVAL", "BGET", 3)
+  let n = responseInt(r[1], "BGET item count", MaxWireResponseItems)
+  if n != ids.len:
+    raise newException(IOError, "BGET response count does not match request")
+  let payloadLen = responseInt(r[2], "BGET payload length", MaxWireBodyBytes)
   let payloads = c.socks[node].readExact(payloadLen)
   var pos = 0
   for _ in 0 ..< n:
     let nl = payloads.find('\n', pos)
-    doAssert nl >= 0, "BGET payload length header missing"
-    let len = parseInt(payloads[pos ..< nl])
+    if nl < 0:
+      raise newException(IOError, "BGET payload length header missing")
+    let len = responseInt(payloads[pos ..< nl], "BGET item length",
+                          MaxWireBodyBytes)
     pos = nl + 1
+    if len > payloads.len - pos:
+      raise newException(IOError, "BGET item exceeds response payload")
     result.add payloads[pos ..< pos + len]
     pos += len
+  if pos != payloads.len:
+    raise newException(IOError, "BGET response contains trailing bytes")
 
 proc listRingReq*(c: ClusterClient, node: int, ringKey: uint64, limit: int,
                   cursor: string = ""): WireListResult =
   c.ensureCodecMetadata(node)
   let r = c.rpc(node, "LISTR " & $ringKey & " " & $limit & " " & $cursor.len,
                 cursor)
-  expect(r, "LVAL", "LISTR")
-  let n = parseInt(r[1])
+  expect(r, "LVAL", "LISTR", 3)
+  let n = responseInt(r[1], "LISTR item count", MaxWireResponseItems)
   result.nextCursor = if r[2] == "_": "" else: r[2]
   for _ in 0 ..< n:
     let h = c.socks[node].readHeader()
-    doAssert h[0] == "ITEM", "LISTR item failed: " & h.join(" ")
-    let payload = c.socks[node].readExact(parseInt(h[4]))
+    if h.len < 5 or h[0] != "ITEM":
+      raise newException(IOError, "LISTR item failed: " & h.join(" "))
+    let payload = c.socks[node].readExact(
+      responseInt(h[4], "LISTR payload length", MaxWireBodyBytes))
     result.items.add WireListItem(parent: ringKey,
                                   seq: parseUInt(h[1]).uint32,
                                   tWrite: parseFloat(h[2]),
@@ -595,7 +682,7 @@ proc listRingReq*(c: ClusterClient, node: int, ringKey: uint64, limit: int,
 
 proc countRingReq*(c: ClusterClient, node: int, ringKey: uint64): int =
   let r = c.rpc(node, "COUNTR " & $ringKey)
-  expect(r, "COUNT", "COUNTR")
+  expect(r, "COUNT", "COUNTR", 2)
   parseInt(r[1])
 
 proc queryReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
@@ -609,13 +696,15 @@ proc queryReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
                 $head & " " & $tWrite & " " & $selection.len, selection)
   if r[0] == "MISS": return (false, node, "", pcJson, false, 0'u64, 0'u32, 0.0, -1)
   if r[0] == "FWD":
+    expect(r, "FWD", "QRY", 4)
     return (false, node, "", pcJson, true, parseBiggestUInt(r[1]).uint64,
             parseUInt(r[2]).uint32, parseFloat(r[3]),
             if r.len >= 5: parseInt(r[4]) else: -1)
   if r[0] == "ERR":
     raise newException(ValueError, "query: " & r[1 .. ^1].join(" "))
-  expect(r, "VAL", "QRY")
-  (true, parseInt(r[1]), c.socks[node].readExact(parseInt(r[2])), pcJson,
+  expect(r, "VAL", "QRY", 3)
+  (true, parseInt(r[1]), c.socks[node].readExact(
+     responseInt(r[2], "QRY payload length", MaxWireBodyBytes)), pcJson,
    false, 0'u64, 0'u32, 0.0, -1)
 
 proc transferStatusReq*(c: ClusterClient, node: int, parent: uint64,
@@ -767,14 +856,14 @@ proc discoverCoordinator*(c: ClusterClient): CoordinatorWireStatus =
 
 proc txBeginReq*(c: ClusterClient, node = 0): uint64 =
   let r = c.rpc(node, "TXBEGIN")
-  expect(r, "OK", "TXBEGIN")
+  expect(r, "OK", "TXBEGIN", 2)
   parseBiggestUInt(r[1]).uint64
 
 proc txReserveReq*(c: ClusterClient, node: int, txid, ringKey: uint64,
                    period, head: float): tuple[seq: uint32, tWrite: float] =
   let r = c.rpc(node, "TXRESERVE " & $txid & " " & $ringKey & " " &
                 $period & " " & $head)
-  expect(r, "OK", "TXRESERVE")
+  expect(r, "OK", "TXRESERVE", 3)
   (parseUInt(r[1]).uint32, parseFloat(r[2]))
 
 proc txCommitReq*(c: ClusterClient, node: int, txid: uint64, ops: seq[TxWireOp]) =
@@ -821,19 +910,19 @@ proc txMirrorAppliedReq*(c: ClusterClient, node: int,
 
 proc txStatusReq*(c: ClusterClient, node: int, txid: uint64): string =
   let r = c.rpc(node, "TXSTATUS " & $txid)
-  expect(r, "OK", "TXSTATUS")
+  expect(r, "OK", "TXSTATUS", 2)
   r[1]
 
 proc universeApplyReq*(c: ClusterClient, node: int, eventJson: string): string =
   let r = c.rpc(node, "UAPPLY " & $eventJson.len, eventJson)
-  expect(r, "UOK", "UAPPLY")
+  expect(r, "UOK", "UAPPLY", 2)
   if r[1] != "APPLIED" and r[1] != "SKIPPED" and r[1] != "DELAYED":
     raise newException(IOError, "UAPPLY returned invalid status: " & r[1])
   r[1]
 
 proc universeStatusReq*(c: ClusterClient, node: int): UniverseWireStatus =
   let r = c.rpc(node, "USTATUS")
-  expect(r, "USTATUS", "USTATUS")
+  expect(r, "USTATUS", "USTATUS", 3)
   result.pending = parseInt(r[1])
   result.applied = parseInt(r[2])
   if r.len > 3:
@@ -872,23 +961,26 @@ proc retrieveReq*(c: ClusterClient, node: int, hasRing: bool, ringKey: uint64,
   let body = queryVec.vecBytes
   let r = c.rpc(node, "RETRIEVE " & (if hasRing: "1" else: "0") & " " &
                 $ringKey & " " & $budget & " " & $queryVec.len, body)
-  expect(r, "RHIT", "RETRIEVE")
-  result.scanned = parseInt(r[1])
-  result.ringsTouched = parseInt(r[2])
-  let n = parseInt(r[3])
+  expect(r, "RHIT", "RETRIEVE", 4)
+  result.scanned = responseInt(r[1], "RETRIEVE scanned count")
+  result.ringsTouched = responseInt(r[2], "RETRIEVE ring count")
+  let n = responseInt(r[3], "RETRIEVE hit count", MaxWireResponseItems)
   if r.len >= 6:
-    result.totalVectors = parseInt(r[4])
-    result.payloadBytes = parseInt(r[5])
+    result.totalVectors = responseInt(r[4], "RETRIEVE vector count")
+    result.payloadBytes = responseInt(r[5], "RETRIEVE payload bytes")
   else:
     result.totalVectors = result.scanned
   for _ in 0 ..< n:
     let h = c.socks[node].readHeader()
-    doAssert h[0] == "HIT", "RETRIEVE HIT failed: " & h.join(" ")
+    if h.len < 6 or h[0] != "HIT":
+      raise newException(IOError, "RETRIEVE HIT failed: " & h.join(" "))
     result.hits.add RetrieveWireHit(parent: parseBiggestUInt(h[1]).uint64,
                                     seq: parseUInt(h[2]).uint32,
                                     tWrite: parseFloat(h[3]),
                                     score: parseFloat(h[4]),
-                                    payload: c.socks[node].readExact(parseInt(h[5])),
+                                    payload: c.socks[node].readExact(
+                                      responseInt(h[5], "RETRIEVE payload length",
+                                                  MaxWireBodyBytes)),
                                     codec: if h.len >= 7: parsePayloadCodec(h[6]) else: pcRaw)
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   if result.payloadBytes == 0:
@@ -898,19 +990,21 @@ proc retrieveReq*(c: ClusterClient, node: int, hasRing: bool, ringKey: uint64,
 
 proc ringsReq*(c: ClusterClient, node: int): seq[RingSummary] =
   let r = c.rpc(node, "RINGS")
-  expect(r, "RINGS", "RINGS")
-  let n = parseInt(r[1])
+  expect(r, "RINGS", "RINGS", 2)
+  let n = responseInt(r[1], "RINGS count", MaxWireResponseItems)
   for _ in 0 ..< n:
     let h = c.socks[node].readHeader()
-    doAssert h[0] == "RING", "RING failed: " & h.join(" ")
-    let dim = parseInt(h[3])
+    if h.len < 4 or h[0] != "RING":
+      raise newException(IOError, "RING failed: " & h.join(" "))
+    let dim = responseInt(h[3], "RING vector dimension",
+                          MaxWireBodyBytes div sizeof(float32))
     result.add RingSummary(ringKey: parseBiggestUInt(h[1]).uint64,
                            count: parseInt(h[2]),
                            centroid: c.socks[node].readExact(dim * sizeof(float32)).bytesVec(dim))
 
 proc statsReq*(c: ClusterClient, node: int): tuple[node, count: int] =
   let r = c.rpc(node, "STATS")
-  expect(r, "OK", "STATS")
+  expect(r, "OK", "STATS", 3)
   (parseInt(r[1]), parseInt(r[2]))
 
 proc healthReq*(c: ClusterClient, node: int): string =
@@ -953,7 +1047,7 @@ proc snapshotReq*(c: ClusterClient, node: int): string =
 
 proc wireVersionReq*(c: ClusterClient, node: int): int =
   let r = c.rpc(node, "WIREVER")
-  expect(r, "WIREVER", "WIREVER")
+  expect(r, "WIREVER", "WIREVER", 2)
   parseInt(r[1])
 
 proc topologyReq*(c: ClusterClient, node: int): ArcTable =

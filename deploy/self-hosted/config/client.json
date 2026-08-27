@@ -1,0 +1,11 @@
+{
+  "peers": ["koutendb:7301"],
+  "user": "operator",
+  "passwordFile": "/run/secrets/koutendb_password",
+  "secretKeyFile": "/run/secrets/koutendb_secret_key",
+  "galaxy": "default",
+  "tls": true,
+  "tlsCaFile": "/run/secrets/koutendb_ca",
+  "tlsServerName": "koutendb",
+  "tlsInsecureSkipVerify": false
+}

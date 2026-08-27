@@ -149,3 +149,11 @@ suite "会合 (§8)":
     check ts.len == 4   # T_syn = 60s
     for t in ts:
       check tbl.node(o1, t) == tbl.node(o2, t)
+  test "invalid conjunction inputs return validation errors instead of defects":
+    expect ValueError:
+      discard conjunctions(
+        Orbit(a: 1.0, phi: 0.0, period: 30.0, e: 0.1, pomega: 0.0),
+        circular(0.0, 60.0), 0.0, 120.0)
+    expect ValueError:
+      discard conjunctions(circular(0.0, 60.0), circular(1.0, 60.0),
+                           0.0, 120.0)

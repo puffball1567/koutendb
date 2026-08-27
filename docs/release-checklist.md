@@ -4,6 +4,24 @@ This is the canonical release checklist for the public KoutenDB repository.
 The current automated test coverage matrix is tracked in
 [Test Coverage](test-coverage.md).
 
+## Required Before v1.0 RC
+
+The detailed gates and evidence rules are defined in
+[v1.0 Stabilization](v1-stabilization.md).
+
+| Area | Required Item | Status |
+|---|---|---|
+| Human evaluation | Complete the public install, CRUD, reopen, migration, backup, and restore path from a clean environment | Documentation ready; independent run pending |
+| Maintainer dogfooding | Use KoutenDB through a maintained application and keep an operation/incident journal | Pending |
+| Service trial | Run a useful persistent service with real application traffic, monitoring, verified backups, and recovery drills | Pending |
+| Stable surface | Name the v1.x API, CLI, configuration, storage, migration, wire, and C ABI contracts | Pending final freeze |
+| Experimental surface | Label features outside the v1.x compatibility promise consistently | Pending review |
+| Upgrade matrix | Exercise maintained historical fixtures, JSONL migration, supported drivers, wire negotiation, and fail-closed boundaries | Partial; historical storage fixtures exist |
+| Recovery matrix | Re-run crash, corruption, storage-failure, checkpoint, coordinator, TLS/auth, and restore tests on the RC commit | Existing coverage; final RC run pending |
+| Operations | Publish redacted service evidence with metrics, incidents, restore results, and exclusions | Pending |
+| Documentation | A new operator can install, evaluate, operate, troubleshoot, and recover without implementation knowledge | In progress |
+| Release blockers | No open issue violates the declared stable v1.0 contract | Pending RC review |
+
 ## v0.2.0 Positioning
 
 Release v0.2.0 as a technical preview / research OSS release with stronger

@@ -63,6 +63,12 @@ typedef struct kouten_batch_result {
 
 #define KOUTEN_ABI_VERSION 2
 
+/* Allocation and bounded-scan limits enforced by the ABI boundary. */
+#define KOUTEN_MAX_INPUT_BYTES    (64u * 1024u * 1024u)
+#define KOUTEN_MAX_VECTOR_DIM     1000000u
+#define KOUTEN_MAX_BATCH_ITEMS    10000u
+#define KOUTEN_MAX_CSTRING_BYTES  (1024u * 1024u)
+
 #define KOUTEN_CODEC_RAW  0
 #define KOUTEN_CODEC_JSON 1
 #define KOUTEN_CODEC_NIF  2
@@ -78,7 +84,8 @@ typedef struct kouten_batch_result {
 int         kouten_abi_version(void);
 const char *kouten_last_error(void);
 
-/* Nim ランタイム初期化。冪等なので、driver setup paths may call it more than once. */
+/* Nim runtime initialization. Call once before starting application worker
+ * threads. Repeated serialized calls are idempotent. */
 void   kouten_init(void);
 
 /* DB を開く / 閉じる。nodes はノード数（8 が無難な既定）。失敗時 NULL。
@@ -86,7 +93,7 @@ void   kouten_init(void);
  * unknown handle fails closed rather than dereferencing it.
  *
  * Thread-safety contract:
- * - kouten_init() is idempotent.
+ * - Complete kouten_init() before concurrent calls from foreign threads.
  * - kouten_last_error() is thread-local in practice; copy it before another
  *   KoutenDB C ABI call on the same thread.
  * - Do not call kouten_close() concurrently with any other operation on the same
@@ -195,8 +202,8 @@ void  *kouten_query(void *db, kouten_id id, const char *selection, size_t *out_l
  *
  * filter_json: JSON object string, or NULL/"" for no filter.
  * selection: optional JSON projection selection.
- * pagination: 0 = cursor/limit mode, non-zero = page/page_limit mode.
- * sort_desc: 0 = ascending, non-zero = descending.
+ * pagination: 0 = cursor/limit mode, 1 = page/page_limit mode.
+ * sort_desc: 0 = ascending, 1 = descending.
  *
  * JSON/non-binary payloads are returned as JSON values when possible.
  * Other payloads are base64 encoded and marked with "encoding": "base64".

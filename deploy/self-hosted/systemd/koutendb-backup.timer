@@ -1,0 +1,11 @@
+[Unit]
+Description=Create a daily verified KoutenDB backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+Persistent=true
+RandomizedDelaySec=15min
+Unit=koutendb-backup.service
+
+[Install]
+WantedBy=timers.target
