@@ -1,0 +1,72 @@
+services:
+  koutendb:
+    build:
+      context: ../..
+      dockerfile: examples/compose/Dockerfile
+    command:
+      - --id=0
+      - --peers=0.0.0.0:7301
+      - --data=/data/prk
+      - --disk-backed
+      - --slow-tick=0.05
+      - --galaxy=prk-demo
+      - --user=demo
+    environment:
+      KOUTEN_PASSWORD: ${KOUTEN_PASSWORD:-demo-password}
+      KOUTEN_SECRET_KEY: ${KOUTEN_SECRET_KEY:-demo-secret-key}
+    volumes:
+      - prk_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "koutencli health --peers=127.0.0.1:7301 --user=demo --password=$${KOUTEN_PASSWORD:-demo-password} --secret-key=$${KOUTEN_SECRET_KEY:-demo-secret-key} >/dev/null"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  api:
+    build:
+      context: ../..
+      dockerfile: examples/prk-crud/api/Dockerfile
+    environment:
+      KOUTEN_PEERS: koutendb:7301
+      KOUTEN_USER: demo
+      KOUTEN_PASSWORD: ${KOUTEN_PASSWORD:-demo-password}
+      KOUTEN_SECRET_KEY: ${KOUTEN_SECRET_KEY:-demo-secret-key}
+      KOUTEN_GALAXY: prk-demo
+      KOUTEN_RING: demo/tasks
+    depends_on:
+      koutendb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:3000/health >/dev/null"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  web:
+    build:
+      context: ../..
+      dockerfile: examples/prk-crud/web/Dockerfile
+    ports:
+      - "${PRK_PORT:-18081}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  smoke:
+    build:
+      context: ../..
+      dockerfile: examples/rekt-crud/tests/Dockerfile
+    profiles: ["test"]
+    environment:
+      BASE_URL: http://web:8080/api
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  prk_data:

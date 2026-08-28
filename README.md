@@ -683,6 +683,19 @@ local benchmark procedure.
 KoutenDB forces Nim ARC through `config.nims`. Avoiding reference cycles is a
 structural constraint of the codebase, not just a style preference.
 
+### Web CRUD Demos
+
+- [REKT](examples/rekt-crud/README.md): React + Express + KoutenDB + TypeScript,
+  available at `http://localhost:18080` after its Compose stack starts.
+- [PRK](examples/prk-crud/README.md): Prologue + React + KoutenDB, available at
+  `http://localhost:18081` after its Compose stack starts.
+
+Both demos provide the same responsive task UI and application contract
+against an authenticated, persistent KoutenDB node. Categories place tasks in
+separate rings; related retrieval reads one category ring and ranks its
+candidates by shared tags. The UI reports the ring and candidate count so the
+locality boundary is visible rather than implied.
+
 ## Project Layout
 
 ```text
@@ -699,6 +712,8 @@ drivers/               language drivers and wrappers
 include/koutendb.h      C header
 examples/              C demo, cluster demo, benchmark scripts
 examples/compose/      Docker Compose topology demos
+examples/rekt-crud/    React + Express + KoutenDB + TypeScript CRUD demo
+examples/prk-crud/     Prologue + React + KoutenDB CRUD demo
 tests/                 unit and smoke tests
 ```
 

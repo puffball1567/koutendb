@@ -12,6 +12,9 @@ lib/*.so
 *.py[cod]
 
 # Language driver build outputs
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
 drivers/**/bin/
 drivers/**/obj/
 drivers/**/target/
