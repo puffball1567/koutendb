@@ -13,6 +13,8 @@ must preserve.
 
 This document is the canonical v1.0 stabilization plan. It does not assign an
 RC date. KoutenDB enters RC only after the evidence gates below are complete.
+The separate [adoption and ecosystem roadmap](adoption-roadmap.md) defines how
+new users reach and retain value; it does not weaken the release gates here.
 
 ## Release Sequence
 

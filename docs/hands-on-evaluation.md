@@ -9,6 +9,10 @@ This guide is the shortest human path from a clean installation to a verified
 KoutenDB restore. It is for evaluation and maintainer dogfooding, not only for
 CI. Follow it before relying on less familiar cluster or Universe features.
 
+For a first ring read without the recovery exercises, begin with the
+[Five-Minute Quickstart](quickstart.md), then return here before keeping
+persistent evaluation data.
+
 ## What You Will Prove
 
 By the end, you will have:
