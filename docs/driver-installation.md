@@ -1,7 +1,8 @@
 # KoutenDB Driver Installation Guide
 
-This document shows the current technical-preview setup for each language. The
-English README and this file are the canonical driver installation references.
+This document separates published driver packages from repository-local driver
+foundations. The English README records released package versions; this file is
+the canonical setup and native-library reference.
 
 KoutenDB drivers currently use two paths:
 
@@ -23,9 +24,10 @@ For Rust, target selection is shell-friendly: use `--manifest-path=FILE`,
 It does not execute package-manager commands unless `--execute` is passed.
 
 The Nim package is available through Nimble. Rust, JavaScript / TypeScript, PHP,
-and Python drivers are also published as language-native packages. Other
-non-Nim drivers are still repository-local foundations, so those examples
-assume a local clone of this repository.
+Python, and the C++ source release are published independently from the core.
+Installing one of those packages installs a driver, not a KoutenDB server.
+Repository-local Go, Swift, C#, and Kotlin foundations are not published
+packages; their examples assume a local clone of this repository.
 
 ## Build the Native Library
 

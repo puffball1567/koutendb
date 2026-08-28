@@ -83,65 +83,43 @@ into a ring. Reads use ring hierarchy, nearby subrings, retrieval profiles, and
 projections to keep the candidate set small. See [How KoutenDB Differs From
 Typical NoSQL](docs/nosql-positioning.md) for the full model.
 
-## Documents
+## Choose Your Starting Path
 
-- Documentation site entry point: [docs/index.md](docs/index.md)
-- Installation: [docs/installation.md](docs/installation.md)
-- Hands-on evaluation: [docs/hands-on-evaluation.md](docs/hands-on-evaluation.md)
-- Service operation trial: [docs/service-trial.md](docs/service-trial.md)
-- v1.0 stabilization plan: [docs/v1-stabilization.md](docs/v1-stabilization.md)
-- Public API reference: [docs/public-api.md](docs/public-api.md)
-- Configuration reference: [docs/config-reference.md](docs/config-reference.md)
-- CLI reference: [docs/cli-reference.md](docs/cli-reference.md)
-- How KoutenDB differs from typical NoSQL: [docs/nosql-positioning.md](docs/nosql-positioning.md)
-- Unique data model and operating patterns: [docs/unique-data-model.md](docs/unique-data-model.md)
-- Technical FAQ for database reviewers: [docs/technical-faq.md](docs/technical-faq.md)
-- Concept: [docs/koutendb-concept.md](docs/koutendb-concept.md)
-- Detailed design: [docs/koutendb-design.md](docs/koutendb-design.md)
-- Feature status / roadmap: [docs/koutendb-status.md](docs/koutendb-status.md)
-- v0.12 implementation and validation record: [docs/v0.12-roadmap.md](docs/v0.12-roadmap.md)
-- Coordinator failover: [docs/coordinator-failover.md](docs/coordinator-failover.md)
-- Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
-- v0.14.0 release notes: [docs/github-release-v0.14.0.md](docs/github-release-v0.14.0.md)
-- v0.13.0 release notes: [docs/github-release-v0.13.0.md](docs/github-release-v0.13.0.md)
-- v0.12.1 release notes: [docs/github-release-v0.12.1.md](docs/github-release-v0.12.1.md)
-- v0.12.0 release notes: [docs/github-release-v0.12.0.md](docs/github-release-v0.12.0.md)
-- 72-hour strong-durability result: [docs/soak-testing.md](docs/soak-testing.md)
-- Driver / FFI roadmap: [docs/koutendb-driver-roadmap.md](docs/koutendb-driver-roadmap.md)
-- Driver installation guide: [docs/driver-installation.md](docs/driver-installation.md)
-- Exact vector retrieval: [docs/vector-backends.md](docs/vector-backends.md)
-- Protocol compatibility: [docs/protocol-compatibility.md](docs/protocol-compatibility.md)
-- TLS transport: [docs/tls-transport.md](docs/tls-transport.md)
-- Query safety: [docs/query-safety.md](docs/query-safety.md)
-- Payload codecs and prepared selections: [docs/payload-codecs.md](docs/payload-codecs.md)
-- Use case recipes: [docs/use-case-recipes.md](docs/use-case-recipes.md)
-- Universe sync: [docs/universe-sync.md](docs/universe-sync.md)
-- Threat model: [docs/threat-model.md](docs/threat-model.md)
-- Security validation matrix: [docs/security-validation.md](docs/security-validation.md)
-- Benchmark notes: [docs/koutendb-bench.md](docs/koutendb-bench.md)
-- Effect validation: [docs/effect-validation.md](docs/effect-validation.md)
-- Generation checkpoints: [docs/generation-checkpoints.md](docs/generation-checkpoints.md)
-- Prometheus/OpenMetrics and cloud operations: [docs/cloud-operations.md](docs/cloud-operations.md)
-- Topology configuration reference: [docs/topology-config.md](docs/topology-config.md)
-- Topology pattern catalog: [docs/topology-examples.md](docs/topology-examples.md)
-- Topology remapping: [docs/topology-remapping.md](docs/topology-remapping.md)
-- Shelfer integration boundary: [docs/koutendb-shelfer-integration.md](docs/koutendb-shelfer-integration.md)
-- Halo capture design: [docs/koutendb-halo-capture.md](docs/koutendb-halo-capture.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-- Contribution policy: [CONTRIBUTING.md](CONTRIBUTING.md)
+| Goal | Start here |
+|---|---|
+| See the ring model with three CLI writes | [Five-Minute Quickstart](docs/quickstart.md) |
+| Prove reopen, migration, backup, and restore | [Hands-on Evaluation](docs/hands-on-evaluation.md) |
+| Embed the database in a Nim application | [Public API](docs/public-api.md) |
+| Use Rust, TypeScript, Python, PHP, or C++ | [Driver Installation](docs/driver-installation.md) |
+| Run a TLS/authenticated persistent server | [v0.14 Self-Hosted Operations](docs/v0.14-self-hosted-operations.md) |
+| Measure AI/RAG working-set reduction | [Effect Validation](docs/effect-validation.md) |
+| Evaluate an ongoing service deployment | [Service Trial](docs/service-trial.md) |
+
+The complete guide index is in [KoutenDB Documentation](docs/index.md). Product
+adoption work is tracked separately from compatibility work in the
+[Adoption And Ecosystem Roadmap](docs/adoption-roadmap.md) and the
+[v1.0 Stabilization Plan](docs/v1-stabilization.md).
 
 ## Installation
 
-KoutenDB is available through Nimble. Rust, JavaScript / TypeScript, PHP, and
-Python drivers are published as language packages, while the remaining non-Nim
-language drivers are still repository-local foundations.
+Choose the artifact that matches the first task:
+
+| Task | Install path |
+|---|---|
+| Local CLI or embedded Nim | `nimble install koutendb` |
+| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.14.0` and the self-host bundle |
+| Existing-language application | published driver plus a compatible KoutenDB server or native library |
+| Core development and full validation | source checkout |
+
+Rust, JavaScript / TypeScript, PHP, Python, and C++ drivers are published. The
+remaining non-Nim language drivers are repository-local foundations.
 
 Prerequisites:
 
 - Nim `2.0.0` or newer
 - `git`
 - `gcc` or another C compiler supported by Nim
+- `libsodium` development files for `nimsodium`
 
 Install the CLI and Nim library:
 
@@ -149,6 +127,14 @@ Install the CLI and Nim library:
 nimble install koutendb
 kouten --help
 ```
+
+Then run the [Five-Minute Quickstart](docs/quickstart.md) to write one entity,
+place related data nearby, and read the bounded neighborhood.
+
+For the released multi-architecture server image and TLS/authenticated
+self-host bootstrap, use [v0.14 Self-Hosted Operations](docs/v0.14-self-hosted-operations.md).
+Do not treat a language package as the database server: C ABI drivers need the
+native library, while TCP drivers need a running `koutend` endpoint.
 
 Clone the repository when you want to run the full source test suite, examples,
 or driver smoke tests:
@@ -171,8 +157,8 @@ For server-style installs, build locally and install the binaries into
 `/usr/local/bin`, the usual source-install location for database tools:
 
 ```sh
-nim c -d:release --nimcache:/tmp/nimcache_kouten -o:bin/kouten src/koutencli.nim
-nim c -d:release --nimcache:/tmp/nimcache_koutend -o:bin/koutend src/koutend.nim
+nim c -d:ssl -d:release --nimcache:/tmp/nimcache_kouten -o:bin/kouten src/koutencli.nim
+nim c -d:ssl -d:release --nimcache:/tmp/nimcache_koutend -o:bin/koutend src/koutend.nim
 sudo install -m 0755 bin/kouten /usr/local/bin/kouten
 sudo install -m 0755 bin/koutend /usr/local/bin/koutend
 ```
@@ -545,8 +531,8 @@ N=1000 examples/redis_docker_bench.sh
 ### Server Options
 
 ```sh
-nim c -d:release -o:bin/koutend src/koutend.nim
-nim c -d:release -o:bin/kouten src/koutencli.nim
+nim c -d:ssl -d:release -o:bin/koutend src/koutend.nim
+nim c -d:ssl -d:release -o:bin/kouten src/koutencli.nim
 ```
 
 Strong durability mode:
