@@ -38,6 +38,11 @@ if [[ -z "$raw_id" ]]; then
   exit 1
 fi
 
+echo "[cli-crud] atlas uses KOUTEN_DATA"
+atlas_out="$(bin/kouten atlas)"
+grep -q '"name": "docs/japan"' <<<"$atlas_out"
+grep -q '"documents": 1' <<<"$atlas_out"
+
 echo "[cli-crud] count/list/get/query"
 bin/kouten count-ring --ring=docs/japan |
   grep -q "count=1"
