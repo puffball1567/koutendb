@@ -1,7 +1,7 @@
 services:
   koutendb:
     build:
-      context: ../..
+      context: ../../..
       dockerfile: examples/compose/Dockerfile
     command:
       - --id=0
@@ -24,8 +24,8 @@ services:
 
   api:
     build:
-      context: ../..
-      dockerfile: examples/prk-crud/api/Dockerfile
+      context: ../../..
+      dockerfile: examples/web/prk-crud/api/Dockerfile
     environment:
       KOUTEN_PEERS: koutendb:7301
       KOUTEN_USER: demo
@@ -44,8 +44,8 @@ services:
 
   web:
     build:
-      context: ../..
-      dockerfile: examples/prk-crud/web/Dockerfile
+      context: ../../..
+      dockerfile: examples/web/prk-crud/web/Dockerfile
     ports:
       - "${PRK_PORT:-18081}:8080"
     depends_on:
@@ -59,8 +59,8 @@ services:
 
   smoke:
     build:
-      context: ../..
-      dockerfile: examples/rekt-crud/tests/Dockerfile
+      context: ../../..
+      dockerfile: examples/web/rekt-crud/tests/Dockerfile
     profiles: ["test"]
     environment:
       BASE_URL: http://web:8080/api

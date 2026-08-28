@@ -18,7 +18,7 @@ reads.
 From the KoutenDB repository root:
 
 ```sh
-docker compose -f examples/prk-crud/compose.yml up -d --build --wait
+docker compose -f examples/web/prk-crud/compose.yml up -d --build --wait
 ```
 
 Open <http://localhost:18081>.
@@ -36,7 +36,7 @@ leaving placement and metadata out of sync.
 ## Verify CRUD and Locality
 
 ```sh
-docker compose -f examples/prk-crud/compose.yml --profile test run --rm smoke
+docker compose -f examples/web/prk-crud/compose.yml --profile test run --rm smoke
 ```
 
 The shared smoke contract covers CRUD, category ring placement, tag-ranked
@@ -47,7 +47,7 @@ expose equivalent application behavior.
 ## Stop
 
 ```sh
-docker compose -f examples/prk-crud/compose.yml down
+docker compose -f examples/web/prk-crud/compose.yml down
 ```
 
 Add `-v` only when you also want to remove the persistent demo data.

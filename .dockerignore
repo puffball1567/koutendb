@@ -8,9 +8,7 @@
 !scripts
 !scripts/build_capi.sh
 !examples
-!examples/rekt-crud
-!examples/rekt-crud/**
-!examples/prk-crud
-!examples/prk-crud/**
+!examples/web
+!examples/web/**
 examples/**/node_modules/
 examples/**/dist/

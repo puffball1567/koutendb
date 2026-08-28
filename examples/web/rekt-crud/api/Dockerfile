@@ -29,10 +29,10 @@ ENV KOUTENDB_LIB_DIR=/opt/koutendb/lib
 ENV LD_LIBRARY_PATH=/opt/koutendb/lib
 
 WORKDIR /app
-COPY examples/rekt-crud/api/package*.json ./
+COPY examples/web/rekt-crud/api/package*.json ./
 RUN npm ci
-COPY examples/rekt-crud/api/tsconfig.json ./
-COPY examples/rekt-crud/api/src ./src
+COPY examples/web/rekt-crud/api/tsconfig.json ./
+COPY examples/web/rekt-crud/api/src ./src
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime

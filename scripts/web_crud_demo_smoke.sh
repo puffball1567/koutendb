@@ -11,16 +11,16 @@ fi
 
 cleanup_all() {
   env REKT_PORT=0 docker compose --project-name koutendb-rekt-crud-smoke \
-    -f examples/rekt-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
+    -f examples/web/rekt-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
   env PRK_PORT=0 docker compose --project-name koutendb-prk-crud-smoke \
-    -f examples/prk-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
+    -f examples/web/prk-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
 trap cleanup_all EXIT
 
 run_stack() {
   local name="$1"
-  local compose_file="examples/${name}-crud/compose.yml"
+  local compose_file="examples/web/${name}-crud/compose.yml"
   local project="koutendb-${name}-crud-smoke"
   local port_variable
   if [[ "$name" == "rekt" ]]; then

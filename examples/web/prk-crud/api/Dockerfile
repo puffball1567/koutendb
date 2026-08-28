@@ -10,10 +10,10 @@ RUN nimble install -y nimsodium prologue@0.6.10
 WORKDIR /src
 COPY koutendb.nimble config.nims ./
 COPY src ./src
-COPY examples/prk-crud/api/app.nim ./examples/prk-crud/api/app.nim
+COPY examples/web/prk-crud/api/app.nim ./examples/web/prk-crud/api/app.nim
 RUN nim c -d:release -d:ssl -d:usestd --path:/src/src \
   --nimcache:/tmp/nimcache_prk -o:/usr/local/bin/prk-api \
-  examples/prk-crud/api/app.nim
+  examples/web/prk-crud/api/app.nim
 
 FROM debian:bookworm-slim
 

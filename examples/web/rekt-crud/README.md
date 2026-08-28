@@ -18,7 +18,7 @@ for each mutation to become ring-visible before returning success.
 From the KoutenDB repository root:
 
 ```sh
-docker compose -f examples/rekt-crud/compose.yml up -d --build --wait
+docker compose -f examples/web/rekt-crud/compose.yml up -d --build --wait
 ```
 
 Open <http://localhost:18080>.
@@ -27,7 +27,7 @@ To use non-demo credentials:
 
 ```sh
 KOUTEN_PASSWORD='replace-me' KOUTEN_SECRET_KEY='replace-me-too' \
-  docker compose -f examples/rekt-crud/compose.yml up -d --build --wait
+  docker compose -f examples/web/rekt-crud/compose.yml up -d --build --wait
 ```
 
 ## Data Locality
@@ -49,7 +49,7 @@ evaluated. A task in `engineering` therefore does not require a scan of
 ## Verify CRUD and Locality
 
 ```sh
-docker compose -f examples/rekt-crud/compose.yml --profile test run --rm smoke
+docker compose -f examples/web/rekt-crud/compose.yml --profile test run --rm smoke
 ```
 
 The smoke test covers CRUD, category ring placement, tag-ranked related reads,
@@ -58,7 +58,7 @@ single-ring candidate scope, category relocation, and deletion.
 ## Stop
 
 ```sh
-docker compose -f examples/rekt-crud/compose.yml down
+docker compose -f examples/web/rekt-crud/compose.yml down
 ```
 
 Add `-v` only when you also want to remove the persistent demo data.
