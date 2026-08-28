@@ -17,7 +17,7 @@ services:
     volumes:
       - prk_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "koutencli health --peers=127.0.0.1:7301 --user=demo --password=$${KOUTEN_PASSWORD:-demo-password} --secret-key=$${KOUTEN_SECRET_KEY:-demo-secret-key} >/dev/null"]
+      test: ["CMD-SHELL", "koutencli health --peers=127.0.0.1:7301 --galaxy=prk-demo --user=demo --password=$${KOUTEN_PASSWORD:-demo-password} --secret-key=$${KOUTEN_SECRET_KEY:-demo-secret-key} >/dev/null"]
       interval: 3s
       timeout: 2s
       retries: 20
