@@ -12,6 +12,19 @@ For normal use, the command should be available as `kouten`, not as
 `bin/kouten`. The `bin/` form is only for source-tree development and smoke
 tests.
 
+## Choose An Installation Path
+
+| Goal | Artifact | Required locally |
+|---|---|---|
+| Try the CLI or embed KoutenDB in Nim | Nimble package | Nim, C compiler, libsodium |
+| Run a persistent TLS/authenticated server | GHCR image and self-host bundle | Docker with Compose, Git, OpenSSL |
+| Connect from an existing language | Published language driver | Driver-specific runtime plus a server or native library |
+| Develop KoutenDB itself | Source checkout | Full build and test toolchain |
+
+For the shortest introduction to the data model, install the Nimble package and
+continue with the [Five-Minute Quickstart](quickstart.md). Choose the container
+path when the first question is operational rather than embedded use.
+
 ## Prerequisites
 
 - Nim `2.0.0` or newer
@@ -19,7 +32,7 @@ tests.
 - `gcc` or another C compiler supported by Nim
 - `libsodium` development files for `nimsodium`
 
-## User Install
+## Local CLI And Embedded Nim
 
 Install KoutenDB from Nimble:
 
@@ -56,6 +69,51 @@ kouten --help
 koutend --help
 ```
 
+The installation is ready when `kouten --help` succeeds. Continue with the
+[Five-Minute Quickstart](quickstart.md); cluster configuration is not required
+for the first evaluation.
+
+## Self-Hosted Server Image
+
+Versioned `linux/amd64` and `linux/arm64` images are published at:
+
+```text
+ghcr.io/puffball1567/koutendb:<version>
+```
+
+The supported server path uses the repository's self-host bundle to generate
+TLS certificates, external secret files, persistent storage, health checks, and
+strong-durability configuration. For v0.14.1:
+
+```sh
+git clone --depth 1 --branch v0.14.1 \
+  https://github.com/puffball1567/koutendb.git
+cd koutendb
+KOUTENDB_VERSION=0.14.1 \
+  deploy/self-hosted/bootstrap.sh "$PWD/../koutendb-selfhost"
+cd ../koutendb-selfhost
+docker compose up -d
+docker compose ps
+```
+
+Read [v0.14 Self-Hosted Operations](v0.14-self-hosted-operations.md) before
+exposing the listener outside localhost. The bootstrap PKI is an evaluation and
+single-node starting point, not a replacement for an organization's approved
+issuer and trust-distribution process.
+
+## Language Drivers
+
+Published drivers are available for Rust, JavaScript/TypeScript, Python, PHP,
+and C++. A driver is not a standalone KoutenDB server:
+
+- native C ABI wrappers require a compatible `libkoutendb` build;
+- TCP drivers require a reachable `koutend` endpoint;
+- the core and driver versions must satisfy the documented compatibility
+  matrix.
+
+Use [Driver Installation](driver-installation.md) for package commands, native
+library setup, TLS/authentication requirements, and verification examples.
+
 ## System Install
 
 For server-style deployments, use `/usr/local/bin`, matching the usual source
@@ -65,8 +123,8 @@ binaries.
 Build repo-local binaries:
 
 ```sh
-nim c -d:release --nimcache:/tmp/nimcache_kouten -o:bin/kouten src/koutencli.nim
-nim c -d:release --nimcache:/tmp/nimcache_koutend -o:bin/koutend src/koutend.nim
+nim c -d:ssl -d:release --nimcache:/tmp/nimcache_kouten -o:bin/kouten src/koutencli.nim
+nim c -d:ssl -d:release --nimcache:/tmp/nimcache_koutend -o:bin/koutend src/koutend.nim
 ```
 
 Install them onto the system PATH:

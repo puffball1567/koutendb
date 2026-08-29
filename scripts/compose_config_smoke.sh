@@ -21,4 +21,10 @@ for file in examples/compose/*.compose.yml; do
   docker compose -f "$file" --profile tools config >/dev/null
 done
 
+for file in examples/web/rekt-crud/compose.yml examples/web/prk-crud/compose.yml; do
+  echo "[compose-config] $file"
+  docker compose -f "$file" config >/dev/null
+  docker compose -f "$file" --profile test config >/dev/null
+done
+
 echo "[compose-config] OK"

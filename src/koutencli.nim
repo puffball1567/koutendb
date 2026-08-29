@@ -1098,6 +1098,7 @@ proc runRings(peers, username, password, authToken, secretKey, galaxy: string,
 proc runAtlas(dataDir, peers, username, password, authToken, secretKey,
               galaxy: string, tls: bool, tlsCaFile, tlsServerName: string,
               tlsInsecureSkipVerify: bool) =
+  let actualDataDir = requireCliTarget(dataDir, peers)
   var db =
     if peers.len > 0:
       connect(peers, username = username, password = password,
@@ -1106,7 +1107,7 @@ proc runAtlas(dataDir, peers, username, password, authToken, secretKey,
               tlsServerName = tlsServerName,
               tlsInsecureSkipVerify = tlsInsecureSkipVerify)
     else:
-      open(dataDir = dataDir)
+      open(dataDir = actualDataDir)
   echo db.atlas().pretty
   db.close()
 
