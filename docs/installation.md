@@ -83,13 +83,13 @@ ghcr.io/puffball1567/koutendb:<version>
 
 The supported server path uses the repository's self-host bundle to generate
 TLS certificates, external secret files, persistent storage, health checks, and
-strong-durability configuration. For v0.14.0:
+strong-durability configuration. For v0.14.1:
 
 ```sh
-git clone --depth 1 --branch v0.14.0 \
+git clone --depth 1 --branch v0.14.1 \
   https://github.com/puffball1567/koutendb.git
 cd koutendb
-KOUTENDB_VERSION=0.14.0 \
+KOUTENDB_VERSION=0.14.1 \
   deploy/self-hosted/bootstrap.sh "$PWD/../koutendb-selfhost"
 cd ../koutendb-selfhost
 docker compose up -d

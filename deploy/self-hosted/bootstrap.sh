@@ -3,7 +3,7 @@ set -euo pipefail
 
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT="${1:-$PWD/koutendb-selfhost}"
-VERSION="${KOUTENDB_VERSION:-0.14.0}"
+VERSION="${KOUTENDB_VERSION:-0.14.1}"
 
 fail() {
   echo "[self-host-bootstrap] $*" >&2
