@@ -13,7 +13,7 @@ bundle.
 After the v0.14 image is published:
 
 ```sh
-KOUTENDB_VERSION=0.14.0 \
+KOUTENDB_VERSION=0.14.1 \
   deploy/self-hosted/bootstrap.sh /opt/koutendb
 
 cd /opt/koutendb
@@ -184,8 +184,8 @@ Upgrade to an explicitly versioned image or immutable digest:
 
 ```sh
 ./operator.sh upgrade \
-  ghcr.io/puffball1567/koutendb:0.14.0 \
-  before-0.14.0
+  ghcr.io/puffball1567/koutendb:0.14.1 \
+  before-0.14.1
 ```
 
 The operator rejects an unversioned image and the mutable `latest` tag. Before

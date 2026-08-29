@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## v0.14.1 - 2026-08-29
+
+### Added
+
+- Added a five-minute quickstart that demonstrates write-time locality,
+  bounded neighborhood reads, subring narrowing, projections, and Atlas
+  inspection without requiring a cluster.
+- Added runnable Docker Compose web demos for the REKT stack (React, Express,
+  KoutenDB, TypeScript) and the PRK stack (Prologue, React, KoutenDB).
+- Added an adoption and ecosystem roadmap that separates first-use,
+  integration, service-trial, and distribution work from the v1 compatibility
+  plan.
+
+### Changed
+
+- Reorganized the README and documentation index around evaluation,
+  integration, operation, and maturity paths.
+- Clarified the installation boundary between the Nimble CLI/library, the
+  official server image, published language drivers, and source development.
+- Updated source-build examples to include TLS support.
+
+### Fixed
+
+- Made embedded `kouten atlas` honor `KOUTEN_DATA`, matching the other CLI
+  commands and the documented quickstart.
+
 ## v0.14.0 - 2026-08-27
 
 ### Added
