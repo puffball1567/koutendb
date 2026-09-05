@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
   actions: read
   pull-requests: read
 
@@ -32,6 +32,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          ssh-key: ${{ secrets.MAIN_PROMOTION_SSH_KEY }}
 
       - name: Verify source and CI
         id: verify
