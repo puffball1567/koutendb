@@ -2,9 +2,12 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - devel
+      - main
   push:
     branches:
-      - main
+      - devel
   workflow_dispatch:
 
 permissions:
@@ -15,8 +18,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  route-policy:
+    name: Branch route policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validate pull request route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            exit 0
+          fi
+
+          if [[ "$BASE_REF" == "devel" ]]; then
+            exit 0
+          fi
+
+          if [[ "$BASE_REF" == "main" && "$HEAD_REF" == hotfix/* ]]; then
+            exit 0
+          fi
+
+          echo "::error::Pull requests into main are restricted to hotfix/* branches. Promote devel with the dedicated workflow."
+          exit 1
+
   checks:
     name: Nim checks and C ABI
+    needs: route-policy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -61,6 +93,7 @@ jobs:
 
   capi-macos-build:
     name: C ABI TLS-enabled build on macOS
+    needs: route-policy
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -83,6 +116,7 @@ jobs:
 
   core-tests:
     name: Core test suite
+    needs: route-policy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -105,6 +139,7 @@ jobs:
 
   smoke-tests:
     name: CLI, cluster, recovery, and universe smoke
+    needs: route-policy
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -172,6 +207,7 @@ jobs:
 
   tls-smoke:
     name: TLS transport smoke
+    needs: route-policy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
