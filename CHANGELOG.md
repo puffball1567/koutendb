@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## v0.14.2 - 2026-09-06
+
+### Changed
+
+- Added an exact-SHA promotion gate that lets a `devel`-to-`main` pull request
+  reuse the successful CI run for the current `devel` HEAD without repeating
+  the complete suite.
+- Restricted pull requests into `main` to `devel` and `hotfix/*`, while
+  requiring the complete CI suite for hotfix and `main`-to-`devel`
+  synchronization paths.
+- Added a tested branch-flow classifier and a dedicated main-source policy so
+  unsupported routes fail before release promotion.
+
+### Security
+
+- Prohibited direct pushes to `main`; all accepted updates now cross a pull
+  request boundary.
+- Limited promotion validation to read-only repository and Actions access and
+  required the pull-request SHA to equal the current `devel` HEAD with a
+  successful `devel` push CI run.
+
 ## v0.14.1 - 2026-08-29
 
 ### Added

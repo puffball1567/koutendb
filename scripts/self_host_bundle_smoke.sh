@@ -48,7 +48,7 @@ if deploy/self-hosted/bootstrap.sh "$WORK/symlink-output" >/dev/null 2>&1; then
   exit 1
 fi
 
-KOUTENDB_VERSION=0.14.1 deploy/self-hosted/bootstrap.sh "$BUNDLE" >/dev/null
+KOUTENDB_VERSION=0.14.2 deploy/self-hosted/bootstrap.sh "$BUNDLE" >/dev/null
 sed -i "s|^KOUTENDB_IMAGE=.*|KOUTENDB_IMAGE=$IMAGE|" "$BUNDLE/.env"
 test -x "$BUNDLE/operator.sh"
 test -x "$BUNDLE/capacity.sh"

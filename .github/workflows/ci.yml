@@ -11,6 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -18,37 +19,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  route-policy:
-    name: Branch route policy
+  classify_flow:
+    name: Classify protected branch flow
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
     steps:
-      - name: Validate pull request route
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test branch flow classification
+        run: sh tools/ci/branch_flow.sh self-test
+
+      - name: Classify this workflow run
+        id: classify
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
+          KOUTEN_EVENT_NAME: ${{ github.event_name }}
+          KOUTEN_BASE_REF: ${{ github.base_ref }}
+          KOUTEN_HEAD_REF: ${{ github.head_ref }}
+          KOUTEN_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          KOUTEN_REPOSITORY: ${{ github.repository }}
         run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            exit 0
-          fi
-
-          if [[ "$BASE_REF" == "devel" ]]; then
-            exit 0
-          fi
-
-          if [[ "$BASE_REF" == "main" && "$HEAD_REF" == hotfix/* ]]; then
-            exit 0
-          fi
-
-          echo "::error::Pull requests into main are restricted to hotfix/* branches. Promote devel with the dedicated workflow."
-          exit 1
+          mode=$(sh tools/ci/branch_flow.sh classify \
+            "$KOUTEN_EVENT_NAME" \
+            "$KOUTEN_BASE_REF" \
+            "$KOUTEN_HEAD_REF" \
+            "$KOUTEN_HEAD_REPOSITORY" \
+            "$KOUTEN_REPOSITORY")
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "CI flow: $mode"
 
   checks:
     name: Nim checks and C ABI
-    needs: route-policy
+    needs: classify_flow
+    if: ${{ needs.classify_flow.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -93,7 +98,8 @@ jobs:
 
   capi-macos-build:
     name: C ABI TLS-enabled build on macOS
-    needs: route-policy
+    needs: classify_flow
+    if: ${{ needs.classify_flow.outputs.mode == 'full' }}
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -116,7 +122,8 @@ jobs:
 
   core-tests:
     name: Core test suite
-    needs: route-policy
+    needs: classify_flow
+    if: ${{ needs.classify_flow.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -139,7 +146,8 @@ jobs:
 
   smoke-tests:
     name: CLI, cluster, recovery, and universe smoke
-    needs: route-policy
+    needs: classify_flow
+    if: ${{ needs.classify_flow.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -207,7 +215,8 @@ jobs:
 
   tls-smoke:
     name: TLS transport smoke
-    needs: route-policy
+    needs: classify_flow
+    if: ${{ needs.classify_flow.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -227,3 +236,40 @@ jobs:
 
       - name: Run TLS smoke
         run: scripts/cluster_tls_smoke.sh
+
+  required-gate:
+    name: CI required gate
+    if: ${{ always() }}
+    needs:
+      - classify_flow
+      - checks
+      - capi-macos-build
+      - core-tests
+      - smoke-tests
+      - tls-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KOUTEN_FLOW_MODE: ${{ needs.classify_flow.outputs.mode }}
+          KOUTEN_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          KOUTEN_REQUIRED_RESULTS: ${{ toJson(needs) }}
+        run: |
+          case "$KOUTEN_FLOW_MODE" in
+            full)
+              printf '%s' "$KOUTEN_REQUIRED_RESULTS" | \
+                jq -e 'all(.[]; .result == "success")'
+              ;;
+            promotion)
+              sh tools/ci/branch_flow.sh verify-promotion
+              ;;
+            *)
+              echo "::error::This protected branch route is not allowed."
+              exit 1
+              ;;
+          esac

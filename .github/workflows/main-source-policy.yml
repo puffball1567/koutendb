@@ -1,0 +1,36 @@
+name: Main branch source policy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  require-devel-source:
+    name: Require devel source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify pull request source
+        env:
+          ACTUAL_HEAD_REF: ${{ github.head_ref }}
+          ACTUAL_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$ACTUAL_HEAD_REPOSITORY" != "$EXPECTED_HEAD_REPOSITORY" ]; then
+            echo "::error::Pull requests to main must come from this repository."
+            exit 1
+          fi
+
+          case "$ACTUAL_HEAD_REF" in
+            devel|hotfix/*)
+              ;;
+            *)
+              echo "::error::Pull requests to main must come from devel or hotfix/*."
+              exit 1
+              ;;
+          esac
