@@ -9,29 +9,28 @@ release promotion exact, reproducible, and auditable.
 - pull requests into `devel` run the complete CI suite;
 - `hotfix/*` pull requests into `main` run the complete CI suite;
 - `main` synchronization pull requests into `devel` run the complete CI suite;
+- `devel` pull requests into `main` validate the exact successful `devel` push
+  CI run without repeating the complete suite;
 - every other pull-request route into `main` is rejected;
 - human direct pushes to `main` remain prohibited.
 
 ## Exact-SHA Release Promotion
 
-Normal releases no longer require a second `devel`-to-`main` release pull
-request. The dedicated promotion workflow requires the exact current `devel`
-commit SHA and verifies all of these conditions before updating `main`:
+Normal releases use a `devel`-to-`main` pull request as their auditable
+boundary. Its required CI gate verifies these conditions before merge:
 
 - a completed, successful push CI run exists for that exact SHA;
-- the SHA is associated with a merged pull request into `devel`;
-- neither `main` nor `devel` moves during promotion;
-- the promoted Git tree is identical to the verified `devel` tree.
+- the pull-request head is the exact current `devel` HEAD;
+- the successful run belongs to the repository's `devel` branch.
 
-The workflow uses a dedicated write deploy key for the final branch update.
-Its regular GitHub token has read-only repository permissions and is used only
-to inspect CI and pull-request evidence.
+The gate uses the regular read-only GitHub token only to inspect branch and CI
+evidence. No deploy key or direct-push exception is required.
 
 ## Validation
 
 - workflow YAML parsing passed;
 - the complete allow/reject branch-route matrix passed;
-- promotion tree-equivalence and divergent-tree rejection tests passed;
+- exact-HEAD and successful-CI promotion checks are enforced;
 - the full Linux and macOS CI suite passed on the policy change and its
   one-time `main` bootstrap path.
 

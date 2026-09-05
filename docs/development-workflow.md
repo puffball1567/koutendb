@@ -18,7 +18,7 @@ KoutenDB uses a stable-main workflow.
 
 | Source | Target | Required gate |
 | --- | --- | --- |
-| `devel` | `main` | The promotion workflow verifies successful CI for the exact `devel` HEAD; no release PR is opened. |
+| `devel` | `main` | Pull request whose required gate verifies successful push CI for the exact current `devel` HEAD; the complete suite is not repeated. |
 | `hotfix/*` | `main` | Pull request with the complete CI suite. |
 | `main` | `devel` | Pull request with the complete CI suite. |
 | any other branch | `main` | Rejected by the branch route policy. |
@@ -43,16 +43,16 @@ default state.
 3. Update package metadata, release notes, and release checklist state.
 4. Open a PR from `release/vX.Y.Z` into `devel` and merge it after CI passes.
 5. Wait for the CI run on the resulting `devel` HEAD to pass.
-6. Run the `Promote devel to main` workflow with that exact 40-character
-   `devel` commit SHA.
-7. Tag the promotion commit on `main`.
-8. Create the GitHub Release from the release notes.
+6. Open a pull request from `devel` into `main`.
+7. Merge after the required gate confirms that the pull-request HEAD is still
+   the current `devel` HEAD and that its exact push CI run succeeded.
+8. Tag the merge commit on `main`.
+9. Create the GitHub Release from the release notes.
 
-The promotion workflow is the only PR-free path into `main`. It verifies that
-the requested SHA is still the current `devel` HEAD, that the HEAD came from a
-merged PR into `devel`, that its push CI succeeded, and that the resulting tree
-is exactly the verified `devel` tree. A `devel` to `main` release PR is not
-used. Tags are created only from `main`.
+The `devel`-to-`main` pull request remains the auditable release boundary, but
+does not repeat the complete suite. Its required gate validates the already
+successful CI evidence for the exact current `devel` commit. Tags are created
+only from `main`.
 
 ## Hotfix Flow
 
@@ -80,9 +80,9 @@ the feature branch. Do not apply unfinished feature work directly to `devel`.
 The repository CI is the release gate for merged branches. Pull requests into
 `devel`, `hotfix/*` pull requests into `main`, and `main` synchronization pull
 requests into `devel` run the complete suite. A push to `devel` runs the same
-suite and creates the exact-SHA evidence consumed by the promotion workflow.
-Other pull-request routes into `main` fail the branch route policy before the
-expensive jobs start.
+suite and creates exact-SHA evidence. A `devel`-to-`main` pull request checks
+that evidence instead of repeating the expensive jobs. Other pull-request
+routes into `main` fail the source policy and required gate.
 
 Core checks include:
 

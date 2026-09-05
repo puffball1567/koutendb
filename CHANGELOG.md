@@ -2,24 +2,26 @@
 
 ## Unreleased
 
-## v0.14.2 - 2026-09-05
+## v0.14.2 - 2026-09-06
 
 ### Changed
 
-- Added an exact-SHA promotion workflow that updates `main` only after the
-  current `devel` HEAD has completed a successful push CI run and can be tied
-  to a merged pull request into `devel`.
-- Restricted pull requests into `main` to `hotfix/*` branches and required the
-  complete CI suite for hotfix and `main`-to-`devel` synchronization paths.
-- Moved regular release promotion out of a second `devel`-to-`main` pull
-  request while preserving a reviewed and auditable `devel` integration path.
+- Added an exact-SHA promotion gate that lets a `devel`-to-`main` pull request
+  reuse the successful CI run for the current `devel` HEAD without repeating
+  the complete suite.
+- Restricted pull requests into `main` to `devel` and `hotfix/*`, while
+  requiring the complete CI suite for hotfix and `main`-to-`devel`
+  synchronization paths.
+- Added a tested branch-flow classifier and a dedicated main-source policy so
+  unsupported routes fail before release promotion.
 
 ### Security
 
-- Prohibited human direct pushes to `main` while allowing only the dedicated
-  promotion deploy key to publish a verified `devel` tree.
-- Reduced the promotion workflow's `GITHUB_TOKEN` permissions to read-only and
-  added stale-branch, source-PR, tree-equivalence, and concurrent-update gates.
+- Prohibited direct pushes to `main`; all accepted updates now cross a pull
+  request boundary.
+- Limited promotion validation to read-only repository and Actions access and
+  required the pull-request SHA to equal the current `devel` HEAD with a
+  successful `devel` push CI run.
 
 ## v0.14.1 - 2026-08-29
 
