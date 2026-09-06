@@ -26,6 +26,7 @@ whether the locality-first model fits the workload.
 ## Integrate An Application
 
 - [Public API](public-api.md)
+- [C ABI Reference](c-abi.md)
 - [Driver Installation](driver-installation.md)
 - [Use Case Recipes](use-case-recipes.md)
 - [Configuration Reference](config-reference.md)
@@ -83,6 +84,7 @@ trial to maintained application is in the
 
 ## Drivers And Protocol
 
+- [C ABI Reference](c-abi.md)
 - [Driver Installation](driver-installation.md)
 - [Driver / FFI Roadmap](koutendb-driver-roadmap.md)
 - [Protocol Compatibility](protocol-compatibility.md)

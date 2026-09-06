@@ -90,7 +90,8 @@ jobs:
       - name: C ABI contract
         run: |
           KOUTENDB_CAPI_NIMCACHE=/tmp/nimcache_kouten_capi_ci scripts/build_capi.sh
-          gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o /tmp/kouten_cabi_contract
+          scripts/cabi_symbol_contract.sh
+          gcc -std=c11 -Wall -Wextra -Werror examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o /tmp/kouten_cabi_contract
           LD_LIBRARY_PATH=lib /tmp/kouten_cabi_contract
 
       - name: C ABI TLS contract
@@ -119,6 +120,12 @@ jobs:
 
       - name: Build TLS-enabled C ABI library
         run: KOUTENDB_CAPI_NIMCACHE=/tmp/nimcache_kouten_capi_macos scripts/build_capi.sh
+
+      - name: C ABI contract
+        run: |
+          scripts/cabi_symbol_contract.sh
+          clang -std=c11 -Wall -Wextra -Werror examples/cabi_contract.c -Iinclude -Llib -lkoutendb -o /tmp/kouten_cabi_contract
+          DYLD_LIBRARY_PATH=lib /tmp/kouten_cabi_contract
 
   core-tests:
     name: Core test suite

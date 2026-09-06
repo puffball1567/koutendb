@@ -9,12 +9,27 @@
 ##   - 例外は境界を越えない: すべて捕捉し、エラーはリターンコード / nil で返す。
 ##   - kouten_get が返すバッファは呼び出し側が kouten_free で解放する。
 
-import std/[base64, json, locks, tables]
+import std/[base64, json, locks, math, tables]
 import koutendb
 
 type
   KoutenCHandle = ref object
     db: KoutenDb
+    closed: bool
+
+  KoutenCTxHandle = ref object
+    owner: pointer
+    tx: KoutenTx
+    closed: bool
+
+  KoutenCLockHandle = ref object
+    owner: pointer
+    db: KoutenDb
+    token: KoutenLockToken
+    released: bool
+
+  KoutenCSelectionHandle = ref object
+    selection: PreparedSelection
     closed: bool
 
   KoutenCId {.exportc: "kouten_id", bycopy.} = object
@@ -62,6 +77,9 @@ const
 var lastError {.threadvar.}: string
 var runtimeReady = false
 var handles = initTable[pointer, KoutenCHandle]()
+var txHandles = initTable[pointer, KoutenCTxHandle]()
+var lockHandles = initTable[pointer, KoutenCLockHandle]()
+var selectionHandles = initTable[pointer, KoutenCSelectionHandle]()
 var handlesLock: Lock
 initLock(handlesLock)
 
@@ -97,6 +115,82 @@ proc registerHandle(db: KoutenDb): pointer =
   withLock handlesLock:
     handles[result] = handle
 
+proc registerTxHandle(owner: pointer, tx: KoutenTx): pointer =
+  let handle = KoutenCTxHandle(owner: owner, tx: tx)
+  GC_ref(handle)
+  result = cast[pointer](handle)
+  withLock handlesLock:
+    txHandles[result] = handle
+
+proc ensureTxHandle(h: pointer): KoutenCTxHandle =
+  if h == nil:
+    raise newException(ValueError, "transaction handle is nil")
+  withLock handlesLock:
+    if h notin txHandles:
+      raise newException(ValueError, "transaction handle is unknown or closed")
+    result = txHandles[h]
+    if result.closed or result.tx.isNil:
+      raise newException(ValueError, "transaction handle is closed")
+
+proc unregisterTxHandle(h: pointer): KoutenCTxHandle =
+  withLock handlesLock:
+    if h notin txHandles:
+      raise newException(ValueError, "transaction handle is unknown or closed")
+    result = txHandles[h]
+    txHandles.del h
+  result.closed = true
+
+proc registerLockHandle(owner: pointer, db: KoutenDb,
+                        token: KoutenLockToken): pointer =
+  let handle = KoutenCLockHandle(owner: owner, db: db, token: token)
+  GC_ref(handle)
+  result = cast[pointer](handle)
+  withLock handlesLock:
+    lockHandles[result] = handle
+
+proc ensureLockHandle(h: pointer): KoutenCLockHandle =
+  if h == nil:
+    raise newException(ValueError, "lock handle is nil")
+  withLock handlesLock:
+    if h notin lockHandles:
+      raise newException(ValueError, "lock handle is unknown or released")
+    result = lockHandles[h]
+    if result.released or result.db.isNil:
+      raise newException(ValueError, "lock handle is released")
+
+proc unregisterLockHandle(h: pointer): KoutenCLockHandle =
+  withLock handlesLock:
+    if h notin lockHandles:
+      raise newException(ValueError, "lock handle is unknown or released")
+    result = lockHandles[h]
+    lockHandles.del h
+  result.released = true
+
+proc registerSelectionHandle(selection: PreparedSelection): pointer =
+  let handle = KoutenCSelectionHandle(selection: selection)
+  GC_ref(handle)
+  result = cast[pointer](handle)
+  withLock handlesLock:
+    selectionHandles[result] = handle
+
+proc ensureSelectionHandle(h: pointer): KoutenCSelectionHandle =
+  if h == nil:
+    raise newException(ValueError, "selection handle is nil")
+  withLock handlesLock:
+    if h notin selectionHandles:
+      raise newException(ValueError, "selection handle is unknown or closed")
+    result = selectionHandles[h]
+    if result.closed:
+      raise newException(ValueError, "selection handle is closed")
+
+proc unregisterSelectionHandle(h: pointer): KoutenCSelectionHandle =
+  withLock handlesLock:
+    if h notin selectionHandles:
+      raise newException(ValueError, "selection handle is unknown or closed")
+    result = selectionHandles[h]
+    selectionHandles.del h
+  result.closed = true
+
 proc initRuntime() =
   if not runtimeReady:
     NimMain()
@@ -127,6 +221,12 @@ proc copyJsonToShared(node: JsonNode; outLen: ptr csize_t): pointer =
   let encoded = $node
   outLen[] = csize_t(encoded.len)
   copyStringToShared(encoded)
+
+proc copyTextToShared(value: string; outLen: ptr csize_t): pointer =
+  if outLen == nil:
+    raise newException(ValueError, "out_len is nil")
+  outLen[] = csize_t(value.len)
+  copyStringToShared(value)
 
 proc toC(id: KoutenId): KoutenCId =
   let (p, e, s, t) = id.toRaw
@@ -159,6 +259,32 @@ proc payloadCodecName(value: PayloadCodec): string =
   of pcJson: "json"
   of pcNif: "nif"
   of pcBif: "bif"
+
+proc requireCBool(value: cint, name: string): bool
+proc vecFromC(vec: ptr cfloat, vecLen: csize_t): seq[float32]
+proc writeAckModeFromC(value: cint): WriteAckMode
+
+proc readFilterFromC(filterJson: cstring): JsonNode =
+  let filterText = optStr(filterJson)
+  result =
+    if filterText.len == 0: newJObject()
+    else: parseJson(filterText)
+  if result.kind != JObject:
+    raise newException(ValueError, "filter must be a JSON object")
+
+proc readOptionsFromC(filterJson, selection: cstring, limit: cint,
+                      cursor: cstring, pagination, page, pageLimit: cint,
+                      sortField: cstring, sortDesc: cint): KoutenReadOptions =
+  KoutenReadOptions(
+    filter: readFilterFromC(filterJson),
+    selection: optStr(selection),
+    limit: int(limit),
+    cursor: optStr(cursor),
+    pagination: if requireCBool(pagination, "pagination"): rpOn else: rpOff,
+    page: int(page),
+    pageLimit: int(pageLimit),
+    sortField: optStr(sortField),
+    sortDirection: if requireCBool(sortDesc, "sort_desc"): rsDesc else: rsAsc)
 
 proc bytesFromC(data: pointer, len: csize_t): string =
   if len > 0 and data == nil:
@@ -308,17 +434,62 @@ proc kouten_close(h: pointer) {.exportc, cdecl, dynlib.} =
     if h == nil:
       return
     var handle: KoutenCHandle
+    var ownedTxs: seq[KoutenCTxHandle] = @[]
+    var ownedLocks: seq[KoutenCLockHandle] = @[]
     withLock handlesLock:
       if h notin handles:
         setError("db handle is unknown or closed")
         return
       handle = handles[h]
       handles.del h
-    if not handle.closed and not handle.db.isNil:
-      handle.db.close()
+      var txKeys: seq[pointer] = @[]
+      for key, txHandle in txHandles:
+        if txHandle.owner == h:
+          txKeys.add key
+          ownedTxs.add txHandle
+      for key in txKeys:
+        txHandles.del key
+      var lockKeys: seq[pointer] = @[]
+      for key, lockHandle in lockHandles:
+        if lockHandle.owner == h:
+          lockKeys.add key
+          ownedLocks.add lockHandle
+      for key in lockKeys:
+        lockHandles.del key
+    var cleanupError = ""
+    for txHandle in ownedTxs:
+      try:
+        if not txHandle.closed and not txHandle.tx.isNil:
+          txHandle.tx.rollback()
+      except CatchableError as e:
+        if cleanupError.len == 0:
+          cleanupError = "transaction cleanup failed: " & e.msg
+      finally:
+        txHandle.closed = true
+        txHandle.tx = nil
+        GC_unref(txHandle)
+    for lockHandle in ownedLocks:
+      try:
+        if not lockHandle.released and not lockHandle.db.isNil:
+          lockHandle.db.releaseLock(lockHandle.token)
+      except CatchableError as e:
+        if cleanupError.len == 0:
+          cleanupError = "lock cleanup failed: " & e.msg
+      finally:
+        lockHandle.released = true
+        lockHandle.db = nil
+        GC_unref(lockHandle)
+    try:
+      if not handle.closed and not handle.db.isNil:
+        handle.db.close()
+    except CatchableError as e:
+      if cleanupError.len == 0:
+        cleanupError = "database close failed: " & e.msg
     handle.closed = true
     handle.db = nil
     GC_unref(handle)
+    if cleanupError.len > 0:
+      setError(cleanupError)
   except CatchableError as e:
     setError(e)
 
@@ -367,6 +538,195 @@ proc kouten_set_ring_description(h: pointer, ring, description: cstring): cint
   except CatchableError as e:
     setError(e)
     KoutenErr
+
+proc kouten_get_galaxy_description(h: pointer, outLen: ptr csize_t): pointer
+                                    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    copyTextToShared(ensureHandle(h).getGalaxyDescription(), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_get_ring_description(h: pointer, ring: cstring,
+                                 outLen: ptr csize_t): pointer
+                                 {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let value = ensureHandle(h).getRingDescription(
+      cstringToString(ring, "ring", allowNil = false))
+    copyTextToShared(value, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_ring_payload_profile_configure(
+    h: pointer, ring: cstring, codec: cint, charset,
+    formatVersion: cstring): cint {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureRingPayloadProfile(
+      cstringToString(ring, "ring", allowNil = false),
+      RingPayloadProfile(defaultCodec: codecFromC(codec),
+                         charset: optStr(charset),
+                         formatVersion: optStr(formatVersion)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_ring_payload_profile_json(h: pointer, ring: cstring,
+                                      outLen: ptr csize_t): pointer
+                                      {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let profile = ensureHandle(h).ringPayloadProfile(
+      cstringToString(ring, "ring", allowNil = false))
+    copyJsonToShared(%*{
+      "codec": payloadCodecName(profile.defaultCodec),
+      "codecValue": codecToC(profile.defaultCodec),
+      "charset": profile.charset,
+      "formatVersion": profile.formatVersion
+    }, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_time_orbit_profile_configure(
+    h: pointer, ring: cstring, bits: cint, bucketMs: int64,
+    phase: uint64, salt: cstring): cint {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureTimeOrbitProfile(
+      cstringToString(ring, "ring", allowNil = false),
+      TimeOrbitProfile(bits: int(bits), bucketMs: bucketMs,
+                       phase: phase, salt: optStr(salt)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_time_orbit_profile_json(h: pointer, ring: cstring,
+                                    outLen: ptr csize_t): pointer
+                                    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let profile = ensureHandle(h).timeOrbitProfile(
+      cstringToString(ring, "ring", allowNil = false))
+    copyJsonToShared(%*{
+      "bits": profile.bits,
+      "bucketMs": profile.bucketMs,
+      "phase": $profile.phase,
+      "salt": profile.salt
+    }, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc ringApplyModeFromC(value: cint): RingApplyMode =
+  case value
+  of 0: ramLatestOnly
+  of 1: ramAppendOnly
+  of 2: ramBoundedHistory
+  of 3: ramDelayedTimestamp
+  else: raise newException(ValueError, "apply_mode must be in 0..3")
+
+proc ringApplyModeName(value: RingApplyMode): string =
+  case value
+  of ramLatestOnly: "latest-only"
+  of ramAppendOnly: "append-only"
+  of ramBoundedHistory: "bounded-history"
+  of ramDelayedTimestamp: "delayed-timestamp"
+
+proc kouten_write_ack_mode_configure(h: pointer, ackMode: cint): cint
+                                     {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureWriteAckMode(writeAckModeFromC(ackMode))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_ring_write_ack_mode_configure(h: pointer, ring: cstring,
+                                          ackMode: cint): cint
+                                          {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureRingWriteAckMode(
+      cstringToString(ring, "ring", allowNil = false),
+      writeAckModeFromC(ackMode))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_ring_apply_policy_configure(h: pointer, ring: cstring,
+                                        applyMode, historyKeep,
+                                        delayMs: cint): cint
+                                        {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureRingApplyPolicy(
+      cstringToString(ring, "ring", allowNil = false),
+      RingApplyPolicy(mode: ringApplyModeFromC(applyMode),
+                      historyKeep: int(historyKeep), delayMs: int(delayMs)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_ring_apply_policy_json(h: pointer, ring: cstring,
+                                   outLen: ptr csize_t): pointer
+                                   {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let policy = ensureHandle(h).ringApplyPolicy(
+      cstringToString(ring, "ring", allowNil = false))
+    copyJsonToShared(%*{
+      "mode": ringApplyModeName(policy.mode),
+      "modeValue": policy.mode.ord,
+      "historyKeep": policy.historyKeep,
+      "delayMs": policy.delayMs
+    }, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_guardrails_configure(h: pointer, maxPayloadBytes,
+                                 maxVectorDim, maxRingCount,
+                                 maxRecordsPerRing: int64): cint
+                                 {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    for value in [maxPayloadBytes, maxVectorDim, maxRingCount,
+                  maxRecordsPerRing]:
+      if value > int64(high(int)):
+        raise newException(ValueError, "guardrail value exceeds platform int")
+    ensureHandle(h).configureGuardrails(KoutenGuardrails(
+      maxPayloadBytes: int(maxPayloadBytes),
+      maxVectorDim: int(maxVectorDim),
+      maxRingCount: int(maxRingCount),
+      maxRecordsPerRing: int(maxRecordsPerRing)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_guardrails_json(h: pointer, outLen: ptr csize_t): pointer
+                            {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let guardrails = ensureHandle(h).guardrails()
+    copyJsonToShared(%*{
+      "maxPayloadBytes": guardrails.maxPayloadBytes,
+      "maxVectorDim": guardrails.maxVectorDim,
+      "maxRingCount": guardrails.maxRingCount,
+      "maxRecordsPerRing": guardrails.maxRecordsPerRing
+    }, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
 
 proc kouten_put(h: pointer, ring: cstring, data: pointer, len: csize_t,
                outId: ptr KoutenCId): cint {.exportc, cdecl, dynlib.} =
@@ -434,6 +794,61 @@ proc kouten_put_vec_codec(h: pointer, ring: cstring, data: pointer, len: csize_t
     outId[] = ensureHandle(h).put(encodedPayload(bytesFromC(data, len),
       codecFromC(codec)), cstringToString(ring, "ring", allowNil = false),
       vec = values).toC
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_put_near_codec(h: pointer, baseRing, ring: cstring,
+                           data: pointer, len: csize_t, codec: cint,
+                           vec: ptr cfloat, vecLen: csize_t,
+                           outId: ptr KoutenCId): cint
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outId == nil:
+      raise newException(ValueError, "out_id is nil")
+    outId[] = ensureHandle(h).putNear(
+      cstringToString(baseRing, "base_ring", allowNil = false),
+      encodedPayload(bytesFromC(data, len), codecFromC(codec)),
+      ring = cstringToString(ring, "ring", allowNil = false),
+      vec = vecFromC(vec, vecLen)).toC
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_put_near_id_codec(h: pointer, anchor: KoutenCId,
+                              relation: cstring, data: pointer,
+                              len: csize_t, codec: cint,
+                              vec: ptr cfloat, vecLen: csize_t,
+                              outId: ptr KoutenCId): cint
+                              {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outId == nil:
+      raise newException(ValueError, "out_id is nil")
+    outId[] = ensureHandle(h).putNear(
+      fromC(anchor), encodedPayload(bytesFromC(data, len), codecFromC(codec)),
+      relation = optStr(relation), vec = vecFromC(vec, vecLen)).toC
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_put_time(h: pointer, ring: cstring, timestampMs: int64,
+                     data: pointer, len: csize_t,
+                     vec: ptr cfloat, vecLen: csize_t,
+                     outId: ptr KoutenCId): cint
+                     {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outId == nil:
+      raise newException(ValueError, "out_id is nil")
+    outId[] = ensureHandle(h).putTime(
+      bytesFromC(data, len),
+      cstringToString(ring, "ring", allowNil = false),
+      timestampMs, vecFromC(vec, vecLen)).toC
     KoutenOk
   except CatchableError as e:
     setError(e)
@@ -510,6 +925,195 @@ proc kouten_remove(h: pointer, id: KoutenCId): cint
     setError(e)
     KoutenErr
 
+proc kouten_patch_json(h: pointer, id: KoutenCId, patchJson: cstring,
+                       outLen: ptr csize_t): pointer
+                       {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let patchNode = parseJson(cstringToString(
+      patchJson, "patch_json", allowNil = false))
+    if patchNode.kind != JObject:
+      raise newException(ValueError, "patch_json must be a JSON object")
+    copyJsonToShared(ensureHandle(h).patch(fromC(id), patchNode), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_count_ring(h: pointer, ring: cstring,
+                       outCount: ptr int64): cint
+                       {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outCount == nil:
+      raise newException(ValueError, "out_count is nil")
+    outCount[] = int64(ensureHandle(h).countByRing(
+      cstringToString(ring, "ring", allowNil = false)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_tx_begin(h: pointer): pointer {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let db = ensureHandle(h)
+    registerTxHandle(h, db.beginTransaction())
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_tx_put_codec(txHandle: pointer, ring: cstring,
+                         data: pointer, len: csize_t, codec: cint,
+                         vec: ptr cfloat, vecLen: csize_t,
+                         outId: ptr KoutenCId): cint
+                         {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outId == nil:
+      raise newException(ValueError, "out_id is nil")
+    let tx = ensureTxHandle(txHandle).tx
+    outId[] = tx.put(encodedPayload(bytesFromC(data, len), codecFromC(codec)),
+                     cstringToString(ring, "ring", allowNil = false),
+                     vecFromC(vec, vecLen)).toC
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_tx_update_codec(txHandle: pointer, id: KoutenCId,
+                            data: pointer, len: csize_t, codec: cint,
+                            vec: ptr cfloat, vecLen: csize_t): cint
+                            {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureTxHandle(txHandle).tx.update(
+      fromC(id), encodedPayload(bytesFromC(data, len), codecFromC(codec)),
+      vecFromC(vec, vecLen))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_tx_remove(txHandle: pointer, id: KoutenCId): cint
+                      {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureTxHandle(txHandle).tx.remove(fromC(id))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc writeAckModeFromC(value: cint): WriteAckMode =
+  case value
+  of 0: wamAccepted
+  of 1: wamApplied
+  else: raise newException(ValueError, "ack_mode must be 0 or 1")
+
+proc kouten_tx_commit(txHandle: pointer, ackMode: cint): cint
+                      {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let handle = ensureTxHandle(txHandle)
+    handle.tx.commit(writeAckModeFromC(ackMode))
+    discard unregisterTxHandle(txHandle)
+    handle.tx = nil
+    GC_unref(handle)
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_tx_rollback(txHandle: pointer): cint
+                        {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let handle = ensureTxHandle(txHandle)
+    handle.tx.rollback()
+    discard unregisterTxHandle(txHandle)
+    handle.tx = nil
+    GC_unref(handle)
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc lockTokenJson(token: KoutenLockToken): JsonNode =
+  %*{
+    "scope": if token.scope == rlsRing: "ring" else: "stellar",
+    "coordinate": token.coordinate,
+    "token": token.token,
+    "fence": $token.fence,
+    "expiresAt": token.expiresAt,
+    "keys": token.keys
+  }
+
+proc kouten_lock_ring(h: pointer, ring: cstring, ttlSeconds: cdouble,
+                      waitMs: cint): pointer {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if float(ttlSeconds).classify in {fcNan, fcInf, fcNegInf}:
+      raise newException(ValueError, "ttl_seconds must be finite")
+    if waitMs < 0:
+      raise newException(ValueError, "wait_ms must be non-negative")
+    let db = ensureHandle(h)
+    registerLockHandle(h, db, db.acquireRingLock(
+      cstringToString(ring, "ring", allowNil = false),
+      float(ttlSeconds), int(waitMs)))
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_lock_stellar(h: pointer, stellar: cstring, ttlSeconds: cdouble,
+                         waitMs: cint): pointer {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if float(ttlSeconds).classify in {fcNan, fcInf, fcNegInf}:
+      raise newException(ValueError, "ttl_seconds must be finite")
+    if waitMs < 0:
+      raise newException(ValueError, "wait_ms must be non-negative")
+    let db = ensureHandle(h)
+    registerLockHandle(h, db, db.acquireStellarLock(
+      cstringToString(stellar, "stellar", allowNil = false),
+      float(ttlSeconds), int(waitMs)))
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_lock_info_json(lockHandle: pointer,
+                           outLen: ptr csize_t): pointer
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    copyJsonToShared(lockTokenJson(ensureLockHandle(lockHandle).token), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_lock_active(lockHandle: pointer): cint
+                        {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let handle = ensureLockHandle(lockHandle)
+    if handle.db.lockActive(handle.token): cint(1) else: cint(0)
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_lock_release(lockHandle: pointer): cint
+                         {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let handle = ensureLockHandle(lockHandle)
+    handle.db.releaseLock(handle.token)
+    discard unregisterLockHandle(lockHandle)
+    handle.db = nil
+    GC_unref(handle)
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
 proc kouten_free(p: pointer) {.exportc, cdecl, dynlib.} =
   if p != nil:
     deallocShared(p)
@@ -571,6 +1175,41 @@ proc kouten_query(h: pointer, id: KoutenCId, selection: cstring,
     setError(e)
     return nil
 
+proc kouten_selection_prepare(selection: cstring): pointer
+                              {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    registerSelectionHandle(prepareSelection(cstringToString(
+      selection, "selection", allowNil = false)))
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_query_prepared(h: pointer, id: KoutenCId,
+                           selectionHandle: pointer,
+                           outLen: ptr csize_t): pointer
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let selected = ensureHandle(h).query(
+      fromC(id), ensureSelectionHandle(selectionHandle).selection)
+    copyJsonToShared(selected, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_selection_close(selectionHandle: pointer): cint
+                            {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let handle = unregisterSelectionHandle(selectionHandle)
+    GC_unref(handle)
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
 proc koutenReadPayloadNode(item: KoutenRecord): JsonNode =
   if item.codec == pcJson:
     try:
@@ -579,18 +1218,21 @@ proc koutenReadPayloadNode(item: KoutenRecord): JsonNode =
       discard
   %*{"encoding": "base64", "payload": base64.encode(item.payload)}
 
+proc koutenRecordJson(item: KoutenRecord): JsonNode =
+  let display = koutenReadPayloadNode(item)
+  let (parent, epoch, seq, tWrite) = item.id.toRaw
+  %*{
+    "id": $item.id,
+    "rawId": $parent & ":" & $epoch & ":" & $seq & ":" & $tWrite,
+    "codec": item.codec.payloadCodecName,
+    "encoding": display["encoding"].getStr(),
+    "payload": display["payload"]
+  }
+
 proc koutenReadPageJson(page: KoutenReadPage): string =
   var items = newJArray()
   for item in page.items:
-    let display = koutenReadPayloadNode(item)
-    let (parent, epoch, seq, tWrite) = item.id.toRaw
-    items.add %*{
-      "id": $item.id,
-      "rawId": $parent & ":" & $epoch & ":" & $seq & ":" & $tWrite,
-      "codec": item.codec.payloadCodecName,
-      "encoding": display["encoding"].getStr(),
-      "payload": display["payload"]
-    }
+    items.add koutenRecordJson(item)
   $(%*{
     "ring": page.ring,
     "count": page.count,
@@ -614,29 +1256,210 @@ proc kouten_read_ring_json(h: pointer, ring, filterJson, selection: cstring,
     clearError()
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
-    let paginationEnabled = requireCBool(pagination, "pagination")
-    let descending = requireCBool(sortDesc, "sort_desc")
-    let filterText = optStr(filterJson)
-    let filterNode =
-      if filterText.len == 0: newJObject()
-      else: parseJson(filterText)
-    if filterNode.kind != JObject:
-      raise newException(ValueError, "filter must be a JSON object")
-    let opts = KoutenReadOptions(
-      filter: filterNode,
-      selection: optStr(selection),
-      limit: int(limit),
-      cursor: optStr(cursor),
-      pagination: if paginationEnabled: rpOn else: rpOff,
-      page: int(page),
-      pageLimit: int(pageLimit),
-      sortField: optStr(sortField),
-      sortDirection: if descending: rsDesc else: rsAsc)
+    let opts = readOptionsFromC(filterJson, selection, limit, cursor,
+                                pagination, page, pageLimit, sortField,
+                                sortDesc)
     let pageResult = ensureHandle(h).readRing(
       cstringToString(ring, "ring", allowNil = false), opts)
     let s = koutenReadPageJson(pageResult)
     outLen[] = csize_t(s.len)
     copyStringToShared(s)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc koutenTimePageJson(page: KoutenTimeReadPage): JsonNode =
+  var items = newJArray()
+  for item in page.items:
+    items.add koutenRecordJson(item)
+  %*{
+    "ring": page.ring,
+    "fromMs": page.fromMs,
+    "toMs": page.toMs,
+    "bucketsVisited": page.bucketsVisited,
+    "count": page.count,
+    "rings": page.rings,
+    "items": items
+  }
+
+proc kouten_read_time_json(h: pointer, ring: cstring,
+                           fromMs, toMs: int64,
+                           filterJson, selection: cstring,
+                           limit: cint, sortField: cstring,
+                           sortDesc, maxBuckets: cint,
+                           outLen: ptr csize_t): pointer
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let opts = readOptionsFromC(filterJson, selection, limit, nil,
+                                0, 1, int(limit).cint, sortField, sortDesc)
+    let page = ensureHandle(h).readTime(
+      cstringToString(ring, "ring", allowNil = false),
+      fromMs, toMs, opts, int(maxBuckets))
+    copyJsonToShared(koutenTimePageJson(page), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc parseStringArray(node: JsonNode, name: string): seq[string] =
+  if node.kind != JArray:
+    raise newException(ValueError, name & " must be a JSON array")
+  for item in node:
+    if item.kind != JString:
+      raise newException(ValueError, name & " entries must be strings")
+    result.add item.getStr()
+
+proc parsePositiveIntMap(node: JsonNode, name: string): Table[string, int] =
+  result = initTable[string, int]()
+  if node.kind != JObject:
+    raise newException(ValueError, name & " must be a JSON object")
+  for key, value in node:
+    if value.kind != JInt or value.getInt() <= 0:
+      raise newException(ValueError, name & " values must be positive integers")
+    result[key] = value.getInt()
+
+proc parseStringMap(node: JsonNode, name: string): Table[string, string] =
+  result = initTable[string, string]()
+  if node.kind != JObject:
+    raise newException(ValueError, name & " must be a JSON object")
+  for key, value in node:
+    if value.kind != JString:
+      raise newException(ValueError, name & " values must be strings")
+    result[key] = value.getStr()
+
+proc parseSortDirection(value, name: string): KoutenReadSortDirection =
+  case value
+  of "asc": rsAsc
+  of "desc": rsDesc
+  else: raise newException(ValueError, name & " must be asc or desc")
+
+proc parseSortDirectionMap(node: JsonNode,
+                           name: string): Table[string, KoutenReadSortDirection] =
+  result = initTable[string, KoutenReadSortDirection]()
+  for key, value in parseStringMap(node, name):
+    result[key] = parseSortDirection(value, name & "." & key)
+
+proc stellarOptionsFromC(optionsJson: cstring): KoutenStellarOptions =
+  result = defaultStellarOptions()
+  let raw = optStr(optionsJson)
+  if raw.len == 0:
+    return
+  let node = parseJson(raw)
+  if node.kind != JObject:
+    raise newException(ValueError, "stellar options must be a JSON object")
+  if node.hasKey("filter"):
+    if node["filter"].kind != JObject:
+      raise newException(ValueError, "filter must be a JSON object")
+    result.filter = node["filter"]
+  if node.hasKey("selection"):
+    result.selection = node["selection"].getStr()
+  if node.hasKey("limitPerRing"):
+    result.limitPerRing = node["limitPerRing"].getInt()
+  if node.hasKey("subringLimits"):
+    result.subringLimits = parsePositiveIntMap(node["subringLimits"],
+                                               "subringLimits")
+  if node.hasKey("subringSortFields"):
+    result.subringSortFields = parseStringMap(node["subringSortFields"],
+                                              "subringSortFields")
+  if node.hasKey("subringSortDirections"):
+    result.subringSortDirections = parseSortDirectionMap(
+      node["subringSortDirections"], "subringSortDirections")
+  if node.hasKey("maxDepth"):
+    result.maxDepth = node["maxDepth"].getInt()
+  if node.hasKey("branchBudget"):
+    result.branchBudget = node["branchBudget"].getInt()
+  if node.hasKey("subrings"):
+    result.subrings = parseStringArray(node["subrings"], "subrings")
+  if node.hasKey("includeRoot"):
+    result.includeRoot = node["includeRoot"].getBool()
+  if node.hasKey("sortField"):
+    result.sortField = node["sortField"].getStr()
+  if node.hasKey("sortDirection"):
+    result.sortDirection = parseSortDirection(
+      node["sortDirection"].getStr(), "sortDirection")
+
+proc koutenStellarPageJson(page: KoutenStellarPage): JsonNode =
+  var rings = newJArray()
+  for ringPage in page.rings:
+    var items = newJArray()
+    for item in ringPage.items:
+      items.add koutenRecordJson(item)
+    rings.add %*{
+      "ring": ringPage.ring,
+      "count": ringPage.count,
+      "items": items
+    }
+  %*{
+    "root": page.root,
+    "maxDepth": page.maxDepth,
+    "branchBudget": page.branchBudget,
+    "ringsVisited": page.ringsVisited,
+    "count": page.count,
+    "rings": rings
+  }
+
+proc kouten_stellar_attach(h: pointer, stellar, ring: cstring): cint
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).attachStellar(
+      cstringToString(stellar, "stellar", allowNil = false),
+      cstringToString(ring, "ring", allowNil = false))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_stellar_detach(h: pointer, stellar, ring: cstring): cint
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).detachStellar(
+      cstringToString(stellar, "stellar", allowNil = false),
+      cstringToString(ring, "ring", allowNil = false))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc stringArrayJson(values: seq[string]): JsonNode =
+  result = newJArray()
+  for value in values:
+    result.add %value
+
+proc kouten_stellar_members_json(h: pointer, stellar: cstring,
+                                 outLen: ptr csize_t): pointer
+                                 {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let values = ensureHandle(h).stellarMembers(
+      cstringToString(stellar, "stellar", allowNil = false))
+    copyJsonToShared(stringArrayJson(values), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_stellar_coordinates_json(h: pointer, ring: cstring,
+                                     outLen: ptr csize_t): pointer
+                                     {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let values = ensureHandle(h).stellarCoordinatesFor(
+      cstringToString(ring, "ring", allowNil = false))
+    copyJsonToShared(stringArrayJson(values), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_read_stellar_json(h: pointer, root, optionsJson: cstring,
+                              outLen: ptr csize_t): pointer
+                              {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let page = ensureHandle(h).readStellar(
+      cstringToString(root, "root", allowNil = false),
+      stellarOptionsFromC(optionsJson))
+    copyJsonToShared(koutenStellarPageJson(page), outLen)
   except CatchableError as e:
     setError(e)
     nil

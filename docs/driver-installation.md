@@ -75,6 +75,9 @@ scripts/test_core.sh
 
 ## C ABI
 
+See the [C ABI Reference](c-abi.md) for the complete application-facing
+surface, ownership rules, and opaque handle lifecycles.
+
 Include `include/koutendb.h` and link `lib/libkoutendb.so`:
 
 ```sh

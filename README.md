@@ -417,6 +417,11 @@ kouten_free(a);
 int node = kouten_locate(db, id, -1.0);
 ```
 
+The additive application-facing C ABI also covers prepared selections,
+transactions, cooperative ring/stellar locks, nearby placement, stellar lens
+reads, time-orbit reads, ring profiles, apply policies, and write guardrails.
+See the [C ABI reference](docs/c-abi.md) for ownership and lifecycle rules.
+
 ## Build and Verification
 
 ### Core Test Suite

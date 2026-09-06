@@ -20,6 +20,13 @@ v0.12 disk-backed open, CRUD completion, bounded-maintenance, and generation-
 checkpoint JSON functions follow this rule, preserving ABI v2 for already-
 published wrappers.
 
+The application-facing prepared-selection, transaction, coordinate-lock,
+nearby/stellar, time-orbit, profile, policy, and guardrail functions are also
+additive ABI v2 symbols. Existing ABI v2 binaries keep their struct layouts and
+behavior. A binding must resolve a newer symbol before exposing its associated
+feature; the integer ABI version alone does not imply that every additive
+symbol is present in an older shared library.
+
 ## Wire Protocol
 
 The wire protocol is a KoutenDB-specific text-header protocol with length-prefixed

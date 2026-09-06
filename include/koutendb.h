@@ -78,6 +78,14 @@ typedef struct kouten_batch_result {
 #define KOUTEN_METRICS_PROMETHEUS  1
 #define KOUTEN_METRICS_OPENMETRICS 2
 
+#define KOUTEN_ACK_ACCEPTED 0
+#define KOUTEN_ACK_APPLIED  1
+
+#define KOUTEN_APPLY_LATEST_ONLY       0
+#define KOUTEN_APPLY_APPEND_ONLY       1
+#define KOUTEN_APPLY_BOUNDED_HISTORY   2
+#define KOUTEN_APPLY_DELAYED_TIMESTAMP 3
+
 /* ABI バージョンと直近エラー。last_error はスレッドローカル相当で、所有権は呼び出し側にない。
  * Returned text is valid until the next KoutenDB C ABI call on the same thread.
  */
@@ -155,6 +163,47 @@ void   kouten_advance(void *db, double dt);
 int    kouten_ring_configure(void *db, const char *ring, double period);
 int    kouten_set_galaxy_description(void *db, const char *description);
 int    kouten_set_ring_description(void *db, const char *ring, const char *description);
+void  *kouten_get_galaxy_description(void *db, size_t *out_len);
+void  *kouten_get_ring_description(void *db, const char *ring, size_t *out_len);
+
+/* Ring payload metadata and ring-local time-orbit placement profiles. */
+int    kouten_ring_payload_profile_configure(void *db,
+                                             const char *ring,
+                                             int codec,
+                                             const char *charset,
+                                             const char *format_version);
+void  *kouten_ring_payload_profile_json(void *db,
+                                        const char *ring,
+                                        size_t *out_len);
+int    kouten_time_orbit_profile_configure(void *db,
+                                           const char *ring,
+                                           int bits,
+                                           int64_t bucket_ms,
+                                           uint64_t phase,
+                                           const char *salt);
+void  *kouten_time_orbit_profile_json(void *db,
+                                      const char *ring,
+                                      size_t *out_len);
+
+/* Write acknowledgement, eventual-apply, and application guardrails. */
+int    kouten_write_ack_mode_configure(void *db, int ack_mode);
+int    kouten_ring_write_ack_mode_configure(void *db,
+                                             const char *ring,
+                                             int ack_mode);
+int    kouten_ring_apply_policy_configure(void *db,
+                                           const char *ring,
+                                           int apply_mode,
+                                           int history_keep,
+                                           int delay_ms);
+void  *kouten_ring_apply_policy_json(void *db,
+                                     const char *ring,
+                                     size_t *out_len);
+int    kouten_guardrails_configure(void *db,
+                                   int64_t max_payload_bytes,
+                                   int64_t max_vector_dim,
+                                   int64_t max_ring_count,
+                                   int64_t max_records_per_ring);
+void  *kouten_guardrails_json(void *db, size_t *out_len);
 
 /* 書き込み。out_id に不透明IDが入る。以後この ID だけで所在計算が閉じる。 */
 int    kouten_put(void *db, const char *ring,
@@ -175,6 +224,35 @@ int    kouten_put_vec_codec(void *db, const char *ring,
                            const void *data, size_t len, int codec,
                            const float *vec, size_t vec_len,
                            kouten_id *out_id);
+/* Place a record under base_ring/ring, or near an existing anchor ID. */
+int    kouten_put_near_codec(void *db,
+                             const char *base_ring,
+                             const char *ring,
+                             const void *data,
+                             size_t len,
+                             int codec,
+                             const float *vec,
+                             size_t vec_len,
+                             kouten_id *out_id);
+int    kouten_put_near_id_codec(void *db,
+                                kouten_id anchor,
+                                const char *relation,
+                                const void *data,
+                                size_t len,
+                                int codec,
+                                const float *vec,
+                                size_t vec_len,
+                                kouten_id *out_id);
+/* Time placement accepts JSON or raw bytes. JSON objects receive eventTimeMs
+ * and ingestTimeMs when those properties are absent. */
+int    kouten_put_time(void *db,
+                       const char *ring,
+                       int64_t timestamp_ms,
+                       const void *data,
+                       size_t len,
+                       const float *vec,
+                       size_t vec_len,
+                       kouten_id *out_id);
 
 /* 読み出し。NUL 終端付きの複製バッファを返す（kouten_free で解放）。
  * 見つからなければ NULL。 */
@@ -188,6 +266,13 @@ int    kouten_update(void *db, kouten_id id,
 int    kouten_update_codec(void *db, kouten_id id,
                            const void *data, size_t len, int codec);
 int    kouten_remove(void *db, kouten_id id);
+/* JSON merge patch. The returned JSON document must be released with
+ * kouten_free. */
+void  *kouten_patch_json(void *db,
+                         kouten_id id,
+                         const char *patch_json,
+                         size_t *out_len);
+int    kouten_count_ring(void *db, const char *ring, int64_t *out_count);
 void   kouten_free(void *p);
 /* 複数 ID のまとめ読み。戻り値は kouten_batch_get_free で解放。 */
 kouten_batch_result *kouten_batch_get(void *db, const kouten_id *ids, size_t ids_len);
@@ -196,6 +281,52 @@ void   kouten_batch_get_free(kouten_batch_result *r);
 /* 選択取得（GraphQL 風）: selection 例 "{ title author { name } }"。
  * 選択した部分の JSON 文字列を返す（kouten_free で解放）。失敗時 NULL。 */
 void  *kouten_query(void *db, kouten_id id, const char *selection, size_t *out_len);
+/* Reusable prepared projection. The selection handle is independent of a DB
+ * handle and must be closed exactly once. */
+void  *kouten_selection_prepare(const char *selection);
+void  *kouten_query_prepared(void *db,
+                             kouten_id id,
+                             void *selection,
+                             size_t *out_len);
+int    kouten_selection_close(void *selection);
+
+/* Opaque transaction handles. A successful commit or rollback consumes the
+ * handle. A failed commit leaves it valid so the caller can retry or roll it
+ * back. Closing the owning DB rolls back all outstanding handles. */
+void  *kouten_tx_begin(void *db);
+int    kouten_tx_put_codec(void *tx,
+                           const char *ring,
+                           const void *data,
+                           size_t len,
+                           int codec,
+                           const float *vec,
+                           size_t vec_len,
+                           kouten_id *out_id);
+int    kouten_tx_update_codec(void *tx,
+                              kouten_id id,
+                              const void *data,
+                              size_t len,
+                              int codec,
+                              const float *vec,
+                              size_t vec_len);
+int    kouten_tx_remove(void *tx, kouten_id id);
+int    kouten_tx_commit(void *tx, int ack_mode);
+int    kouten_tx_rollback(void *tx);
+
+/* Cooperative coordinate locks use opaque handles. They do not implicitly
+ * block ordinary CRUD calls; applications use them around workflows that need
+ * explicit coordination. A successful release consumes the handle. */
+void  *kouten_lock_ring(void *db,
+                        const char *ring,
+                        double ttl_seconds,
+                        int wait_ms);
+void  *kouten_lock_stellar(void *db,
+                           const char *stellar,
+                           double ttl_seconds,
+                           int wait_ms);
+void  *kouten_lock_info_json(void *lock, size_t *out_len);
+int    kouten_lock_active(void *lock);
+int    kouten_lock_release(void *lock);
 
 /* Ring read page as JSON. This is the driver-friendly counterpart of
  * `kouten get --ring=...`: it returns one stable shape for one or many records.
@@ -221,6 +352,41 @@ void  *kouten_read_ring_json(void *db,
                             const char *sort_field,
                             int sort_desc,
                             size_t *out_len);
+
+/* Ring-local time range read. It calculates affected bucket rings before
+ * reading and returns one JSON document containing rings/items metadata. */
+void  *kouten_read_time_json(void *db,
+                             const char *ring,
+                             int64_t from_ms,
+                             int64_t to_ms,
+                             const char *filter_json,
+                             const char *selection,
+                             int limit,
+                             const char *sort_field,
+                             int sort_desc,
+                             int max_buckets,
+                             size_t *out_len);
+
+/* Stellar lenses group existing ring coordinates without copying records.
+ * options_json accepts filter, selection, limitPerRing, subringLimits,
+ * subringSortFields, subringSortDirections, maxDepth, branchBudget, subrings,
+ * includeRoot, sortField, and sortDirection. */
+int    kouten_stellar_attach(void *db,
+                             const char *stellar,
+                             const char *ring);
+int    kouten_stellar_detach(void *db,
+                             const char *stellar,
+                             const char *ring);
+void  *kouten_stellar_members_json(void *db,
+                                   const char *stellar,
+                                   size_t *out_len);
+void  *kouten_stellar_coordinates_json(void *db,
+                                       const char *ring,
+                                       size_t *out_len);
+void  *kouten_read_stellar_json(void *db,
+                                const char *root,
+                                const char *options_json,
+                                size_t *out_len);
 
 /* vector 近傍検索。ring は NULL/空文字で global。戻り値は kouten_retrieve_free で解放。 */
 kouten_retrieve_result *kouten_retrieve(void *db,

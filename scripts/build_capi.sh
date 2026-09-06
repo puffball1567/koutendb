@@ -11,6 +11,19 @@ mkdir -p "$(dirname "$OUT")"
 
 NIM_FLAGS=(--app:lib -d:ssl -d:release)
 
+NIMSODIUM_PATH="${KOUTENDB_NIMSODIUM_PATH:-}"
+if [[ -z "$NIMSODIUM_PATH" ]] && command -v nimble >/dev/null 2>&1; then
+  NIMSODIUM_PATH="$(nimble path nimsodium 2>/dev/null || true)"
+  NIMSODIUM_PATH="${NIMSODIUM_PATH%%$'\n'*}"
+fi
+if [[ -n "$NIMSODIUM_PATH" ]]; then
+  if [[ ! -f "$NIMSODIUM_PATH/nimsodium.nim" ]]; then
+    echo "nimsodium module not found under: $NIMSODIUM_PATH" >&2
+    exit 1
+  fi
+  NIM_FLAGS+=(--path:"$NIMSODIUM_PATH")
+fi
+
 if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
   for formula in libsodium openssl@3 openssl; do
     prefix="$(brew --prefix "$formula" 2>/dev/null || true)"
