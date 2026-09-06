@@ -419,7 +419,9 @@ int node = kouten_locate(db, id, -1.0);
 
 The additive application-facing C ABI also covers prepared selections,
 transactions, cooperative ring/stellar locks, nearby placement, stellar lens
-reads, time-orbit reads, ring profiles, apply policies, and write guardrails.
+reads, time-orbit reads, ring/search profiles, retrieval plans and RAG
+envelopes, apply policies, write guardrails, JSONL migration, physical-locality
+diagnostics, compaction, segment packing, and plain/encrypted backup/restore.
 See the [C ABI reference](docs/c-abi.md) for ownership and lifecycle rules.
 
 ## Build and Verification

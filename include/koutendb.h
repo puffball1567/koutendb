@@ -86,6 +86,24 @@ typedef struct kouten_batch_result {
 #define KOUTEN_APPLY_BOUNDED_HISTORY   2
 #define KOUTEN_APPLY_DELAYED_TIMESTAMP 3
 
+#define KOUTEN_SEARCH_AMOUNT_FEW        0
+#define KOUTEN_SEARCH_AMOUNT_NORMAL     1
+#define KOUTEN_SEARCH_AMOUNT_MANY       2
+#define KOUTEN_SEARCH_AMOUNT_ALL_USEFUL 3
+
+#define KOUTEN_SEARCH_SCOPE_TIGHT 0
+#define KOUTEN_SEARCH_SCOPE_NEAR  1
+#define KOUTEN_SEARCH_SCOPE_WIDE  2
+#define KOUTEN_SEARCH_SCOPE_ALL   3
+
+#define KOUTEN_SEARCH_DEPTH_SHALLOW   0
+#define KOUTEN_SEARCH_DEPTH_NORMAL    1
+#define KOUTEN_SEARCH_DEPTH_DEEP      2
+#define KOUTEN_SEARCH_DEPTH_VERY_DEEP 3
+
+#define KOUTEN_DURABILITY_BUFFERED 0
+#define KOUTEN_DURABILITY_STRONG   1
+
 /* ABI バージョンと直近エラー。last_error はスレッドローカル相当で、所有権は呼び出し側にない。
  * Returned text is valid until the next KoutenDB C ABI call on the same thread.
  */
@@ -205,9 +223,54 @@ int    kouten_guardrails_configure(void *db,
                                    int64_t max_records_per_ring);
 void  *kouten_guardrails_json(void *db, size_t *out_len);
 
+/* Retrieval planning and named search profiles. Configure calls copy all
+ * strings. Returned plans/tuning are JSON buffers owned by the caller. */
+int    kouten_retrieval_tuning_configure(void *db,
+                                         const char *profile,
+                                         int budget,
+                                         int focus,
+                                         int top_rings,
+                                         int branch_budget,
+                                         int max_depth,
+                                         int include_children,
+                                         const char *note);
+void  *kouten_retrieval_tuning_json(void *db,
+                                    const char *profile,
+                                    size_t *out_len);
+int    kouten_search_profile_configure(void *db,
+                                       const char *name,
+                                       int amount,
+                                       int scope,
+                                       int depth,
+                                       const char *note);
+void  *kouten_retrieval_plan_json(void *db,
+                                  const char *ring,
+                                  const char *profile,
+                                  int budget,
+                                  int top_rings,
+                                  int focus,
+                                  int include_children,
+                                  int max_depth,
+                                  int branch_budget,
+                                  size_t *out_len);
+void  *kouten_search_plan_json(const char *ring,
+                               int amount,
+                               int scope,
+                               int depth,
+                               const char *profile,
+                               size_t *out_len);
+
 /* 書き込み。out_id に不透明IDが入る。以後この ID だけで所在計算が閉じる。 */
 int    kouten_put(void *db, const char *ring,
                  const void *data, size_t len, kouten_id *out_id);
+/* Uses the ring payload profile's default codec. */
+int    kouten_put_profile(void *db,
+                          const char *ring,
+                          const void *data,
+                          size_t len,
+                          const float *vec,
+                          size_t vec_len,
+                          kouten_id *out_id);
 /* Codec-aware variants are additive. NIF/BIF bytes are application-encoded. */
 int    kouten_put_codec(void *db, const char *ring,
                        const void *data, size_t len, int codec,
@@ -294,6 +357,12 @@ int    kouten_selection_close(void *selection);
  * handle. A failed commit leaves it valid so the caller can retry or roll it
  * back. Closing the owning DB rolls back all outstanding handles. */
 void  *kouten_tx_begin(void *db);
+/* Read before commit. Embedded transactions return txid=0 and coordinator=-1;
+ * cluster transactions return the durable landing identity needed by
+ * kouten_wait_cluster_tx_applied. */
+int    kouten_tx_identity(void *tx,
+                          uint64_t *out_txid,
+                          int *out_coordinator_node);
 int    kouten_tx_put_codec(void *tx,
                            const char *ring,
                            const void *data,
@@ -395,11 +464,99 @@ kouten_retrieve_result *kouten_retrieve(void *db,
                                       int budget,
                                       int top_rings,
                                       int focus);
+/* Uses a named retrieval/search profile configured on this handle. */
+kouten_retrieve_result *kouten_retrieve_tuned(void *db,
+                                              const float *vec,
+                                              size_t vec_len,
+                                              const char *ring,
+                                              const char *profile);
 void   kouten_retrieve_free(kouten_retrieve_result *r);
+
+/* Retrieval diagnostics and adapter-ready RAG envelopes. Ring summaries are
+ * ordered by score and then count. Envelope validation returns
+ * {"valid":bool,"errors":[...]}; malformed JSON is an API error. */
+void  *kouten_ring_summaries_json(void *db,
+                                  const float *query_vec,
+                                  size_t query_vec_len,
+                                  size_t *out_len);
+void  *kouten_retrieval_envelope_json(void *db,
+                                      const float *query_vec,
+                                      size_t query_vec_len,
+                                      const char *ring,
+                                      int budget,
+                                      int top_rings,
+                                      int focus,
+                                      size_t *out_len);
+void  *kouten_retrieval_envelope_tuned_json(void *db,
+                                            const float *query_vec,
+                                            size_t query_vec_len,
+                                            const char *ring,
+                                            const char *profile,
+                                            size_t *out_len);
+void  *kouten_retrieval_envelope_validate_json(const char *envelope_json,
+                                               size_t *out_len);
+void  *kouten_locality_report_json(void *db, size_t *out_len);
 
 /* Atlas JSON。LLM/agent が最初に読む galaxy/ring map。戻り値は kouten_free で解放。 */
 void  *kouten_atlas(void *db, const float *query_vec, size_t query_vec_len,
                    int max_centroid_dims, size_t *out_len);
+
+/* Embedded lifecycle and migration operations. JSONL dump requires a file
+ * path; the C ABI never writes a dump to the host process's stdout.
+ *
+ * Import options JSON supports defaultRing, ringField, ringPrefix,
+ * payloadField, vecField, maxRecords, batchSize, and packSegments.
+ * Operational verification options JSON supports diskBacked, verifySegments,
+ * maxWalBytes, maxSegmentFiles, maxItems, maxRings, maxSegmentBytes,
+ * maxDeadRecords, maxDeadRatio, maxSegmentGeneration, staleRatioThreshold,
+ * and minStaleRecords. NULL/empty options use the Nim API defaults. */
+void  *kouten_compact_json(void *db, size_t *out_len);
+void  *kouten_dump_jsonl(void *db,
+                         const char *path,
+                         int include_vectors,
+                         size_t *out_len);
+void  *kouten_import_jsonl(void *db,
+                           const char *path,
+                           const char *options_json,
+                           size_t *out_len);
+void  *kouten_pack_all_json(void *db, size_t *out_len);
+void  *kouten_pack_ring_json(void *db,
+                             const char *ring,
+                             size_t *out_len);
+void  *kouten_backup_json(void *db,
+                          const char *destination,
+                          size_t *out_len);
+void  *kouten_backup_encrypted_json(void *db,
+                                    const char *destination,
+                                    const char *passphrase,
+                                    size_t *out_len);
+void  *kouten_backup_verify_json(const char *backup_dir,
+                                 size_t *out_len);
+void  *kouten_backup_encrypted_verify_json(const char *backup_dir,
+                                           const char *passphrase,
+                                           size_t *out_len);
+void  *kouten_backup_restore_json(const char *backup_dir,
+                                  const char *data_dir,
+                                  int overwrite,
+                                  int durability,
+                                  size_t *out_len);
+void  *kouten_backup_encrypted_restore_json(const char *backup_dir,
+                                            const char *data_dir,
+                                            const char *passphrase,
+                                            int overwrite,
+                                            int durability,
+                                            size_t *out_len);
+void  *kouten_operational_verify_json(const char *data_dir,
+                                      const char *options_json,
+                                      size_t *out_len);
+
+/* Cluster-only wait helper. Returns 1 when applied, 0 for timeout/unknown,
+ * and KOUTEN_ERR on invalid input or transport failure. */
+int    kouten_wait_cluster_tx_applied(void *db,
+                                      uint64_t txid,
+                                      int coordinator_node,
+                                      int timeout_ms,
+                                      int poll_ms);
 
 /* Disk-backed segment diagnostics and bounded maintenance. Returned JSON
  * buffers follow the normal ownership rule and must be released with

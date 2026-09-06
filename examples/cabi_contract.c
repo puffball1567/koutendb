@@ -80,6 +80,36 @@ int main(void) {
     return fail("invalid ring apply mode should fail");
   if (kouten_guardrails_configure(db, -1, 0, 0, 0) != KOUTEN_ERR)
     return fail("negative guardrail should fail");
+  if (kouten_retrieval_tuning_configure(
+        db, "cabi-rag", 6, 85, 2, 4, 3, 1, "C ABI tuning") != KOUTEN_OK)
+    return fail("retrieval tuning configuration failed");
+  char *planning_json = kouten_retrieval_tuning_json(
+    db, "cabi-rag", &read_len);
+  if (!planning_json || strstr(planning_json, "\"budget\":6") == NULL ||
+      strstr(planning_json, "\"includeChildren\":true") == NULL)
+    return fail("retrieval tuning JSON differs");
+  kouten_free(planning_json);
+  if (kouten_search_profile_configure(
+        db, "cabi-search", KOUTEN_SEARCH_AMOUNT_MANY,
+        KOUTEN_SEARCH_SCOPE_NEAR, KOUTEN_SEARCH_DEPTH_DEEP,
+        "C ABI search profile") != KOUTEN_OK)
+    return fail("search profile configuration failed");
+  planning_json = kouten_retrieval_plan_json(
+    db, "docs/api", "cabi-search", 0, -1, -1, 0, -1, -1,
+    &read_len);
+  if (!planning_json || strstr(planning_json, "\"profile\":\"cabi-search\"") == NULL ||
+      strstr(planning_json, "\"baseRing\":\"docs/api\"") == NULL)
+    return fail("retrieval plan failed");
+  kouten_free(planning_json);
+  planning_json = kouten_search_plan_json(
+    "docs/api", KOUTEN_SEARCH_AMOUNT_FEW, KOUTEN_SEARCH_SCOPE_TIGHT,
+    KOUTEN_SEARCH_DEPTH_SHALLOW, "static-search", &read_len);
+  if (!planning_json || strstr(planning_json, "\"amount\":\"raFew\"") == NULL ||
+      strstr(planning_json, "\"scope\":\"ssTight\"") == NULL)
+    return fail("search plan failed");
+  kouten_free(planning_json);
+  if (kouten_search_profile_configure(db, "bad", 99, 0, 0, "") != KOUTEN_ERR)
+    return fail("search profile should reject an invalid amount");
   if (kouten_time_orbit_profile_configure(
         db, "invalid/time", 61, 1000, 0, "") != KOUTEN_ERR)
     return fail("out-of-range time orbit bits should fail");
@@ -109,6 +139,16 @@ int main(void) {
   if (kouten_put_codec(db, "docs/api", json_payload, strlen(json_payload),
                       KOUTEN_CODEC_JSON, &json_id) != KOUTEN_OK)
     return fail("put_codec json failed");
+  kouten_id profile_id;
+  if (kouten_put_profile(db, "docs/api", "{\"profile\":true}", 16,
+                         NULL, 0, &profile_id) != KOUTEN_OK)
+    return fail("put_profile failed");
+  int profile_codec = -1;
+  void *profile_value = kouten_get_codec(
+    db, profile_id, &read_len, &profile_codec);
+  if (!profile_value || profile_codec != KOUTEN_CODEC_JSON)
+    return fail("put_profile did not use the ring codec");
+  kouten_free(profile_value);
 
   char *read_page = kouten_read_ring_json(
     db,
@@ -235,6 +275,13 @@ int main(void) {
 
   void *tx = kouten_tx_begin(db);
   if (!tx) return fail("transaction begin failed");
+  uint64_t embedded_txid = 1;
+  int embedded_coordinator = 0;
+  if (kouten_tx_identity(tx, &embedded_txid, &embedded_coordinator) != KOUTEN_OK ||
+      embedded_txid != 0 || embedded_coordinator != -1)
+    return fail("embedded transaction identity failed");
+  if (kouten_tx_identity(tx, NULL, &embedded_coordinator) != KOUTEN_ERR)
+    return fail("transaction identity should reject NULL outputs");
   kouten_id rolled_back_id;
   if (kouten_tx_put_codec(tx, "tx/items", "rollback", 8, KOUTEN_CODEC_RAW,
                           NULL, 0, &rolled_back_id) != KOUTEN_OK)
@@ -412,6 +459,45 @@ int main(void) {
   if (strstr(atlas, "Contract test galaxy") == NULL) return fail("atlas misses galaxy description");
   if (strstr(atlas, "C ABI documentation") == NULL) return fail("atlas misses ring description");
   kouten_free(atlas);
+
+  char *retrieval_json = kouten_ring_summaries_json(db, vec, 2, &read_len);
+  if (!retrieval_json || strstr(retrieval_json, "\"ringKey\"") == NULL ||
+      strstr(retrieval_json, "\"centroid\"") == NULL)
+    return fail("ring summaries failed");
+  kouten_free(retrieval_json);
+  retrieval_json = kouten_retrieval_envelope_json(
+    db, vec, 2, "docs/api", 4, 1, 80, &read_len);
+  if (!retrieval_json || strstr(retrieval_json, "koutendb.retrieval.v1") == NULL ||
+      strstr(retrieval_json, "\"ringScoped\":true") == NULL)
+    return fail("retrieval envelope failed");
+  char *validation_json = kouten_retrieval_envelope_validate_json(
+    retrieval_json, &atlas_len);
+  if (!validation_json || strstr(validation_json, "\"valid\":true") == NULL)
+    return fail("retrieval envelope validation failed");
+  kouten_free(validation_json);
+  kouten_free(retrieval_json);
+  retrieval_json = kouten_retrieval_envelope_tuned_json(
+    db, vec, 2, "docs/api", "cabi-rag", &read_len);
+  if (!retrieval_json || strstr(retrieval_json, "\"profile\":\"cabi-rag\"") == NULL)
+    return fail("tuned retrieval envelope failed");
+  kouten_free(retrieval_json);
+  kouten_retrieve_result *tuned = kouten_retrieve_tuned(
+    db, vec, 2, "docs/api", "cabi-rag");
+  if (!tuned || tuned->len != 1 || tuned->returned != 1 ||
+      tuned->rings_touched != 1)
+    return fail("tuned retrieval result failed");
+  kouten_retrieve_free(tuned);
+  if (kouten_retrieve_tuned(
+        db, vec, (size_t)-1, "docs/api", "cabi-rag") != NULL)
+    return fail("tuned retrieval should reject oversized vector length");
+  validation_json = kouten_retrieval_envelope_validate_json("{}", &read_len);
+  if (!validation_json || strstr(validation_json, "\"valid\":false") == NULL)
+    return fail("invalid retrieval envelope result failed");
+  kouten_free(validation_json);
+  if (kouten_retrieval_envelope_validate_json("not-json", &read_len) != NULL)
+    return fail("malformed retrieval envelope should fail");
+  if (kouten_wait_cluster_tx_applied(db, 1, -1, 100, 10) != KOUTEN_ERR)
+    return fail("cluster transaction wait should reject embedded handles");
 
   kouten_id dummy;
   if (kouten_put(db, NULL, payload, strlen(payload), &dummy) != KOUTEN_ERR)
@@ -632,15 +718,122 @@ int main(void) {
     return fail("restored checkpoint does not contain source data");
   kouten_close(restored_db);
 
+  char dump_path[220];
+  char backup_dir[220];
+  char encrypted_backup_dir[220];
+  char backup_restore_dir[220];
+  char encrypted_restore_dir[220];
+  snprintf(dump_path, sizeof(dump_path), "%s-dump.jsonl", data_dir);
+  snprintf(backup_dir, sizeof(backup_dir), "%s-backup", data_dir);
+  snprintf(encrypted_backup_dir, sizeof(encrypted_backup_dir),
+           "%s-backup-encrypted", data_dir);
+  snprintf(backup_restore_dir, sizeof(backup_restore_dir),
+           "%s-backup-restored", data_dir);
+  snprintf(encrypted_restore_dir, sizeof(encrypted_restore_dir),
+           "%s-encrypted-restored", data_dir);
+
+  char *lifecycle_json = kouten_locality_report_json(disk_db, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"localityScore\"") == NULL)
+    return fail("locality report failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_pack_ring_json(
+    disk_db, "maintenance/cabi", &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"records\":1") == NULL)
+    return fail("ring pack failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_pack_all_json(disk_db, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"rings\":1") == NULL)
+    return fail("full pack failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_dump_jsonl(disk_db, dump_path, 1, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"documents\":1") == NULL)
+    return fail("JSONL dump failed");
+  kouten_free(lifecycle_json);
+  if (kouten_dump_jsonl(disk_db, "-", 1, &read_len) != NULL)
+    return fail("C ABI dump should reject stdout");
+  lifecycle_json = kouten_backup_json(disk_db, backup_dir, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"encrypted\":false") == NULL)
+    return fail("backup failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_backup_encrypted_json(
+    disk_db, encrypted_backup_dir, "contract-passphrase", &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"encrypted\":true") == NULL)
+    return fail("encrypted backup failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_compact_json(disk_db, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"beforeBytes\"") == NULL ||
+      strstr(lifecycle_json, "\"afterBytes\"") == NULL)
+    return fail("compact failed");
+  kouten_free(lifecycle_json);
+
   kouten_close(disk_db);
+
+  lifecycle_json = kouten_backup_verify_json(backup_dir, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"items\":1") == NULL)
+    return fail("backup verification failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_backup_encrypted_verify_json(
+    encrypted_backup_dir, "contract-passphrase", &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"encrypted\":true") == NULL)
+    return fail("encrypted backup verification failed");
+  kouten_free(lifecycle_json);
+  if (kouten_backup_encrypted_verify_json(
+        encrypted_backup_dir, "wrong-passphrase", &read_len) != NULL)
+    return fail("encrypted backup verification should reject wrong passphrase");
+  lifecycle_json = kouten_backup_restore_json(
+    backup_dir, backup_restore_dir, 0, KOUTEN_DURABILITY_STRONG, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"encrypted\":false") == NULL)
+    return fail("backup restore failed");
+  kouten_free(lifecycle_json);
+  lifecycle_json = kouten_backup_encrypted_restore_json(
+    encrypted_backup_dir, encrypted_restore_dir, "contract-passphrase", 0,
+    KOUTEN_DURABILITY_STRONG, &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"encrypted\":true") == NULL)
+    return fail("encrypted backup restore failed");
+  kouten_free(lifecycle_json);
+
+  void *import_db = kouten_open(1);
+  if (!import_db) return fail("JSONL import DB open failed");
+  lifecycle_json = kouten_import_jsonl(
+    import_db, dump_path, "{\"batchSize\":1}", &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"imported\":1") == NULL)
+    return fail("JSONL import failed");
+  kouten_free(lifecycle_json);
+  if (kouten_count_ring(import_db, "maintenance/cabi", &ring_count) != KOUTEN_OK ||
+      ring_count != 1)
+    return fail("JSONL import content differs");
+  kouten_close(import_db);
+  if (kouten_import_jsonl(db, dump_path, "[]", &read_len) != NULL)
+    return fail("JSONL import should reject non-object options");
+  if (kouten_import_jsonl(
+        db, dump_path, "{\"batchSize\":\"many\"}", &read_len) != NULL)
+    return fail("JSONL import should reject typed option mismatches");
+
+  lifecycle_json = kouten_operational_verify_json(
+    data_dir,
+    "{\"diskBacked\":true,\"verifySegments\":true,"
+    "\"maxItems\":10,\"maxRings\":10}",
+    &read_len);
+  if (!lifecycle_json || strstr(lifecycle_json, "\"ok\":true") == NULL ||
+      strstr(lifecycle_json, "\"open-replay-lock\"") == NULL)
+    return fail("operational verification failed");
+  kouten_free(lifecycle_json);
+  if (kouten_operational_verify_json(data_dir, "[]", &read_len) != NULL)
+    return fail("operational verification should reject non-object options");
+  if (kouten_operational_verify_json(
+        data_dir, "{\"diskBacked\":\"yes\"}", &read_len) != NULL)
+    return fail("operational verification should reject typed option mismatches");
+
   disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
   if (!disk_db || kouten_exists(disk_db, maintenance_id) != 1)
     return fail("disk-backed C ABI reopen failed");
   kouten_close(disk_db);
-  char cleanup_command[640];
+  char cleanup_command[2048];
   snprintf(cleanup_command, sizeof(cleanup_command),
-           "rm -rf -- '%s' '%s' '%s'", data_dir, checkpoint_root,
-           checkpoint_restore);
+           "rm -rf -- '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s'",
+           data_dir, checkpoint_root, checkpoint_restore, dump_path,
+           backup_dir, encrypted_backup_dir, backup_restore_dir,
+           encrypted_restore_dir);
   if (system(cleanup_command) != 0) return fail("cannot clean C ABI data dir");
 
   void *lifecycle_db = kouten_open(1);

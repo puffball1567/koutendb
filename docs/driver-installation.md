@@ -115,6 +115,14 @@ Nim API and CLI. Creation requires a persistent embedded handle. The remaining
 functions operate on filesystem paths and still require `kouten_init()` before
 use. Returned buffers must be released with `kouten_free`.
 
+Application bindings can also expose the remaining high-level Nim workflows
+without reproducing core logic: named retrieval/search profiles, retrieval
+plans, ring summaries, versioned RAG envelopes, ring-profile writes, JSONL
+dump/import, locality reports, explicit packing/compaction, operational
+verification, and plain or encrypted backup/restore. Most structured results
+use length-delimited JSON so bindings can retain their native public types while
+sharing one core contract.
+
 The current ABI version remains `2`. These functions are additive and do not
 change existing struct layouts or symbols, so drivers that require ABI v2 keep
 working while newer wrappers may bind the additional symbols explicitly.

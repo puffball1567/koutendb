@@ -136,8 +136,9 @@ For application-facing tuning, prefer `SearchProfile` over raw numeric knobs:
 
 The C ABI exposes codec-aware CRUD plus application-facing prepared selections,
 transactions, locks, nearby/time placement, stellar reads, ring profiles,
-apply policies, and guardrails. See the [C ABI Reference](c-abi.md) for exact
-signatures, ownership rules, and JSON contracts, and [Payload
+apply policies, guardrails, named-profile retrieval/planning/envelopes, JSONL migration,
+locality/segment maintenance, operational verification, and backup/restore.
+See the [C ABI Reference](c-abi.md) for exact signatures, ownership rules, and JSON contracts, and [Payload
 Codecs](payload-codecs.md) for codec behavior.
 
 ## Ring Reads
@@ -178,6 +179,7 @@ Codecs](payload-codecs.md) for codec behavior.
 | API | Purpose |
 |---|---|
 | `beginTransaction()` | Start a transaction. |
+| `transactionId(tx)` / `transactionCoordinatorNode(tx)` | Read the cluster landing identity before an accepted commit; embedded transactions return `0` / `-1`. |
 | `tx.put(...)` | Stage a write. |
 | `tx.update(...)` | Stage an update. |
 | `tx.remove(id)` | Stage a delete. |

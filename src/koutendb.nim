@@ -2495,6 +2495,16 @@ proc beginTransaction*(db: KoutenDb): KoutenTx =
              clusterCoordinatorNode: coordinator.node,
              clusterCoordinatorEpoch: coordinator.epoch)
 
+proc transactionId*(tx: KoutenTx): uint64 =
+  ## Return the durable cluster intent identity. Embedded transactions use 0.
+  tx.requireOpen()
+  tx.clusterTxId
+
+proc transactionCoordinatorNode*(tx: KoutenTx): int =
+  ## Return the cluster coordinator selected at begin time. Embedded uses -1.
+  tx.requireOpen()
+  if tx.db.mode == mCluster: tx.clusterCoordinatorNode else: -1
+
 proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
   ## transaction 内の書き込み。commit まで DB 本体には見えない。

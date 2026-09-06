@@ -39,6 +39,28 @@ int main(void) {
     insecure);
   if (!db) return fail("TLS connect through C ABI failed");
 
+  void *tx = kouten_tx_begin(db);
+  if (!tx) return fail("TLS cluster transaction begin failed");
+  uint64_t txid = 0;
+  int coordinator = -1;
+  if (kouten_tx_identity(tx, &txid, &coordinator) != KOUTEN_OK ||
+      txid == 0 || coordinator < 0)
+    return fail("TLS cluster transaction identity failed");
+  kouten_id tx_record;
+  const char *tx_payload = "{\"title\":\"C ABI TLS transaction\"}";
+  if (kouten_tx_put_codec(tx, "secure/cabi", tx_payload, strlen(tx_payload),
+                          KOUTEN_CODEC_JSON, NULL, 0, &tx_record) != KOUTEN_OK)
+    return fail("TLS cluster transaction put failed");
+  if (kouten_tx_commit(tx, KOUTEN_ACK_ACCEPTED) != KOUTEN_OK)
+    return fail("TLS cluster transaction accepted commit failed");
+  if (kouten_wait_cluster_tx_applied(db, txid, coordinator, 10000, 20) != 1)
+    return fail("TLS cluster transaction apply wait failed");
+  size_t tx_len = 0;
+  char *tx_got = kouten_get(db, tx_record, &tx_len);
+  if (!tx_got || strstr(tx_got, "TLS transaction") == NULL)
+    return fail("TLS cluster transaction result differs");
+  kouten_free(tx_got);
+
   kouten_id id;
   const char *payload = "{\"title\":\"C ABI TLS\",\"ok\":true}";
   if (kouten_put_codec(db, "secure/cabi", payload, strlen(payload),

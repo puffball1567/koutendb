@@ -58,6 +58,7 @@ The original CRUD functions remain available. Codec-aware variants preserve
 | Function | Purpose |
 |---|---|
 | `kouten_put_codec` / `kouten_put_vec_codec` | Store bytes with codec metadata and an optional vector. |
+| `kouten_put_profile` | Store bytes using the ring payload profile's default codec. |
 | `kouten_get_codec` | Read bytes and their persisted codec. |
 | `kouten_exists` | Distinguish present, absent, and API failure. |
 | `kouten_update_codec` / `kouten_remove` | Replace or delete an existing record. |
@@ -153,6 +154,11 @@ if (!tx ||
 Successful commit and rollback calls consume the transaction handle. A failed
 commit leaves it valid so the caller can retry or roll it back. Closing the
 owning database rolls back and invalidates outstanding transaction handles.
+Read `kouten_tx_identity()` before an accepted cluster commit to retain its
+durable txid and coordinator.
+`kouten_wait_cluster_tx_applied()` lets a cluster client distinguish an applied
+intent (`1`) from timeout or unknown status (`0`) and an API/transport failure
+(`KOUTEN_ERR`).
 
 ## Cooperative Locks
 
@@ -177,16 +183,61 @@ the owning database releases and invalidates its outstanding locks.
 | `kouten_ring_apply_policy_json` | Inspect one ring's apply policy. |
 | `kouten_guardrails_configure` | Set payload, vector, ring-count, and records-per-ring bounds. |
 | `kouten_guardrails_json` | Inspect active guardrails. |
+| `kouten_retrieval_tuning_configure` | Register a named budget/focus/top-ring/depth tuning profile. |
+| `kouten_retrieval_tuning_json` | Inspect the effective named tuning profile. |
+| `kouten_search_profile_configure` | Register human-facing amount/scope/depth search settings. |
+| `kouten_retrieval_plan_json` | Build an expanded plan using stored tuning. |
+| `kouten_search_plan_json` | Build a plan from amount/scope/depth without a database handle. |
+| `kouten_retrieve_tuned` | Retrieve into the normal C result structure using a named profile. |
 
 Zero guardrail values disable the corresponding bound.
 
-## Retrieval And Operations
+## Retrieval Envelopes And Diagnostics
+
+`kouten_ring_summaries_json()` returns ring centroids, record counts,
+coherence, mass, and optional query similarity. The retrieval-envelope calls
+return the same versioned RAG/MCP contract as the Nim API:
+
+```c
+size_t len = 0;
+float query[] = {1.0f, 0.0f};
+void *envelope = kouten_retrieval_envelope_tuned_json(
+  db, query, 2, "docs/api", "rag-low-token", &len);
+void *validation = kouten_retrieval_envelope_validate_json(envelope, &len);
+kouten_free(validation);
+kouten_free(envelope);
+```
+
+Use `kouten_locality_report_json()` for physical WAL locality metrics. It is an
+embedded-store operation; cluster administration remains a server concern.
+
+## Embedded Data Lifecycle
+
+The following functions expose the same explicit lifecycle operations used by
+the CLI. All result buffers are JSON and must be released with `kouten_free()`.
+
+| Function | Purpose |
+|---|---|
+| `kouten_dump_jsonl` / `kouten_import_jsonl` | Reproducible, readable migration and audit interchange. |
+| `kouten_compact_json` | Rewrite the embedded WAL from live state. |
+| `kouten_pack_all_json` / `kouten_pack_ring_json` | Build all or one ring-local derived segment generation. |
+| `kouten_backup_json` / `kouten_backup_encrypted_json` | Create compact plain or encrypted recovery snapshots. |
+| `kouten_backup_verify_json` / `kouten_backup_encrypted_verify_json` | Strictly verify a snapshot before restore. |
+| `kouten_backup_restore_json` / `kouten_backup_encrypted_restore_json` | Restore with explicit overwrite and durability controls. |
+| `kouten_operational_verify_json` | Replay and inspect a persistent directory with optional capacity/locality bounds. |
+
+`kouten_dump_jsonl()` requires a real path. Unlike the CLI, the library does
+not write a dump to the embedding process's stdout. Import and operational
+verification accept optional JSON objects; the exact supported properties are
+documented beside their declarations in `include/koutendb.h`.
+
+## Other Operations
 
 The C ABI also exposes vector retrieval, Atlas, metrics, bounded segment
 maintenance, immutable generation checkpoints, and orbit-location helpers.
 See `include/koutendb.h` for exact signatures and ownership rules.
 
 Cluster topology administration, Universe delivery orchestration, Warp job
-control, backup transfer policy, and process supervision remain CLI/server
+control, remote backup transfer policy, and process supervision remain CLI/server
 operational surfaces. They are not required for application-driver parity and
 are intentionally not exposed as in-process C handles in this ABI revision.

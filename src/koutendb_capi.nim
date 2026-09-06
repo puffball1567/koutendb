@@ -238,6 +238,11 @@ proc fromC(id: KoutenCId): KoutenId =
 proc optStr(s: cstring): string =
   cstringToString(s, "string")
 
+proc optStrOr(s: cstring, default: string): string =
+  result = optStr(s)
+  if result.len == 0:
+    result = default
+
 proc codecFromC(value: cint): PayloadCodec =
   case value
   of 0: pcRaw
@@ -285,6 +290,208 @@ proc readOptionsFromC(filterJson, selection: cstring, limit: cint,
     pageLimit: int(pageLimit),
     sortField: optStr(sortField),
     sortDirection: if requireCBool(sortDesc, "sort_desc"): rsDesc else: rsAsc)
+
+proc resultAmountFromC(value: cint): ResultAmount =
+  case value
+  of 0: raFew
+  of 1: raNormal
+  of 2: raMany
+  of 3: raAllUseful
+  else: raise newException(ValueError, "amount must be 0, 1, 2, or 3")
+
+proc searchScopeFromC(value: cint): SearchScope =
+  case value
+  of 0: ssTight
+  of 1: ssNear
+  of 2: ssWide
+  of 3: ssAll
+  else: raise newException(ValueError, "scope must be 0, 1, 2, or 3")
+
+proc searchDepthFromC(value: cint): SearchDepth =
+  case value
+  of 0: sdShallow
+  of 1: sdNormal
+  of 2: sdDeep
+  of 3: sdVeryDeep
+  else: raise newException(ValueError, "depth must be 0, 1, 2, or 3")
+
+proc durabilityFromC(value: cint): KoutenDurability =
+  case value
+  of 0: durBuffered
+  of 1: durStrong
+  else: raise newException(ValueError, "durability must be 0 or 1")
+
+proc retrievalTuningJson(tuning: RetrievalTuning): JsonNode =
+  %*{
+    "budget": tuning.budget,
+    "focus": tuning.focus,
+    "topRings": tuning.topRings,
+    "branchBudget": tuning.branchBudget,
+    "maxDepth": tuning.maxDepth,
+    "includeChildren": tuning.includeChildren,
+    "note": tuning.note
+  }
+
+proc compactStatsJson(stats: CompactStats): JsonNode =
+  %*{
+    "beforeBytes": stats.beforeBytes,
+    "afterBytes": stats.afterBytes,
+    "items": stats.items,
+    "tombstones": stats.tombstones,
+    "forwarders": stats.forwarders,
+    "ringMeta": stats.ringMeta,
+    "ringNames": stats.ringNames,
+    "clusterTx": stats.clusterTx,
+    "appliedClusterTx": stats.appliedClusterTx,
+    "warpJobs": stats.warpJobs,
+    "universeSyncEvents": stats.universeSyncEvents
+  }
+
+proc localityReportJson(report: LocalityReport): JsonNode =
+  %*{
+    "persistent": report.persistent,
+    "walBytes": report.walBytes,
+    "totalParticleRecords": report.totalParticleRecords,
+    "liveParticleRecords": report.liveParticleRecords,
+    "deadParticleRecords": report.deadParticleRecords,
+    "ringCount": report.ringCount,
+    "ringRuns": report.ringRuns,
+    "fragmentedRings": report.fragmentedRings,
+    "avgRunRecords": report.avgRunRecords,
+    "maxRunRecords": report.maxRunRecords,
+    "localityScore": report.localityScore
+  }
+
+proc backupStatsJson(stats: BackupStats; encrypted: bool): JsonNode =
+  %*{
+    "encrypted": encrypted,
+    "bytes": stats.bytes,
+    "items": stats.items,
+    "tombstones": stats.tombstones,
+    "forwarders": stats.forwarders,
+    "ringMeta": stats.ringMeta,
+    "ringNames": stats.ringNames,
+    "clusterTx": stats.clusterTx,
+    "appliedClusterTx": stats.appliedClusterTx,
+    "warpJobs": stats.warpJobs,
+    "universeSyncEvents": stats.universeSyncEvents,
+    "source": stats.source,
+    "destination": stats.destination
+  }
+
+proc dumpStatsJson(stats: DumpStats): JsonNode =
+  %*{
+    "bytes": stats.bytes,
+    "records": stats.records,
+    "rings": stats.rings,
+    "documents": stats.documents,
+    "destination": stats.destination
+  }
+
+proc importStatsJson(stats: ImportStats): JsonNode =
+  %*{
+    "read": stats.read,
+    "imported": stats.imported,
+    "skipped": stats.skipped,
+    "errors": stats.errors,
+    "rings": stats.rings,
+    "batches": stats.batches,
+    "batchSize": stats.batchSize,
+    "source": stats.source,
+    "defaultRing": stats.defaultRing
+  }
+
+proc packStatsJson[T](stats: T): JsonNode =
+  %*{
+    "records": stats.records,
+    "rings": stats.rings,
+    "bytes": stats.bytes,
+    "indexBytes": stats.indexBytes,
+    "removedFiles": stats.removedFiles
+  }
+
+proc operationalReportJson(report: KoutenOperationalVerifyReport): JsonNode =
+  var checks = newJArray()
+  for check in report.checks:
+    checks.add %*{
+      "name": check.name,
+      "ok": check.ok,
+      "message": check.message
+    }
+  %*{
+    "ok": report.ok,
+    "dataDir": report.dataDir,
+    "persistent": report.persistent,
+    "diskBacked": report.diskBacked,
+    "wal": {
+      "path": report.walPath,
+      "exists": report.walExists,
+      "bytes": report.walBytes
+    },
+    "store": {
+      "items": report.items,
+      "rings": report.rings,
+      "ringNames": report.ringNames,
+      "vectors": report.vectors,
+      "galaxy": report.galaxy
+    },
+    "segments": {
+      "path": report.segmentDir,
+      "exists": report.segmentDirExists,
+      "files": report.segmentFiles,
+      "rebuiltRecords": report.segmentPackRecords,
+      "status": segmentStatusJson(report.segmentStatus)
+    },
+    "locality": localityReportJson(report.locality),
+    "checks": checks
+  }
+
+proc jsonOptions(value: cstring, name: string): JsonNode =
+  let raw = optStr(value)
+  if raw.len == 0:
+    return newJObject()
+  result = parseJson(raw)
+  if result.kind != JObject:
+    raise newException(ValueError, name & " must be a JSON object")
+
+proc jsonStringOption(node: JsonNode, key, default: string): string =
+  if not node.hasKey(key):
+    return default
+  if node[key].kind != JString:
+    raise newException(ValueError, key & " must be a string")
+  node[key].getStr()
+
+proc jsonIntOption(node: JsonNode, key: string, default: int): int =
+  if not node.hasKey(key):
+    return default
+  if node[key].kind != JInt:
+    raise newException(ValueError, key & " must be an integer")
+  let value = node[key].getBiggestInt()
+  if value < BiggestInt(low(int)) or value > BiggestInt(high(int)):
+    raise newException(ValueError, key & " exceeds platform integer range")
+  int(value)
+
+proc jsonInt64Option(node: JsonNode, key: string, default: int64): int64 =
+  if not node.hasKey(key):
+    return default
+  if node[key].kind != JInt:
+    raise newException(ValueError, key & " must be an integer")
+  int64(node[key].getBiggestInt())
+
+proc jsonFloatOption(node: JsonNode, key: string, default: float): float =
+  if not node.hasKey(key):
+    return default
+  case node[key].kind
+  of JInt: float(node[key].getInt())
+  of JFloat: node[key].getFloat()
+  else: raise newException(ValueError, key & " must be numeric")
+
+proc jsonBoolOption(node: JsonNode, key: string, default: bool): bool =
+  if not node.hasKey(key):
+    return default
+  if node[key].kind != JBool:
+    raise newException(ValueError, key & " must be a boolean")
+  node[key].getBool()
 
 proc bytesFromC(data: pointer, len: csize_t): string =
   if len > 0 and data == nil:
@@ -728,6 +935,85 @@ proc kouten_guardrails_json(h: pointer, outLen: ptr csize_t): pointer
     setError(e)
     nil
 
+proc kouten_retrieval_tuning_configure(
+    h: pointer, profile: cstring, budget, focus, topRings,
+    branchBudget, maxDepth, includeChildren: cint,
+    note: cstring): cint {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureRetrievalTuning(
+      cstringToString(profile, "profile", allowNil = false),
+      RetrievalTuning(
+        budget: int(budget), focus: int(focus), topRings: int(topRings),
+        branchBudget: int(branchBudget), maxDepth: int(maxDepth),
+        includeChildren: requireCBool(includeChildren, "include_children"),
+        note: optStr(note)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_retrieval_tuning_json(h: pointer, profile: cstring,
+                                  outLen: ptr csize_t): pointer
+                                  {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let tuning = ensureHandle(h).retrievalTuning(optStrOr(profile, "default"))
+    copyJsonToShared(retrievalTuningJson(tuning), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_search_profile_configure(h: pointer, name: cstring,
+                                     amount, scope, depth: cint,
+                                     note: cstring): cint
+                                     {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    ensureHandle(h).configureSearchProfile(
+      cstringToString(name, "name", allowNil = false),
+      SearchProfile(amount: resultAmountFromC(amount),
+                    scope: searchScopeFromC(scope),
+                    depth: searchDepthFromC(depth),
+                    note: optStr(note)))
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_retrieval_plan_json(
+    h: pointer, ring, profile: cstring, budget, topRings, focus,
+    includeChildren, maxDepth, branchBudget: cint,
+    outLen: ptr csize_t): pointer {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let plan = ensureHandle(h).tunedRetrievalPlan(
+      ring = optStr(ring), profile = optStrOr(profile, "default"),
+      budget = int(budget), topRings = int(topRings), focus = int(focus),
+      includeChildren = requireCBool(includeChildren, "include_children"),
+      maxDepth = int(maxDepth), branchBudget = int(branchBudget))
+    copyJsonToShared(planJson(plan), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_search_plan_json(ring: cstring, amount, scope, depth: cint,
+                             profile: cstring,
+                             outLen: ptr csize_t): pointer
+                             {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let plan = searchPlan(ring = optStr(ring),
+                          amount = resultAmountFromC(amount),
+                          scope = searchScopeFromC(scope),
+                          depth = searchDepthFromC(depth),
+                          profile = optStr(profile))
+    copyJsonToShared(planJson(plan), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
 proc kouten_put(h: pointer, ring: cstring, data: pointer, len: csize_t,
                outId: ptr KoutenCId): cint {.exportc, cdecl, dynlib.} =
   try:
@@ -736,6 +1022,23 @@ proc kouten_put(h: pointer, ring: cstring, data: pointer, len: csize_t,
       raise newException(ValueError, "out_id is nil")
     let payload = bytesFromC(data, len)
     outId[] = ensureHandle(h).put(payload, cstringToString(ring, "ring", allowNil = false)).toC
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
+
+proc kouten_put_profile(h: pointer, ring: cstring, data: pointer,
+                        len: csize_t, vec: ptr cfloat, vecLen: csize_t,
+                        outId: ptr KoutenCId): cint
+                        {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outId == nil:
+      raise newException(ValueError, "out_id is nil")
+    outId[] = ensureHandle(h).putUsingRingProfile(
+      bytesFromC(data, len),
+      cstringToString(ring, "ring", allowNil = false),
+      vecFromC(vec, vecLen)).toC
     KoutenOk
   except CatchableError as e:
     setError(e)
@@ -961,6 +1264,22 @@ proc kouten_tx_begin(h: pointer): pointer {.exportc, cdecl, dynlib.} =
   except CatchableError as e:
     setError(e)
     nil
+
+proc kouten_tx_identity(txHandle: pointer, outTxid: ptr uint64,
+                        outCoordinatorNode: ptr cint): cint
+                        {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if outTxid == nil or outCoordinatorNode == nil:
+      raise newException(ValueError,
+        "out_txid and out_coordinator_node are required")
+    let tx = ensureTxHandle(txHandle).tx
+    outTxid[] = tx.transactionId()
+    outCoordinatorNode[] = cint(tx.transactionCoordinatorNode())
+    KoutenOk
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
 
 proc kouten_tx_put_codec(txHandle: pointer, ring: cstring,
                          data: pointer, len: csize_t, codec: cint,
@@ -1475,6 +1794,32 @@ proc vecFromC(vec: ptr cfloat, vecLen: csize_t): seq[float32] =
   for i in 0 ..< nVec:
     result[i] = float32(rawVec[i])
 
+proc retrieveResultToC(hits: seq[KoutenHit], stats: RetrieveStats):
+                       ptr KoutenCRetrieveResult =
+  result = cast[ptr KoutenCRetrieveResult](
+    allocShared0(sizeof(KoutenCRetrieveResult)))
+  result.len = csize_t(hits.len)
+  result.total_vectors = cint(stats.totalVectors)
+  result.scanned = cint(stats.scanned)
+  result.skipped_vectors = cint(stats.skippedVectors)
+  result.returned = cint(stats.returned)
+  result.rings_touched = cint(stats.ringsTouched)
+  result.payload_bytes = cint(stats.payloadBytes)
+  result.estimated_tokens = cint(stats.estimatedTokens)
+  result.fanout_nodes = cint(stats.fanoutNodes)
+  result.candidate_reduction = cdouble(stats.candidateReduction)
+  if hits.len > 0:
+    let hitBytes = allocBytesFor(hits.len, sizeof(KoutenCHit), "retrieve hits")
+    result.hits = cast[ptr KoutenCHit](allocShared0(hitBytes))
+    let rawHits = cast[ptr UncheckedArray[KoutenCHit]](result.hits)
+    for i, hit in hits:
+      rawHits[i].id = hit.id.toC
+      rawHits[i].score = cdouble(hit.score)
+      rawHits[i].payload_len = csize_t(hit.payload.len)
+      rawHits[i].payload = allocShared0(hit.payload.len + 1)
+      if hit.payload.len > 0:
+        copyMem(rawHits[i].payload, unsafeAddr hit.payload[0], hit.payload.len)
+
 proc kouten_retrieve(h: pointer, vec: ptr cfloat, vecLen: csize_t, ring: cstring,
                     budget, topRings, focus: cint): ptr KoutenCRetrieveResult
                     {.exportc, cdecl, dynlib.} =
@@ -1486,28 +1831,20 @@ proc kouten_retrieve(h: pointer, vec: ptr cfloat, vecLen: csize_t, ring: cstring
                                   budget = int(budget),
                                   topRings = int(topRings),
                                   focus = int(focus))
-    result = cast[ptr KoutenCRetrieveResult](allocShared0(sizeof(KoutenCRetrieveResult)))
-    result.len = csize_t(rr.hits.len)
-    result.total_vectors = cint(rr.stats.totalVectors)
-    result.scanned = cint(rr.stats.scanned)
-    result.skipped_vectors = cint(rr.stats.skippedVectors)
-    result.returned = cint(rr.stats.returned)
-    result.rings_touched = cint(rr.stats.ringsTouched)
-    result.payload_bytes = cint(rr.stats.payloadBytes)
-    result.estimated_tokens = cint(rr.stats.estimatedTokens)
-    result.fanout_nodes = cint(rr.stats.fanoutNodes)
-    result.candidate_reduction = cdouble(rr.stats.candidateReduction)
-    if rr.hits.len > 0:
-      let hitBytes = allocBytesFor(rr.hits.len, sizeof(KoutenCHit), "retrieve hits")
-      result.hits = cast[ptr KoutenCHit](allocShared0(hitBytes))
-      let rawHits = cast[ptr UncheckedArray[KoutenCHit]](result.hits)
-      for i, hit in rr.hits:
-        rawHits[i].id = hit.id.toC
-        rawHits[i].score = cdouble(hit.score)
-        rawHits[i].payload_len = csize_t(hit.payload.len)
-        rawHits[i].payload = allocShared0(hit.payload.len + 1)
-        if hit.payload.len > 0:
-          copyMem(rawHits[i].payload, unsafeAddr hit.payload[0], hit.payload.len)
+    result = retrieveResultToC(rr.hits, rr.stats)
+  except CatchableError as e:
+    setError(e)
+    return nil
+
+proc kouten_retrieve_tuned(h: pointer, vec: ptr cfloat, vecLen: csize_t,
+                           ring, profile: cstring): ptr KoutenCRetrieveResult
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let rr = ensureHandle(h).retrieveTunedWithStats(
+      vecFromC(vec, vecLen), ring = optStr(ring),
+      profile = cstringToString(profile, "profile", allowNil = false))
+    result = retrieveResultToC(rr.hits, rr.stats)
   except CatchableError as e:
     setError(e)
     return nil
@@ -1522,6 +1859,83 @@ proc kouten_retrieve_free(r: ptr KoutenCRetrieveResult) {.exportc, cdecl, dynlib
         deallocShared(rawHits[i].payload)
     deallocShared(r.hits)
   deallocShared(r)
+
+proc kouten_ring_summaries_json(h: pointer, queryVec: ptr cfloat,
+                                queryVecLen: csize_t,
+                                outLen: ptr csize_t): pointer
+                                {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    var output = newJArray()
+    for summary in ensureHandle(h).ringSummaries(
+        vecFromC(queryVec, queryVecLen)):
+      output.add %*{
+        "ringKey": $summary.ringKey,
+        "count": summary.count,
+        "centroid": summary.centroid,
+        "score": summary.score,
+        "coherence": summary.coherence,
+        "massG": summary.massG
+      }
+    copyJsonToShared(output, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_retrieval_envelope_json(
+    h: pointer, queryVec: ptr cfloat, queryVecLen: csize_t,
+    ring: cstring, budget, topRings, focus: cint,
+    outLen: ptr csize_t): pointer {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let envelope = ensureHandle(h).retrievalEnvelope(
+      vecFromC(queryVec, queryVecLen), ring = optStr(ring),
+      budget = int(budget), topRings = int(topRings), focus = int(focus))
+    copyJsonToShared(envelope, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_retrieval_envelope_tuned_json(
+    h: pointer, queryVec: ptr cfloat, queryVecLen: csize_t,
+    ring, profile: cstring, outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let envelope = ensureHandle(h).retrievalEnvelopeTuned(
+      vecFromC(queryVec, queryVecLen), ring = optStr(ring),
+      profile = optStrOr(profile, "default"))
+    copyJsonToShared(envelope, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_retrieval_envelope_validate_json(
+    envelopeJson: cstring, outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let envelope = parseJson(cstringToString(
+      envelopeJson, "envelope_json", allowNil = false))
+    let errors = retrievalEnvelopeValidationErrors(envelope)
+    copyJsonToShared(%*{
+      "valid": errors.len == 0,
+      "errors": errors
+    }, outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_locality_report_json(h: pointer,
+                                 outLen: ptr csize_t): pointer
+                                 {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    copyJsonToShared(localityReportJson(ensureHandle(h).localityReport()), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
 
 proc kouten_atlas(h: pointer, queryVec: ptr cfloat, queryVecLen: csize_t,
                  maxCentroidDims: cint, outLen: ptr csize_t): pointer
@@ -1539,6 +1953,209 @@ proc kouten_atlas(h: pointer, queryVec: ptr cfloat, queryVecLen: csize_t,
   except CatchableError as e:
     setError(e)
     return nil
+
+proc kouten_compact_json(h: pointer, outLen: ptr csize_t): pointer
+                         {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    copyJsonToShared(compactStatsJson(ensureHandle(h).compact()), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_dump_jsonl(h: pointer, path: cstring, includeVectors: cint,
+                       outLen: ptr csize_t): pointer
+                       {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let destination = cstringToString(path, "path", allowNil = false)
+    if destination.len == 0 or destination == "-":
+      raise newException(ValueError,
+        "C ABI dump requires a file path and cannot write to process stdout")
+    let stats = ensureHandle(h).dump(
+      destination, requireCBool(includeVectors, "include_vectors"))
+    copyJsonToShared(dumpStatsJson(stats), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_import_jsonl(h: pointer, path: cstring, optionsJson: cstring,
+                         outLen: ptr csize_t): pointer
+                         {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let options = jsonOptions(optionsJson, "import options")
+    let stats = ensureHandle(h).importJsonl(
+      cstringToString(path, "path", allowNil = false),
+      defaultRing = jsonStringOption(options, "defaultRing", "imported"),
+      ringField = jsonStringOption(options, "ringField", ""),
+      ringPrefix = jsonStringOption(options, "ringPrefix", ""),
+      payloadField = jsonStringOption(options, "payloadField", ""),
+      vecField = jsonStringOption(options, "vecField", ""),
+      maxRecords = jsonIntOption(options, "maxRecords", 0),
+      batchSize = jsonIntOption(options, "batchSize", 1000),
+      packSegments = jsonBoolOption(options, "packSegments", false))
+    copyJsonToShared(importStatsJson(stats), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_pack_all_json(h: pointer, outLen: ptr csize_t): pointer
+                          {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    copyJsonToShared(packStatsJson(
+      ensureHandle(h).packDiskBackedSegments()), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_pack_ring_json(h: pointer, ring: cstring,
+                           outLen: ptr csize_t): pointer
+                           {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let stats = ensureHandle(h).packDiskBackedRing(
+      cstringToString(ring, "ring", allowNil = false))
+    copyJsonToShared(packStatsJson(stats), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_backup_json(h: pointer, destination: cstring,
+                        outLen: ptr csize_t): pointer
+                        {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let stats = ensureHandle(h).backup(cstringToString(
+      destination, "destination", allowNil = false))
+    copyJsonToShared(backupStatsJson(stats, encrypted = false), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_backup_encrypted_json(h: pointer, destination,
+                                  passphrase: cstring,
+                                  outLen: ptr csize_t): pointer
+                                  {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    let stats = ensureHandle(h).backupEncrypted(
+      cstringToString(destination, "destination", allowNil = false),
+      cstringToString(passphrase, "passphrase", allowNil = false))
+    copyJsonToShared(backupStatsJson(stats, encrypted = true), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_backup_verify_json(backupDir: cstring,
+                               outLen: ptr csize_t): pointer
+                               {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let stats = verifyBackup(cstringToString(
+      backupDir, "backup_dir", allowNil = false))
+    copyJsonToShared(backupStatsJson(stats, encrypted = false), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_backup_encrypted_verify_json(
+    backupDir, passphrase: cstring, outLen: ptr csize_t): pointer
+    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let stats = verifyEncryptedBackup(
+      cstringToString(backupDir, "backup_dir", allowNil = false),
+      cstringToString(passphrase, "passphrase", allowNil = false))
+    copyJsonToShared(backupStatsJson(stats, encrypted = true), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_backup_restore_json(backupDir, dataDir: cstring,
+                                overwrite, durability: cint,
+                                outLen: ptr csize_t): pointer
+                                {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let stats = restoreBackup(
+      cstringToString(backupDir, "backup_dir", allowNil = false),
+      cstringToString(dataDir, "data_dir", allowNil = false),
+      overwrite = requireCBool(overwrite, "overwrite"),
+      durability = durabilityFromC(durability))
+    copyJsonToShared(backupStatsJson(stats, encrypted = false), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_backup_encrypted_restore_json(
+    backupDir, dataDir, passphrase: cstring, overwrite, durability: cint,
+    outLen: ptr csize_t): pointer {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let stats = restoreEncryptedBackup(
+      cstringToString(backupDir, "backup_dir", allowNil = false),
+      cstringToString(dataDir, "data_dir", allowNil = false),
+      cstringToString(passphrase, "passphrase", allowNil = false),
+      overwrite = requireCBool(overwrite, "overwrite"),
+      durability = durabilityFromC(durability))
+    copyJsonToShared(backupStatsJson(stats, encrypted = true), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_operational_verify_json(dataDir, optionsJson: cstring,
+                                    outLen: ptr csize_t): pointer
+                                    {.exportc, cdecl, dynlib.} =
+  try:
+    initRuntime()
+    clearError()
+    let options = jsonOptions(optionsJson, "verify options")
+    let report = operationalVerify(
+      cstringToString(dataDir, "data_dir", allowNil = false),
+      diskBacked = jsonBoolOption(options, "diskBacked", true),
+      verifySegments = jsonBoolOption(options, "verifySegments", false),
+      maxWalBytes = jsonInt64Option(options, "maxWalBytes", -1),
+      maxSegmentFiles = jsonIntOption(options, "maxSegmentFiles", -1),
+      maxItems = jsonIntOption(options, "maxItems", -1),
+      maxRings = jsonIntOption(options, "maxRings", -1),
+      maxSegmentBytes = jsonInt64Option(options, "maxSegmentBytes", -1),
+      maxDeadRecords = jsonIntOption(options, "maxDeadRecords", -1),
+      maxDeadRatio = jsonFloatOption(options, "maxDeadRatio", -1.0),
+      maxSegmentGeneration = jsonInt64Option(
+        options, "maxSegmentGeneration", -1),
+      staleRatioThreshold = jsonFloatOption(
+        options, "staleRatioThreshold", 0.25),
+      minStaleRecords = jsonIntOption(options, "minStaleRecords", 256))
+    copyJsonToShared(operationalReportJson(report), outLen)
+  except CatchableError as e:
+    setError(e)
+    nil
+
+proc kouten_wait_cluster_tx_applied(h: pointer, txid: uint64,
+                                    coordinatorNode, timeoutMs,
+                                    pollMs: cint): cint
+                                    {.exportc, cdecl, dynlib.} =
+  try:
+    clearError()
+    if timeoutMs < 0:
+      raise newException(ValueError, "timeout_ms must be non-negative")
+    if pollMs <= 0:
+      raise newException(ValueError, "poll_ms must be positive")
+    if ensureHandle(h).waitClusterTxApplied(
+        txid, coordinatorNode = int(coordinatorNode),
+        timeoutMs = int(timeoutMs), pollMs = int(pollMs)):
+      cint(1)
+    else:
+      cint(0)
+  except CatchableError as e:
+    setError(e)
+    KoutenErr
 
 proc maintenancePolicyFromC(staleRatio: cdouble, minStaleRecords,
                             maxRings: cint, maxBytes,
