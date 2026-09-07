@@ -28,6 +28,7 @@ log "C ABI contract"
 mkdir -p bin
 gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o bin/cabi_contract
 LD_LIBRARY_PATH=lib bin/cabi_contract
+bash scripts/cabi_boundary_contract.sh
 
 if [[ "${KOUTEN_COMPAT_TLS:-1}" == "1" ]]; then
   log "C ABI TLS contract"

@@ -2495,6 +2495,16 @@ proc beginTransaction*(db: KoutenDb): KoutenTx =
              clusterCoordinatorNode: coordinator.node,
              clusterCoordinatorEpoch: coordinator.epoch)
 
+proc transactionId*(tx: KoutenTx): uint64 =
+  ## Return the durable cluster intent identity. Embedded transactions use 0.
+  tx.requireOpen()
+  tx.clusterTxId
+
+proc transactionCoordinatorNode*(tx: KoutenTx): int =
+  ## Return the cluster coordinator selected at begin time. Embedded uses -1.
+  tx.requireOpen()
+  if tx.db.mode == mCluster: tx.clusterCoordinatorNode else: -1
+
 proc put*(tx: KoutenTx, encoded: EncodedPayload, ring: string = "default",
           vec: seq[float32] = @[]): KoutenId =
   ## transaction 内の書き込み。commit まで DB 本体には見えない。
@@ -3113,16 +3123,25 @@ proc withFilter*(options: KoutenStellarOptions;
   result = options
   result.filter = builder.toJson()
 
+proc validateReadFilter(filter: JsonNode) =
+  if filter.kind != JObject:
+    raise newException(ValueError, "filter must be a JSON object")
+  if filter.hasKey("id") and filter["id"].kind != JString:
+    raise newException(ValueError, "filter id must be a string")
+
 proc normalizedReadOptions(options: KoutenReadOptions): KoutenReadOptions =
   result = options
   if result.filter.isNil:
     result.filter = newJObject()
+  validateReadFilter(result.filter)
   if result.limit <= 0:
     result.limit = 100
   if result.page <= 0:
     result.page = 1
   if result.pageLimit <= 0:
     result.pageLimit = result.limit
+  if result.pagination == rpOn and result.page > high(int) div result.pageLimit:
+    raise newException(ValueError, "pagination offset exceeds platform integer range")
   if result.sortField.len == 0:
     result.sortField = "time"
   if result.sortField == "write":
@@ -3131,22 +3150,24 @@ proc normalizedReadOptions(options: KoutenReadOptions): KoutenReadOptions =
     raise newException(ValueError, "sort field must be id, time, or write")
 
 proc recordMatchesReadFilter(item: KoutenRecord, filterNode: JsonNode): bool =
-  if filterNode.isNil or filterNode.kind != JObject or filterNode.len == 0:
+  if filterNode.isNil or filterNode.len == 0:
     return true
-  let cliId = $item.id.parent & ":" & $item.id.epoch & ":" & $item.id.seq & ":" & $item.id.tWrite
-  if filterNode.hasKey("id") and
-      filterNode["id"].getStr() notin [$item.id, cliId]:
-    return false
+  if filterNode.hasKey("id"):
+    let cliId = $item.id.parent & ":" & $item.id.epoch & ":" & $item.id.seq & ":" & $item.id.tWrite
+    if filterNode["id"].getStr() notin [$item.id, cliId]:
+      return false
+  var doc: JsonNode
   for key, expected in filterNode:
     if key == "id":
       continue
     if not item.codec.supportsJsonProjection:
       return false
-    try:
-      let doc = parseJson(item.payload)
-      if doc.kind != JObject or not doc.hasKey(key) or doc[key] != expected:
+    if doc.isNil:
+      try:
+        doc = parseJson(item.payload)
+      except JsonParsingError:
         return false
-    except JsonParsingError:
+    if doc.kind != JObject or not doc.hasKey(key) or doc[key] != expected:
       return false
   true
 
@@ -3181,7 +3202,8 @@ proc canUseRingWindowFastPath(db: KoutenDb, ring: string,
 
 proc readRingPrepared(db: KoutenDb, ring: string, opts: KoutenReadOptions;
                       preparedSelection: PreparedSelection;
-                      hasSelection: bool): KoutenReadPage =
+                      hasSelection: bool;
+                      acceptRecord: proc(item: KoutenRecord): bool {.closure.} = nil): KoutenReadPage =
   let requested =
     if opts.pagination == rpOn: opts.page * opts.pageLimit
     else: opts.limit
@@ -3202,7 +3224,7 @@ proc readRingPrepared(db: KoutenDb, ring: string, opts: KoutenReadOptions;
   if requested <= 0:
     return
 
-  if db.canUseRingWindowFastPath(ring, opts):
+  if acceptRecord.isNil and db.canUseRingWindowFastPath(ring, opts):
     let key = db.ringNames[ring]
     let reverse = opts.sortDirection == rsDesc
     var matched: seq[KoutenRecord] = @[]
@@ -3236,12 +3258,17 @@ proc readRingPrepared(db: KoutenDb, ring: string, opts: KoutenReadOptions;
   let pageSize = max(requested, 100)
   while matched.len < requested:
     let page = db.listByRing(ring, limit = pageSize, cursor = nextCursor)
-    for item in page.items:
-      if recordMatchesReadFilter(item, opts.filter):
+    nextCursor = page.nextCursor
+    for index, item in page.items:
+      if (acceptRecord.isNil or acceptRecord(item)) and
+          recordMatchesReadFilter(item, opts.filter):
         matched.add item
         if matched.len >= requested:
+          # The fetch page may contain unread records after the last match.
+          # Resume from the consumed row, not the end of the fetched page.
+          if index + 1 < page.items.len or page.nextCursor.len > 0:
+            nextCursor = $item.id.seq
           break
-    nextCursor = page.nextCursor
     if nextCursor.len == 0 or page.items.len == 0:
       break
 
@@ -3318,24 +3345,28 @@ proc readTime*(db: KoutenDb, ring: string, fromMs, toMs: int64,
   result.toMs = toMs
   result.bucketsVisited = bucketCount
 
-  var readOpts = options
-  if readOpts.limit <= 0:
-    readOpts.limit = 100
-  let perBucketLimit = readOpts.limit
+  let readOpts = normalizedReadOptions(options)
+  let hasSelection = readOpts.selection.len > 0
+  let preparedSelection =
+    if hasSelection: prepareSelection(readOpts.selection)
+    else: PreparedSelection()
+  let inRange = proc(item: KoutenRecord): bool =
+    let eventTime = eventTimeMsOf(item)
+    not eventTime.ok or (eventTime.value >= fromMs and eventTime.value <= toMs)
   for bucket in fromBucket .. toBucket:
     let timestampMs = int64(bucket) * profile.bucketMs
     let bucketRing = timeOrbitRing(ring, profile, timestampMs)
     result.rings.add bucketRing
-    readOpts.limit = perBucketLimit
-    let page = db.readRing(bucketRing, readOpts)
-    for item in page.items:
-      let eventTime = eventTimeMsOf(item)
-      if eventTime.ok and (eventTime.value < fromMs or eventTime.value > toMs):
-        continue
-      result.items.add item
+    # Preserve event time until range filtering and final ordering are complete.
+    let page = db.readRingPrepared(bucketRing, readOpts, PreparedSelection(),
+                                   false, inRange)
+    result.items.add page.items
   result.items.sort(compareTimeRecords)
   if options.limit > 0 and result.items.len > options.limit:
     result.items.setLen(options.limit)
+  if hasSelection:
+    for item in result.items.mitems:
+      item = projectReadRecord(item, preparedSelection, true)
   result.count = result.items.len
 
 proc anchorRingName(db: KoutenDb, anchor: KoutenId): string =
@@ -3440,6 +3471,7 @@ proc normalizedStellarOptions(options: KoutenStellarOptions): KoutenStellarOptio
   result = options
   if result.filter.isNil:
     result.filter = newJObject()
+  validateReadFilter(result.filter)
   if result.limitPerRing <= 0:
     result.limitPerRing = 20
   var normalizedLimits = initTable[string, int]()

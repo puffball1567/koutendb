@@ -2099,6 +2099,18 @@ suite "永続化":
     removeDir(dir)
 
 suite "transaction":
+  test "embedded transaction identity is explicit and expires with the handle":
+    var db = open()
+    let tx = db.beginTransaction()
+    check tx.transactionId() == 0'u64
+    check tx.transactionCoordinatorNode() == -1
+    tx.rollback()
+    expect KoutenValidationError:
+      discard tx.transactionId()
+    expect KoutenValidationError:
+      discard tx.transactionCoordinatorNode()
+    db.close()
+
   test "public state validation never relies on process-ending assertions":
     var db = open()
     let tx = db.beginTransaction()

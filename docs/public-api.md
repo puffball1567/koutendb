@@ -134,10 +134,12 @@ For application-facing tuning, prefer `SearchProfile` over raw numeric knobs:
 | `batchUpdateAtomic(ids, payloads/docs, vecs)` | Embedded all-or-nothing bulk replace. Every ID must exist before commit. |
 | `batchDeleteAtomic(ids)` | Embedded all-or-nothing bulk delete. |
 
-The C ABI exposes additive codec-aware functions (`kouten_put_codec`,
-`kouten_put_vec_codec`, `kouten_get_codec`, and `kouten_update_codec`) plus
-`kouten_exists`, `kouten_update`, and `kouten_remove`. See
-[Payload Codecs](payload-codecs.md).
+The C ABI exposes codec-aware CRUD plus application-facing prepared selections,
+transactions, locks, nearby/time placement, stellar reads, ring profiles,
+apply policies, guardrails, named-profile retrieval/planning/envelopes, JSONL migration,
+locality/segment maintenance, operational verification, and backup/restore.
+See the [C ABI Reference](c-abi.md) for exact signatures, ownership rules, and JSON contracts, and [Payload
+Codecs](payload-codecs.md) for codec behavior.
 
 ## Ring Reads
 
@@ -177,6 +179,7 @@ The C ABI exposes additive codec-aware functions (`kouten_put_codec`,
 | API | Purpose |
 |---|---|
 | `beginTransaction()` | Start a transaction. |
+| `transactionId(tx)` / `transactionCoordinatorNode(tx)` | Read the cluster landing identity before an accepted commit; embedded transactions return `0` / `-1`. |
 | `tx.put(...)` | Stage a write. |
 | `tx.update(...)` | Stage an update. |
 | `tx.remove(id)` | Stage a delete. |
@@ -268,6 +271,10 @@ Create and segment-maintenance calls require an embedded persistent handle.
 Segment maintenance additionally requires `disk_backed=1`; checkpoint
 status/list/cleanup/restore operate on filesystem paths. JSON buffers are owned
 by the caller and must be released with `kouten_free`.
+
+The wider application-facing surface, including transactions, coordinate
+locks, stellar reads, time-orbit reads, and prepared selections, is documented
+in the [C ABI Reference](c-abi.md).
 
 ## Universe Sync And Warp
 

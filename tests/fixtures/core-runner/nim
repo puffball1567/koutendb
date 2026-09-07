@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KOUTEN_RUNNER_LOG"
+file="${!#}"
+name="${file##*/}"
+marker="$KOUTEN_RUNNER_STATE/$name"
+touch "$marker"
+trap 'rm -f -- "$marker"' EXIT
+sleep 0.1
+active=("$KOUTEN_RUNNER_STATE"/*.nim)
+if [[ ${#active[@]} -gt 1 ]]; then touch "$KOUTEN_RUNNER_OVERLAP"; fi
+sleep 0.1
+if [[ "$name" == "${KOUTEN_RUNNER_FAIL:-}" ]]; then
+  echo "injected compiler failure: $name" >&2
+  exit 7
+fi

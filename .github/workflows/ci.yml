@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libssl-dev libsodium-dev openssl
+        run: sudo apt-get update && sudo apt-get install -y gcc clang libssl-dev libsodium-dev openssl
 
       - name: Set up Nim
         uses: jiro4989/setup-nim-action@v2
@@ -90,11 +90,16 @@ jobs:
       - name: C ABI contract
         run: |
           KOUTENDB_CAPI_NIMCACHE=/tmp/nimcache_kouten_capi_ci scripts/build_capi.sh
-          gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o /tmp/kouten_cabi_contract
+          scripts/cabi_symbol_contract.sh
+          gcc -std=c11 -Wall -Wextra -Werror examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o /tmp/kouten_cabi_contract
           LD_LIBRARY_PATH=lib /tmp/kouten_cabi_contract
+          bash scripts/cabi_boundary_contract.sh
 
       - name: C ABI TLS contract
         run: scripts/cabi_tls_smoke.sh
+
+      - name: C ABI ASan UBSan and leak contract
+        run: bash scripts/cabi_sanitizer_contract.sh
 
   capi-macos-build:
     name: C ABI TLS-enabled build on macOS
@@ -120,6 +125,13 @@ jobs:
       - name: Build TLS-enabled C ABI library
         run: KOUTENDB_CAPI_NIMCACHE=/tmp/nimcache_kouten_capi_macos scripts/build_capi.sh
 
+      - name: C ABI contract
+        run: |
+          scripts/cabi_symbol_contract.sh
+          clang -std=c11 -Wall -Wextra -Werror examples/cabi_contract.c -Iinclude -Llib -lkoutendb -o /tmp/kouten_cabi_contract
+          DYLD_LIBRARY_PATH=lib /tmp/kouten_cabi_contract
+          CC=clang bash scripts/cabi_boundary_contract.sh
+
   core-tests:
     name: Core test suite
     needs: classify_flow
@@ -142,7 +154,9 @@ jobs:
         run: nimble install -y --depsOnly
 
       - name: Run core tests
-        run: scripts/test_core.sh
+        run: |
+          bash scripts/test_core_runner.sh
+          scripts/test_core.sh
 
   smoke-tests:
     name: CLI, cluster, recovery, and universe smoke

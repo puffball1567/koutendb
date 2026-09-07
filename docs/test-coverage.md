@@ -4,6 +4,21 @@ This document tracks KoutenDB's test coverage by product surface. It is not a
 claim of exhaustive production certification; it is the current engineering
 matrix used before releases.
 
+The [read and C ABI boundary review](read-cabi-boundary-review.md) records
+reproduced failures, fixes, and exact-state regression matrices. The new checks
+cover filtered cursor continuity, time filtering before projection/limit,
+invalid input without side effects, and shared-library initialization leaks.
+
+The core runner defaults to two parallel test processes. Each invocation uses
+isolated compiler caches, binaries, and per-test logs under a temporary
+directory. Use `KOUTEN_TEST_JOBS=1 scripts/test_core.sh` for serial execution or
+set `KOUTEN_TEST_JOBS` to an integer from 1 to 16. Failed child processes fail
+the suite; logs are printed together per test. Server integration scripts
+that share ports or output binaries must still run serially within one checkout.
+`scripts/test_core_runner.sh` verifies serial/parallel execution, injected
+child failure propagation, and invalid concurrency rejection with a fake compiler;
+it supplements, rather than replaces, the real Nim test suite.
+
 ## Coverage Matrix
 
 | Area | Primary checks | Current status |
@@ -16,7 +31,7 @@ matrix used before releases.
 | CLI embedded usage | `scripts/cli_crud_smoke.sh` | Smoke-covered: help, put/get/query/list/count, readRing options, `--near` placement, `--stellar`, stellar attach/detach, `--subring` neighborhood narrowing, codec display, ring profile auto codec, time-orbit put/get, dump/import JSONL round-trip, segment JSON/metrics output, maintenance plan/run/status and invalid budgets, operational capacity failures, data/backup/server-config verify, shell, auth error text |
 | Bounded automatic packing | `tests/tmaintenance_window.nim`, `scripts/auto_pack_server_smoke.sh` | Unit/integration-covered: UTC same-day and midnight-crossing windows, invalid window rejection, opt-in server scheduling, actual stale-ring pack, maintenance metrics, durable status, offline reopen/verify, and rejection of unbounded automatic configuration |
 | Operational metrics | `tests/tmetrics.nim`, `scripts/cluster_rbac_smoke.sh`, `scripts/checkpoint_smoke.sh`, `examples/cabi_contract.c` | Contract-covered: legacy key/value compatibility, Prometheus/OpenMetrics formatting and EOF, counter/gauge types, multi-node labels, bounded fallback/guardrail reason labels, no ring/checkpoint-ID labels, malformed source rejection, aggregate checkpoint health, cluster and checkpoint CLI paths, and additive C ABI output/validation. |
-| C ABI | `examples/cabi_contract.c`, `examples/cabi_tls_contract.c`, `scripts/cabi_tls_smoke.sh`, `scripts/driver_compat.sh` | Contract-covered: ABI version, put/get/update/delete/exists, codec metadata, read ring page shape, strong disk-backed open and reopen, segment diagnostics, bounded maintenance plan/run/status/recovery, generation checkpoint create/status/list/cleanup/restore, Prometheus/OpenMetrics operational and checkpoint metrics, validation errors, NULL output pointers, oversized payload/vector/batch lengths, invalid codecs, handle close/reuse safety, atlas, CA-verified TLS-enabled connect path |
+| C ABI | `examples/cabi_contract.c`, `examples/cabi_tls_contract.c`, `scripts/cabi_symbol_contract.sh`, `scripts/cabi_tls_smoke.sh`, `scripts/driver_compat.sh` | Contract-covered: complete header/shared-library symbol parity on Linux and macOS; ABI version; codec CRUD and ring-profile writes; JSON patch; count and ring pages; prepared selections; nearby, stellar, and time-orbit workflows; retrieval/search tuning, named-profile retrieval, plans, ring summaries, RAG envelopes and validation; acknowledgement/apply/guardrail configuration; transaction visibility/commit/rollback/update, durable identity, and TLS accepted-to-applied waiting; cooperative locks; strong disk-backed reopen; locality reports; JSONL dump/import; full/per-ring packing; compaction; plain/encrypted backup verification and restore; operational verification; bounded segment maintenance; generation checkpoints; Prometheus/OpenMetrics; NULL, malformed, typed-option, range, oversized-input, invalid-codec, and stale-handle errors; Atlas; CA-verified TLS. |
 | Wire protocol | `tests/twire_driver.nim`, `scripts/cluster_wire_driver_smoke.sh`, `scripts/cluster_wire_fuzz_smoke.sh` | Smoke-covered: driver-facing PUTR/GETID/QRYID, codec metadata negotiation, malformed frame behavior, oversized/deep JSON rejection, `RETRIEVE` query-cost rejection, and broad-scan-denied server audit emission |
 | TLS transport | `scripts/cluster_tls_smoke.sh` | Smoke-covered: TLS-enabled `koutend`/CLI build, three-node CA-verified authenticated TLS health, secret-key auth transport, JSON put/get, apply-time placement fencing, destination-side mutation/tombstone ordering on the stable physical owner, ID query, and plain-client rejection |
 | Handoff mutation ordering | `tests/tstore.nim`, `tests/twire_driver.nim`, `tests/thandoff_ordering.nim`, `tests/thandoff_ordering_remote.nim`, `tests/thandoff_reclamation.nim` | Matrix-covered: stale and duplicate values, delete-before-delayed-transfer protection, newer recreation, WAL replay, compact, backup/restore, transaction delete, destination restart, TLS/authenticated transfer, canonical acknowledgement merging, single-node reclamation, all-node guard propagation, and bounded final reclamation |
