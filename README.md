@@ -107,7 +107,7 @@ Choose the artifact that matches the first task:
 | Task | Install path |
 |---|---|
 | Local CLI or embedded Nim | `nimble install koutendb` |
-| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.14.2` and the self-host bundle |
+| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.14.3` and the self-host bundle |
 | Existing-language application | published driver plus a compatible KoutenDB server or native library |
 | Core development and full validation | source checkout |
 
@@ -725,7 +725,7 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.14.2 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.14.3 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster

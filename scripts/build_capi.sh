@@ -33,7 +33,9 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
   done
 fi
 
-nim c "${NIM_FLAGS[@]}" \
+# Additional compiler options support diagnostic builds without duplicating
+# the production library's TLS and dependency configuration.
+nim c "${NIM_FLAGS[@]}" "$@" \
   --nimcache:"$NIMCACHE" \
   -o:"$OUT" \
   src/koutendb_capi.nim

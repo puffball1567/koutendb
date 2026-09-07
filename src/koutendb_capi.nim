@@ -82,6 +82,9 @@ var lockHandles = initTable[pointer, KoutenCLockHandle]()
 var selectionHandles = initTable[pointer, KoutenCSelectionHandle]()
 var handlesLock: Lock
 initLock(handlesLock)
+# Shared-library loading already runs NimMain. Mark readiness from module
+# initialization so the first exported call cannot initialize globals twice.
+runtimeReady = true
 
 proc NimMain() {.cdecl, importc.}
 
@@ -214,6 +217,11 @@ proc copyStringToShared(s: string): pointer =
   result = allocShared0(s.len + 1)
   if s.len > 0:
     copyMem(result, unsafeAddr s[0], s.len)
+
+proc requireOutputLength(outLen: ptr csize_t) =
+  if outLen == nil:
+    raise newException(ValueError, "out_len is nil")
+  outLen[] = 0
 
 proc copyJsonToShared(node: JsonNode; outLen: ptr csize_t): pointer =
   if outLen == nil:
@@ -750,6 +758,7 @@ proc kouten_get_galaxy_description(h: pointer, outLen: ptr csize_t): pointer
                                     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     copyTextToShared(ensureHandle(h).getGalaxyDescription(), outLen)
   except CatchableError as e:
     setError(e)
@@ -760,6 +769,7 @@ proc kouten_get_ring_description(h: pointer, ring: cstring,
                                  {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let value = ensureHandle(h).getRingDescription(
       cstringToString(ring, "ring", allowNil = false))
     copyTextToShared(value, outLen)
@@ -787,6 +797,7 @@ proc kouten_ring_payload_profile_json(h: pointer, ring: cstring,
                                       {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let profile = ensureHandle(h).ringPayloadProfile(
       cstringToString(ring, "ring", allowNil = false))
     copyJsonToShared(%*{
@@ -818,6 +829,7 @@ proc kouten_time_orbit_profile_json(h: pointer, ring: cstring,
                                     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let profile = ensureHandle(h).timeOrbitProfile(
       cstringToString(ring, "ring", allowNil = false))
     copyJsonToShared(%*{
@@ -888,6 +900,7 @@ proc kouten_ring_apply_policy_json(h: pointer, ring: cstring,
                                    {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let policy = ensureHandle(h).ringApplyPolicy(
       cstringToString(ring, "ring", allowNil = false))
     copyJsonToShared(%*{
@@ -924,6 +937,7 @@ proc kouten_guardrails_json(h: pointer, outLen: ptr csize_t): pointer
                             {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let guardrails = ensureHandle(h).guardrails()
     copyJsonToShared(%*{
       "maxPayloadBytes": guardrails.maxPayloadBytes,
@@ -958,6 +972,7 @@ proc kouten_retrieval_tuning_json(h: pointer, profile: cstring,
                                   {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let tuning = ensureHandle(h).retrievalTuning(optStrOr(profile, "default"))
     copyJsonToShared(retrievalTuningJson(tuning), outLen)
   except CatchableError as e:
@@ -987,6 +1002,7 @@ proc kouten_retrieval_plan_json(
     outLen: ptr csize_t): pointer {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let plan = ensureHandle(h).tunedRetrievalPlan(
       ring = optStr(ring), profile = optStrOr(profile, "default"),
       budget = int(budget), topRings = int(topRings), focus = int(focus),
@@ -1004,6 +1020,7 @@ proc kouten_search_plan_json(ring: cstring, amount, scope, depth: cint,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let plan = searchPlan(ring = optStr(ring),
                           amount = resultAmountFromC(amount),
                           scope = searchScopeFromC(scope),
@@ -1162,6 +1179,7 @@ proc kouten_get(h: pointer, id: KoutenCId,
   ## 見つからなければ nil。返るバッファは kouten_free で解放すること。
   try:
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
     let db = ensureHandle(h)
@@ -1176,6 +1194,7 @@ proc kouten_get_codec(h: pointer, id: KoutenCId, outLen: ptr csize_t,
                      outCodec: ptr cint): pointer {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil or outCodec == nil:
       raise newException(ValueError, "out_len and out_codec are required")
     let value = ensureHandle(h).getEncoded(fromC(id))
@@ -1233,6 +1252,7 @@ proc kouten_patch_json(h: pointer, id: KoutenCId, patchJson: cstring,
                        {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let patchNode = parseJson(cstringToString(
       patchJson, "patch_json", allowNil = false))
     if patchNode.kind != JObject:
@@ -1404,6 +1424,7 @@ proc kouten_lock_info_json(lockHandle: pointer,
                            {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     copyJsonToShared(lockTokenJson(ensureLockHandle(lockHandle).token), outLen)
   except CatchableError as e:
     setError(e)
@@ -1484,6 +1505,7 @@ proc kouten_query(h: pointer, id: KoutenCId, selection: cstring,
   ## （kouten_free で解放）。見つからない/エラー時は nil。
   try:
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
     let db = ensureHandle(h)
@@ -1511,6 +1533,7 @@ proc kouten_query_prepared(h: pointer, id: KoutenCId,
                            {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let selected = ensureHandle(h).query(
       fromC(id), ensureSelectionHandle(selectionHandle).selection)
     copyJsonToShared(selected, outLen)
@@ -1573,6 +1596,7 @@ proc kouten_read_ring_json(h: pointer, ring, filterJson, selection: cstring,
   ## Binary/non-JSON payloads are base64 encoded and marked with encoding=base64.
   try:
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
     let opts = readOptionsFromC(filterJson, selection, limit, cursor,
@@ -1610,6 +1634,7 @@ proc kouten_read_time_json(h: pointer, ring: cstring,
                            {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let opts = readOptionsFromC(filterJson, selection, limit, nil,
                                 0, 1, int(limit).cint, sortField, sortDesc)
     let page = ensureHandle(h).readTime(
@@ -1751,6 +1776,7 @@ proc kouten_stellar_members_json(h: pointer, stellar: cstring,
                                  {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let values = ensureHandle(h).stellarMembers(
       cstringToString(stellar, "stellar", allowNil = false))
     copyJsonToShared(stringArrayJson(values), outLen)
@@ -1763,6 +1789,7 @@ proc kouten_stellar_coordinates_json(h: pointer, ring: cstring,
                                      {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let values = ensureHandle(h).stellarCoordinatesFor(
       cstringToString(ring, "ring", allowNil = false))
     copyJsonToShared(stringArrayJson(values), outLen)
@@ -1775,6 +1802,7 @@ proc kouten_read_stellar_json(h: pointer, root, optionsJson: cstring,
                               {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let page = ensureHandle(h).readStellar(
       cstringToString(root, "root", allowNil = false),
       stellarOptionsFromC(optionsJson))
@@ -1866,6 +1894,7 @@ proc kouten_ring_summaries_json(h: pointer, queryVec: ptr cfloat,
                                 {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     var output = newJArray()
     for summary in ensureHandle(h).ringSummaries(
         vecFromC(queryVec, queryVecLen)):
@@ -1888,6 +1917,7 @@ proc kouten_retrieval_envelope_json(
     outLen: ptr csize_t): pointer {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let envelope = ensureHandle(h).retrievalEnvelope(
       vecFromC(queryVec, queryVecLen), ring = optStr(ring),
       budget = int(budget), topRings = int(topRings), focus = int(focus))
@@ -1902,6 +1932,7 @@ proc kouten_retrieval_envelope_tuned_json(
     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let envelope = ensureHandle(h).retrievalEnvelopeTuned(
       vecFromC(queryVec, queryVecLen), ring = optStr(ring),
       profile = optStrOr(profile, "default"))
@@ -1916,6 +1947,7 @@ proc kouten_retrieval_envelope_validate_json(
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let envelope = parseJson(cstringToString(
       envelopeJson, "envelope_json", allowNil = false))
     let errors = retrievalEnvelopeValidationErrors(envelope)
@@ -1932,6 +1964,7 @@ proc kouten_locality_report_json(h: pointer,
                                  {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     copyJsonToShared(localityReportJson(ensureHandle(h).localityReport()), outLen)
   except CatchableError as e:
     setError(e)
@@ -1942,6 +1975,7 @@ proc kouten_atlas(h: pointer, queryVec: ptr cfloat, queryVecLen: csize_t,
                  {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
     let db = ensureHandle(h)
@@ -1958,6 +1992,7 @@ proc kouten_compact_json(h: pointer, outLen: ptr csize_t): pointer
                          {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     copyJsonToShared(compactStatsJson(ensureHandle(h).compact()), outLen)
   except CatchableError as e:
     setError(e)
@@ -1968,6 +2003,7 @@ proc kouten_dump_jsonl(h: pointer, path: cstring, includeVectors: cint,
                        {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let destination = cstringToString(path, "path", allowNil = false)
     if destination.len == 0 or destination == "-":
       raise newException(ValueError,
@@ -1984,6 +2020,7 @@ proc kouten_import_jsonl(h: pointer, path: cstring, optionsJson: cstring,
                          {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let options = jsonOptions(optionsJson, "import options")
     let stats = ensureHandle(h).importJsonl(
       cstringToString(path, "path", allowNil = false),
@@ -2004,6 +2041,7 @@ proc kouten_pack_all_json(h: pointer, outLen: ptr csize_t): pointer
                           {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     copyJsonToShared(packStatsJson(
       ensureHandle(h).packDiskBackedSegments()), outLen)
   except CatchableError as e:
@@ -2015,6 +2053,7 @@ proc kouten_pack_ring_json(h: pointer, ring: cstring,
                            {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let stats = ensureHandle(h).packDiskBackedRing(
       cstringToString(ring, "ring", allowNil = false))
     copyJsonToShared(packStatsJson(stats), outLen)
@@ -2027,6 +2066,7 @@ proc kouten_backup_json(h: pointer, destination: cstring,
                         {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let stats = ensureHandle(h).backup(cstringToString(
       destination, "destination", allowNil = false))
     copyJsonToShared(backupStatsJson(stats, encrypted = false), outLen)
@@ -2040,6 +2080,7 @@ proc kouten_backup_encrypted_json(h: pointer, destination,
                                   {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let stats = ensureHandle(h).backupEncrypted(
       cstringToString(destination, "destination", allowNil = false),
       cstringToString(passphrase, "passphrase", allowNil = false))
@@ -2054,6 +2095,7 @@ proc kouten_backup_verify_json(backupDir: cstring,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let stats = verifyBackup(cstringToString(
       backupDir, "backup_dir", allowNil = false))
     copyJsonToShared(backupStatsJson(stats, encrypted = false), outLen)
@@ -2067,6 +2109,7 @@ proc kouten_backup_encrypted_verify_json(
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let stats = verifyEncryptedBackup(
       cstringToString(backupDir, "backup_dir", allowNil = false),
       cstringToString(passphrase, "passphrase", allowNil = false))
@@ -2082,6 +2125,7 @@ proc kouten_backup_restore_json(backupDir, dataDir: cstring,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let stats = restoreBackup(
       cstringToString(backupDir, "backup_dir", allowNil = false),
       cstringToString(dataDir, "data_dir", allowNil = false),
@@ -2098,6 +2142,7 @@ proc kouten_backup_encrypted_restore_json(
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let stats = restoreEncryptedBackup(
       cstringToString(backupDir, "backup_dir", allowNil = false),
       cstringToString(dataDir, "data_dir", allowNil = false),
@@ -2115,6 +2160,7 @@ proc kouten_operational_verify_json(dataDir, optionsJson: cstring,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let options = jsonOptions(optionsJson, "verify options")
     let report = operationalVerify(
       cstringToString(dataDir, "data_dir", allowNil = false),
@@ -2182,6 +2228,7 @@ proc kouten_metrics_text(h: pointer, format: cint,
                          {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
     let output = ensureHandle(h).metricsText(metricsFormatFromC(format))
@@ -2197,6 +2244,7 @@ proc kouten_checkpoint_metrics_text(root: cstring, format: cint,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     if outLen == nil:
       raise newException(ValueError, "out_len is nil")
     let output = checkpointMetricsText(
@@ -2214,6 +2262,7 @@ proc kouten_segment_status_json(h: pointer, staleRatio: cdouble,
                                 {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let status = ensureHandle(h).segmentStatus(float(staleRatio),
                                                int(minStaleRecords))
     copyJsonToShared(segmentStatusJson(status), outLen)
@@ -2227,6 +2276,7 @@ proc kouten_segment_maintenance_plan_json(
     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let policy = maintenancePolicyFromC(staleRatio, minStaleRecords,
                                         maxRings, maxBytes, maxElapsedMs)
     let maintenance = ensureHandle(h).planSegmentMaintenance(policy)
@@ -2241,6 +2291,7 @@ proc kouten_segment_maintenance_run_json(
     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let policy = maintenancePolicyFromC(staleRatio, minStaleRecords,
                                         maxRings, maxBytes, maxElapsedMs)
     let maintenance = ensureHandle(h).runSegmentMaintenance(policy)
@@ -2254,6 +2305,7 @@ proc kouten_segment_maintenance_status_json(h: pointer,
     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     copyJsonToShared(ensureHandle(h).segmentMaintenanceStatus(), outLen)
   except CatchableError as e:
     setError(e)
@@ -2279,6 +2331,7 @@ proc kouten_checkpoint_create_json(h: pointer, root, checkpointId: cstring,
     {.exportc, cdecl, dynlib.} =
   try:
     clearError()
+    requireOutputLength(outLen)
     let status = ensureHandle(h).createCheckpoint(optStr(root),
                                                    optStr(checkpointId))
     copyJsonToShared(checkpointStatusJson(status), outLen)
@@ -2292,6 +2345,7 @@ proc kouten_checkpoint_status_json(checkpointDir: cstring,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let path = cstringToString(checkpointDir, "checkpoint_dir",
                                allowNil = false)
     copyJsonToShared(checkpointStatusJson(checkpointStatus(path)), outLen)
@@ -2305,6 +2359,7 @@ proc kouten_checkpoint_list_json(root: cstring,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let path = cstringToString(root, "root", allowNil = false)
     copyJsonToShared(checkpointListJson(path, listCheckpoints(path)), outLen)
   except CatchableError as e:
@@ -2317,6 +2372,7 @@ proc kouten_checkpoint_cleanup_json(root: cstring, keep: cint,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     let path = cstringToString(root, "root", allowNil = false)
     copyJsonToShared(checkpointCleanupJson(
       cleanupCheckpoints(path, int(keep))), outLen)
@@ -2331,6 +2387,7 @@ proc kouten_checkpoint_restore_json(checkpointDir, dataDir: cstring,
   try:
     initRuntime()
     clearError()
+    requireOutputLength(outLen)
     if overwrite notin [cint(0), cint(1)]:
       raise newException(ValueError, "overwrite must be 0 or 1")
     let status = restoreCheckpoint(

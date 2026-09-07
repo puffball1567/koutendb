@@ -31,12 +31,22 @@ The script resolves an installed `nimsodium` package through Nimble. Set
   handles may be used independently.
 - A pointer returned as data or JSON belongs to the caller and must be released
   with `kouten_free()`.
+- Buffer-returning functions require a non-NULL `out_len`. They validate it
+  before database work and set it to zero before other validation. A NULL
+  `out_len` cannot trigger a mutation or file publication. This does not imply
+  rollback for unrelated I/O failures.
 - A `kouten_retrieve_result` must be released with `kouten_retrieve_free()`.
 - A `kouten_batch_result` must be released with `kouten_batch_get_free()`.
 - Copy `kouten_last_error()` before making another C ABI call on the same
   thread.
-- Exceptions do not cross the C boundary. Failures return `KOUTEN_ERR`, `NULL`,
+- Recoverable exceptions do not cross the C boundary. Failures return `KOUTEN_ERR`, `NULL`,
   or the documented negative sentinel and set `kouten_last_error()`.
+- Unrecoverable Nim defects terminate the process under `--panics:on`; they
+  must not be mistaken for recoverable API errors.
+
+Boundary regression tests, including a Linux ASan/UBSan/LSan build of both
+the library and C caller, are described in the
+[read and C ABI review evidence](read-cabi-boundary-review.md).
 
 ## Handles
 

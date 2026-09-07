@@ -4,6 +4,21 @@ This document tracks KoutenDB's test coverage by product surface. It is not a
 claim of exhaustive production certification; it is the current engineering
 matrix used before releases.
 
+The [read and C ABI boundary review](read-cabi-boundary-review.md) records
+reproduced failures, fixes, and exact-state regression matrices. The new checks
+cover filtered cursor continuity, time filtering before projection/limit,
+invalid input without side effects, and shared-library initialization leaks.
+
+The core runner defaults to two parallel test processes. Each invocation uses
+isolated compiler caches, binaries, and per-test logs under a temporary
+directory. Use `KOUTEN_TEST_JOBS=1 scripts/test_core.sh` for serial execution or
+set `KOUTEN_TEST_JOBS` to an integer from 1 to 16. Failed child processes fail
+the suite; logs are printed together per test. Server integration scripts
+that share ports or output binaries must still run serially within one checkout.
+`scripts/test_core_runner.sh` verifies serial/parallel execution, injected
+child failure propagation, and invalid concurrency rejection with a fake compiler;
+it supplements, rather than replaces, the real Nim test suite.
+
 ## Coverage Matrix
 
 | Area | Primary checks | Current status |

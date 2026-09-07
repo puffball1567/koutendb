@@ -19,6 +19,12 @@
 extern "C" {
 #endif
 
+/* Buffer-returning functions require a non-NULL out_len. It is validated
+ * before database work and initialized to zero, including on failure.
+ * Rejecting NULL out_len does not perform the requested mutation or file
+ * publication. Other failures follow the operation's documented semantics;
+ * this rule is not a general rollback guarantee. */
+
 /* 不透明ID（24バイト・値渡し）。中身に触る必要はない。 */
 typedef struct kouten_id {
   uint64_t parent;

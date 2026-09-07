@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## v0.14.3 - 2026-09-07
+
+### Fixed
+
+- Preserved every matching record across filtered cursor pages instead of
+  advancing past unconsumed rows in an internal fetch.
+- Applied time-range predicates before limits and projections, preventing
+  missing in-range records and out-of-range results when event time is omitted.
+- Rejected malformed filters and overflowing pagination arithmetic explicitly.
+- Validated C ABI output lengths before mutations and file publication and
+  cleared failed output lengths consistently.
+- Prevented duplicate shared-library runtime initialization and the resulting
+  allocation leaks.
+- Parsed each candidate JSON once per property-filter evaluation and avoided
+  unnecessary ID formatting.
+
+### Changed
+
+- Expanded the additive ABI v2 surface for application reads, prepared
+  selections, transactions, cooperative locks, search plans, and maintenance
+  and backup/checkpoint operations. The header/library contract now covers
+  111 exported functions.
+- Added exact-state regression matrices and Linux ASan/UBSan/LSan checks of
+  both the C caller and the shared library.
+- Ran core tests in isolated parallel processes by default, configurable with
+  `KOUTEN_TEST_JOBS`; added runner failure-propagation checks.
+
 ## v0.14.2 - 2026-09-06
 
 ### Changed

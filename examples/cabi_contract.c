@@ -1,6 +1,7 @@
 /* KoutenDB C ABI contract smoke test
  * build: gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o bin/cabi_contract
  */
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -609,10 +610,8 @@ int main(void) {
   if (kouten_remove(db, mutable_id) != KOUTEN_ERR)
     return fail("second remove should fail");
 
-  char data_dir[160];
-  snprintf(data_dir, sizeof(data_dir), "/tmp/koutendb-cabi-contract-%ld-%ld",
-           (long)getpid(), (long)time(NULL));
-  if (mkdir(data_dir, 0700) != 0) return fail("cannot create C ABI data dir");
+  char data_dir[] = "/tmp/koutendb-cabi-contract-XXXXXX";
+  if (!mkdtemp(data_dir)) return fail("cannot create C ABI data dir");
   void *disk_db = kouten_open_dir_options(1, data_dir, 1, 1);
   if (!disk_db) return fail("open_dir_options failed");
   if (kouten_open_dir_options(1, data_dir, 2, 1) != NULL)
