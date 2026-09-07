@@ -52,7 +52,21 @@ echo "[cabi-tls] build TLS-enabled C ABI library"
 scripts/build_capi.sh >/dev/null
 
 echo "[cabi-tls] build TLS-enabled koutend"
-nim c -d:ssl -d:release --nimcache:/tmp/nimcache_koutend_cabi_tls \
+NIMSODIUM_PATH="${KOUTENDB_NIMSODIUM_PATH:-}"
+if [[ -z "$NIMSODIUM_PATH" ]] && command -v nimble >/dev/null 2>&1; then
+  NIMSODIUM_PATH="$(nimble path nimsodium 2>/dev/null || true)"
+  NIMSODIUM_PATH="${NIMSODIUM_PATH%%$'\n'*}"
+fi
+NIM_PATH_FLAGS=()
+if [[ -n "$NIMSODIUM_PATH" ]]; then
+  if [[ ! -f "$NIMSODIUM_PATH/nimsodium.nim" ]]; then
+    echo "nimsodium module not found under: $NIMSODIUM_PATH" >&2
+    exit 1
+  fi
+  NIM_PATH_FLAGS+=(--path:"$NIMSODIUM_PATH")
+fi
+nim c -d:ssl -d:release "${NIM_PATH_FLAGS[@]}" \
+  --nimcache:/tmp/nimcache_koutend_cabi_tls \
   -o:src/koutend src/koutend.nim >/dev/null
 
 echo "[cabi-tls] build C ABI TLS contract"

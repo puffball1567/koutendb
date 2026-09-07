@@ -27,6 +27,7 @@ src/koutenbench
 src/koutensim
 src/koutendb
 tests/tapi
+tests/tread_boundaries
 tests/tauth
 tests/tcore
 tests/tfield
