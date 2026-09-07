@@ -71,8 +71,8 @@ contract, C ABI TLS contract, and CLI CRUD smoke passed. The instrumented
 boundary test passed with ASan, UBSan, and LSan after the initialization fix.
 
 Linux CI includes the sanitizer boundary test. Linux and macOS CI include the
-ordinary C boundary test. These workflow changes have not yet been run on
-GitHub Actions; local Linux results do not imply a completed macOS run.
+ordinary C boundary test. GitHub Actions records platform-specific results
+independently; local Linux results do not imply a completed macOS run.
 
 This review did not rerun the 72-hour soak, large benchmarks, external-language
 driver suites, or a multi-node filtered-cursor matrix. Those remain separate

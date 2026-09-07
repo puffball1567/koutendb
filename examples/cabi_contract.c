@@ -1,7 +1,11 @@
 /* KoutenDB C ABI contract smoke test
  * build: gcc examples/cabi_contract.c -Iinclude -Llib -lkoutendb -Wl,-rpath,'$ORIGIN/../lib' -o bin/cabi_contract
  */
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#else
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
