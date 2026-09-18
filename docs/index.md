@@ -88,6 +88,7 @@ trial to maintained application is in the
 - [Driver Installation](driver-installation.md)
 - [Driver / FFI Roadmap](koutendb-driver-roadmap.md)
 - [Protocol Compatibility](protocol-compatibility.md)
+- [Native Driver Conformance](native-driver-conformance.md)
 - [TLS Transport](tls-transport.md)
 - [Query Safety](query-safety.md)
 - [Payload Codecs](payload-codecs.md)
