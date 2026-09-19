@@ -250,7 +250,8 @@ def certificate(root):
     cert, key = root / 'cert.pem', root / 'key.pem'
     subprocess.run(['openssl', 'req', '-x509', '-nodes', '-newkey', 'rsa:2048', '-days', '1',
                     '-keyout', str(key), '-out', str(cert), '-subj', '/CN=localhost',
-                    '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'],
+                    '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
+                    '-addext', 'extendedKeyUsage=serverAuth'],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     return cert, key
 
