@@ -39,16 +39,20 @@ and atlas access.
 
 | Priority | Target | Reason | Status |
 |---:|---|---|---|
-| 1 | Rust driver | High-performance infrastructure, gateway, and systems integration path | Published: crates.io [`koutendb` v0.1.6](https://crates.io/crates/koutendb), repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) |
+| 1 | Rust driver | High-performance infrastructure, gateway, and systems integration path | Published: crates.io [`koutendb` v0.2.0](https://crates.io/crates/koutendb), repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) |
 | 2 | JavaScript / TypeScript driver | Web API, SaaS, Studio, GUI, and local AI client entry point | Published: npm [`koutendb` v0.1.5](https://www.npmjs.com/package/koutendb), repository [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js). Bun remains experimental on the same Node-API path |
-| 3 | PHP driver | Laravel and existing business web systems | Published: Packagist [`koutendb/koutendb` v0.1.3](https://packagist.org/packages/koutendb/koutendb), repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) |
-| 4 | C++ driver | Generic native and engine integration base. Unreal plugin stays separate | Repository released: [`puffball1567/koutendb-cpp` v0.1.3](https://github.com/puffball1567/koutendb-cpp); CMake smoke passes in CI |
-| 5 | Python native wire driver | AI/RAG and broad scripting entry point without making big-data positioning the first message | Published: PyPI [`koutendb` v0.2.1](https://pypi.org/project/koutendb/), repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) |
+| 3 | PHP driver | Laravel and existing business web systems | Published: Packagist [`koutendb/koutendb` v0.2.0](https://packagist.org/packages/koutendb/koutendb), repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) |
+| 4 | C++ driver | Generic native and engine integration base. Unreal plugin stays separate | Repository released: [`puffball1567/koutendb-cpp` v0.2.0](https://github.com/puffball1567/koutendb-cpp); CMake smoke passes in CI |
+| 5 | Python native wire driver | AI/RAG and broad scripting entry point without making big-data positioning the first message | Published: PyPI [`koutendb` v0.3.0](https://pypi.org/project/koutendb/), repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) |
 | 6 | Swift driver | Apple local AI client, browser companion, and app state path | In-tree C ABI wrapper only; not published to SwiftPM. Docker smoke added |
 | 7 | Kotlin-first JVM driver | JVM backend and Android path, Java-compatible | In-tree JNI / C ABI wrapper only; not published to Maven |
-| 8 | Go driver | Cloud backend and ops tooling; lower initial priority than Rust/Node/PHP for KoutenDB positioning | In-tree C ABI wrapper only; no Go module or external repository published. Native wire comes later |
+| 8 | Go driver | Cloud backend and ops tooling; lower initial priority than Rust/Node/PHP for KoutenDB positioning | Published: [`koutendb-go` v0.1.0](https://github.com/puffball1567/koutendb-go); native TCP + optional embedded C ABI |
 | 9 | C# driver | Generic .NET backend entry point. Unity official asset stays separate | In-tree C ABI wrapper only; not published to NuGet |
 | 10 | DB trust work | Crash recovery, compatibility suite, failure benchmarks, operational docs | Ongoing core work |
+
+Rust, PHP, C++ and Go now offer native TCP in addition to their C ABI paths.
+JavaScript has addon-free TCP in [GitHub v0.2.0](https://github.com/puffball1567/koutendb-js/releases/tag/v0.2.0),
+but that version is not yet on npm; the published npm package remains v0.1.5.
 
 ## Browser / Wasm Track
 
@@ -79,14 +83,17 @@ Each native driver first aligns on the following API:
 - `query(id, selection) -> bytes | nil`
 - `health(node?)`
 - typed `KoutenId`
-- one reconnect retry
+- one reconnect retry for eligible reads, never blind replay of indeterminate writes
 
-The next layer adds auth / secret-key transport, connection pooling, package
-publishing, and protocol compatibility tests in the publication order above.
+Published native transports provide authentication, verified TLS, bounded
+framing/redirects and typed failures. Advanced pooling and full API parity
+remain separate follow-up work.
 
 The C ABI uses `examples/cabi_contract.c` as its contract smoke test.
-Rust, Go, PHP, Swift, C#, and C++ first wrap the C ABI safely. Native TCP drivers can
-be added later without changing their ownership and error contracts.
+Rust, Go, PHP and C++ offer independent native TCP transports while retaining
+embedded C ABI wrappers. Swift and C# remain in-tree C ABI foundations.
+See [Native Driver Conformance](native-driver-conformance.md) for the shared
+protocol and failure-semantics test harness.
 
 PHP can be verified with `drivers/php/docker-test.sh` when local PHP does not
 provide FFI. Swift can be verified with `drivers/swift/docker-test.sh` on Linux.

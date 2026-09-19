@@ -28,6 +28,9 @@ nim c -d:release --nimcache:/tmp/nimcache_koutend_cli_crud \
 echo "[cli-crud] help"
 bin/kouten --help | grep -q "kouten put"
 
+echo "[cli-crud] published driver registry"
+python3 scripts/test_driver_registry.py bin/kouten
+
 echo "[cli-crud] put"
 put_out="$(bin/kouten put --ring=docs/japan \
   --payload='{"title":"Hello","status":"draft"}' --codec=json)"
