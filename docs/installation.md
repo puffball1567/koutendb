@@ -83,13 +83,13 @@ ghcr.io/puffball1567/koutendb:<version>
 
 The supported server path uses the repository's self-host bundle to generate
 TLS certificates, external secret files, persistent storage, health checks, and
-strong-durability configuration. For v0.14.3:
+strong-durability configuration. For v0.14.4:
 
 ```sh
-git clone --depth 1 --branch v0.14.3 \
+git clone --depth 1 --branch v0.14.4 \
   https://github.com/puffball1567/koutendb.git
 cd koutendb
-KOUTENDB_VERSION=0.14.3 \
+KOUTENDB_VERSION=0.14.4 \
   deploy/self-hosted/bootstrap.sh "$PWD/../koutendb-selfhost"
 cd ../koutendb-selfhost
 docker compose up -d
@@ -104,7 +104,7 @@ issuer and trust-distribution process.
 ## Language Drivers
 
 Published drivers are available for Rust, JavaScript/TypeScript, Python, PHP,
-and C++. A driver is not a standalone KoutenDB server:
+C++, and Go. A driver is not a standalone KoutenDB server:
 
 - native C ABI wrappers require a compatible `libkoutendb` build;
 - TCP drivers require a reachable `koutend` endpoint;

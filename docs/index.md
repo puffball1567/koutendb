@@ -98,6 +98,7 @@ trial to maintained application is in the
 
 - [Release Checklist](release-checklist.md)
 - [v0.14.2 Release Notes](github-release-v0.14.2.md)
+- [v0.14.4 Release Notes](github-release-v0.14.4.md)
 - [v0.14.3 Release Notes](github-release-v0.14.3.md)
 - [v0.14.1 Release Notes](github-release-v0.14.1.md)
 - [v0.14.0 Release Notes](github-release-v0.14.0.md)

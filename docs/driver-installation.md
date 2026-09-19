@@ -24,10 +24,16 @@ For Rust, target selection is shell-friendly: use `--manifest-path=FILE`,
 It does not execute package-manager commands unless `--execute` is passed.
 
 The Nim package is available through Nimble. Rust, JavaScript / TypeScript, PHP,
-Python, and the C++ source release are published independently from the core.
+Python, Go, and the C++ source release are published independently from the core.
 Installing one of those packages installs a driver, not a KoutenDB server.
-Repository-local Go, Swift, C#, and Kotlin foundations are not published
+Repository-local Swift, C#, and Kotlin foundations are not published
 packages; their examples assume a local clone of this repository.
+
+Native TCP connects to a running server without `libkoutendb`. Embedded mode
+needs the native shared library and cannot be substituted by a TCP package.
+The old `drivers/go` directory is retained as a compatibility fixture; use the
+external Go module below for new applications. API coverage differs by driver
+and transport; consult the driver's compatibility table before migrating.
 
 ## Build the Native Library
 
@@ -45,7 +51,7 @@ duplicating Nim flags.
 For native wire driver tests, build `koutend`:
 
 ```sh
-nim c -d:release --nimcache:/tmp/nimcache_koutend -o:src/koutend src/koutend.nim
+nim c -d:release -d:ssl --nimcache:/tmp/nimcache_koutend -o:src/koutend src/koutend.nim
 ```
 
 ## Nim
@@ -131,9 +137,9 @@ working while newer wrappers may bind the additional symbols explicitly.
 
 The Python driver is released as a separate native TCP wire driver:
 
-- repository: [`puffball1567/koutendb-python` v0.2.1](https://github.com/puffball1567/koutendb-python)
+- repository: [`puffball1567/koutendb-python` v0.3.0](https://github.com/puffball1567/koutendb-python)
 - mode: pure Python TCP driver for `koutend`
-- PyPI: [`koutendb` v0.2.1](https://pypi.org/project/koutendb/)
+- PyPI: [`koutendb` v0.3.0](https://pypi.org/project/koutendb/)
 
 ```sh
 python3 -m pip install koutendb
@@ -168,6 +174,12 @@ npm install koutendb
 Build the KoutenDB core shared library first and set `KOUTENDB_CORE_DIR` during
 install/rebuild. See the driver repository README for the full setup flow.
 
+[GitHub v0.2.0](https://github.com/puffball1567/koutendb-js/releases/tag/v0.2.0)
+also provides `TcpClient` through `koutendb/tcp`, without a native addon or
+`libkoutendb`. That version is not yet published to npm: the `npm install`
+command above still installs v0.1.5. To use the GitHub release, follow its
+[native TCP setup guide](https://github.com/puffball1567/koutendb-js/blob/v0.2.0/docs/native-tcp.md).
+
 The core repository also keeps a repository-local native TCP wire driver used
 for protocol smoke tests:
 
@@ -190,12 +202,18 @@ await db.close();
 
 ## Rust
 
-The Rust driver is published as a C ABI wrapper:
+The Rust driver provides a default C ABI wrapper and optional native TCP:
 
-- crates.io: [`koutendb` v0.1.6](https://crates.io/crates/koutendb)
+- crates.io: [`koutendb` v0.2.0](https://crates.io/crates/koutendb)
 - repository: [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust)
 
-Install it in a Rust project:
+For native TCP without `libkoutendb`:
+
+```sh
+cargo add koutendb --no-default-features --features tcp
+```
+
+For the existing C ABI API, install it with default features:
 
 ```sh
 cargo add koutendb
@@ -207,43 +225,60 @@ Or ask the KoutenDB CLI to print the official setup command:
 kouten driver install rust --manifest-path=/path/to/Cargo.toml
 ```
 
-Build the KoutenDB core shared library first and set `KOUTENDB_CORE_DIR` or
+For C ABI mode, build the KoutenDB core shared library first and set `KOUTENDB_CORE_DIR` or
 `KOUTENDB_LIB_DIR` when building/testing the Rust project. See the Rust driver
 repository README for the full setup flow.
 
 ## Go
 
-The Go driver is a repository-local C ABI wrapper. It has not been published as
-a Go module or separate driver repository.
+The Go driver is published as a separate module, requiring Go 1.26 or newer:
+
+- module: [`github.com/puffball1567/koutendb-go` v0.1.0](https://pkg.go.dev/github.com/puffball1567/koutendb-go)
+- repository: [koutendb-go](https://github.com/puffball1567/koutendb-go)
+- native TCP: no C compiler or `libkoutendb`; supports `CGO_ENABLED=0`
+- embedded: optional `embedded` package, cgo, shared library and `kouten_embedded` build tag
 
 ```sh
-scripts/build_capi.sh
-cd drivers/go
-GOCACHE="${GOCACHE:-/tmp/kouten-go-cache}" go test ./...
+go get github.com/puffball1567/koutendb-go@v0.1.0
 ```
 
-Use a local module replace until publication:
+Native TCP example inside an application function:
 
-```text
-replace github.com/koutendb/koutendb-go => ../drivers/go
+```go
+db, err := kouten.Dial(ctx, []string{"127.0.0.1:17301"}, kouten.Options{})
+if err != nil { return err }
+defer db.Close()
+id, err := db.PutJSON(ctx, "articles", map[string]string{"title": "Hello"})
+if err != nil { return err }
+var article map[string]string
+found, err := db.GetJSON(ctx, id, &article)
 ```
+
+Import `kouten "github.com/puffball1567/koutendb-go"` and pass a Go context.
+See the [complete example and embedded setup](https://github.com/puffball1567/koutendb-go#native-tcp)
+and [TLS, authentication and error handling](https://github.com/puffball1567/koutendb-go/blob/v0.1.0/docs/native-tcp.md).
 
 ## PHP
 
-The PHP driver uses FFI over the C ABI. Local PHP must have `ext-ffi` enabled.
-It is published on Packagist:
+The PHP driver offers native TCP using PHP streams, without `ext-ffi` or
+`libkoutendb`. Existing FFI APIs remain available and require `ext-ffi` only
+when that transport is selected. It is published on Packagist:
 
-- Packagist: [`koutendb/koutendb` v0.1.3](https://packagist.org/packages/koutendb/koutendb)
+- Packagist: [`koutendb/koutendb` v0.2.0](https://packagist.org/packages/koutendb/koutendb)
 - repository: [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php)
 - package name: `koutendb/koutendb`
 
 Install it in a Composer project:
 
 ```sh
-composer require koutendb/koutendb:^0.1
+composer require koutendb/koutendb:^0.2
 ```
 
-Build the KoutenDB core shared library first and point the PHP driver at it:
+Use `KoutenDB::connectTcp()` for native TCP; `connect()` retains its FFI behavior.
+See the [PHP driver documentation](https://github.com/puffball1567/koutendb-php)
+for authentication, TLS and Laravel examples.
+
+For FFI mode only, build the KoutenDB core shared library and point the driver at it:
 
 ```sh
 scripts/build_capi.sh
@@ -309,10 +344,14 @@ separate from this generic OSS driver.
 
 ## C++
 
-The C++ driver is released as a separate C++17 wrapper over the C ABI:
+The C++ driver provides a C++17 C ABI wrapper and an optional native TCP target:
 
-- repository: [`puffball1567/koutendb-cpp` v0.1.3](https://github.com/puffball1567/koutendb-cpp)
-- mode: C++17 RAII wrapper over `libkoutendb.so`
+- repository: [`puffball1567/koutendb-cpp` v0.2.0](https://github.com/puffball1567/koutendb-cpp)
+- embedded: C++17 RAII wrapper over `libkoutendb.so`
+- native TCP: `KoutenDB::tcp`, without `libkoutendb`; requires Asio, OpenSSL,
+  libsodium and nlohmann_json
+
+For the C ABI examples:
 
 ```sh
 git clone https://github.com/puffball1567/koutendb-cpp.git
@@ -321,6 +360,10 @@ cmake -S . -B build -DKOUTENDB_CORE_DIR=/path/to/koutendb
 cmake --build build
 ./build/koutendb_cpp_contract_smoke
 ```
+
+For TCP-only setup, use `-DKOUTENDB_CPP_BUILD_EXAMPLES=OFF
+-DKOUTENDB_CPP_BUILD_TCP=ON` and follow the
+[native TCP guide](https://github.com/puffball1567/koutendb-cpp/blob/v0.2.0/docs/native-tcp.md).
 
 Unreal-specific module packaging, Blueprint bindings, editor tooling, and
 engine lifecycle integration are intentionally separate from this generic OSS
@@ -339,6 +382,16 @@ drivers/kotlin/docker-test.sh
 Maven Central publishing and Android packaging are future work.
 
 ## Compatibility Suite
+
+External native drivers share the [protocol conformance harness](native-driver-conformance.md):
+27 scripted protocol cases and six authenticated/TLS real-server configurations.
+For example, build the Go adapter in the Go checkout, then run from the core checkout:
+
+```sh
+bash scripts/native_driver_conformance.sh /path/to/koutendb-go/bin/conformance
+```
+
+The commands below test the core's in-tree foundations, not every external release.
 
 Run non-Docker checks:
 

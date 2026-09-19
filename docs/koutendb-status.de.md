@@ -58,14 +58,14 @@ Release checklist: [release-checklist.md](./release-checklist.md)
 |---|---|---|
 | Nim API | Done | Native public API |
 | C ABI | Done | ABI version / last error / put/get/retrieve/batch/atlas |
-| Python | Published | PyPI `koutendb` v0.2.1; native TCP wire driver |
+| Python | Published | PyPI `koutendb` v0.3.0; native TCP wire driver |
 | Node.js / TypeScript / Bun | Published | npm `koutendb` v0.1.5. Bun remains experimental |
-| Rust | Published | crates.io `koutendb` v0.1.6; see the English canonical document for links |
-| Go | In-tree only | Minimal C ABI wrapper; no Go module or external driver repository has been published |
-| PHP | Published | Packagist `koutendb/koutendb` v0.1.3; Docker smoke available |
+| Rust | Published | crates.io `koutendb` v0.2.0; see the English canonical document for links |
+| Go | Published | [`koutendb-go` v0.1.0](https://github.com/puffball1567/koutendb-go); native TCP + optional embedded C ABI; `go get github.com/puffball1567/koutendb-go@v0.1.0` |
+| PHP | Published | Packagist `koutendb/koutendb` v0.2.0; Docker smoke available |
 | Swift / Kotlin | In-tree only | Wrappers and Docker smoke exist; no SwiftPM or Maven package has been published |
 | C# | In-tree only | Generic wrapper exists; no NuGet package has been published. Unity official asset is separate |
-| C++ | GitHub Release | `koutendb-cpp` v0.1.3. Unreal official asset is separate |
+| C++ | GitHub Release | `koutendb-cpp` v0.2.0. Unreal official asset is separate |
 | React Native / WASM | Post-v0.1 candidate | Browser / local state boundary |
 | Driver discovery CLI | Done | `kouten driver list/info/install` prints official driver metadata and setup commands without executing remote scripts |
 | Package publishing | Partial | `nimble install koutendb`, `cargo add koutendb`, `npm install koutendb`, `composer require koutendb/koutendb`, and `python3 -m pip install koutendb` are available. Other registries remain future work |
