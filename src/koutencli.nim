@@ -36,11 +36,11 @@ proc driverRegistry(): seq[DriverInfo] =
     DriverInfo(
       name: "rust",
       status: "published",
-      mode: "C ABI wrapper first; native wire later",
+      mode: "C ABI wrapper + optional native TCP",
       repository: "https://github.com/puffball1567/koutendb-rust",
       packageName: "koutendb",
       installHint: "cargo add koutendb",
-      notes: "Published on crates.io as koutendb v0.1.6. Wraps the KoutenDB C ABI."
+      notes: "Published on crates.io as koutendb v0.2.0. For library-free TCP: cargo add koutendb --no-default-features --features tcp."
     ),
     DriverInfo(
       name: "node",
@@ -49,25 +49,25 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-js",
       packageName: "koutendb",
       installHint: "npm install koutendb",
-      notes: "Published on npm as koutendb v0.1.5. Bun compatibility is tested on the Node-API path, but remains experimental."
+      notes: "npm: koutendb v0.1.5 (Node-API). GitHub: v0.2.0 adds native TCP; not yet published to npm. Bun remains experimental on the Node-API path."
     ),
     DriverInfo(
       name: "php",
       status: "published",
-      mode: "FFI / C ABI wrapper",
+      mode: "native TCP + optional FFI / C ABI wrapper",
       repository: "https://github.com/puffball1567/koutendb-php",
       packageName: "koutendb/koutendb",
       installHint: "composer require koutendb/koutendb",
-      notes: "Published on Packagist as koutendb/koutendb v0.1.3. Wraps the KoutenDB C ABI through PHP FFI."
+      notes: "Published on Packagist as koutendb/koutendb v0.2.0. Native TCP does not require ext-ffi or libkoutendb. Existing FFI APIs remain available."
     ),
     DriverInfo(
       name: "cpp",
       status: "repository-released",
-      mode: "C++17 C ABI wrapper",
+      mode: "C++17 C ABI wrapper + optional native TCP",
       repository: "https://github.com/puffball1567/koutendb-cpp",
       packageName: "koutendb-cpp",
       installHint: "git clone https://github.com/puffball1567/koutendb-cpp.git",
-      notes: "Released as koutendb-cpp v0.1.3. CMake smoke passes in CI; Conan/vcpkg publication is future work."
+      notes: "Released as koutendb-cpp v0.2.0. Optional KoutenDB::tcp target uses Asio/OpenSSL/libsodium, not libkoutendb. Conan/vcpkg publication is future work."
     ),
     DriverInfo(
       name: "python",
@@ -76,16 +76,16 @@ proc driverRegistry(): seq[DriverInfo] =
       repository: "https://github.com/puffball1567/koutendb-python",
       packageName: "koutendb",
       installHint: "python3 -m pip install koutendb",
-      notes: "Published on PyPI as koutendb v0.2.1. Pure Python TCP driver."
+      notes: "Published on PyPI as koutendb v0.3.0. Pure Python TCP driver with strict framing and safe retry behavior."
     ),
     DriverInfo(
       name: "go",
-      status: "repository-local",
-      mode: "C ABI wrapper",
-      repository: "drivers/go",
-      packageName: "not published (local module path: github.com/koutendb/koutendb-go)",
-      installHint: "use drivers/go with a local go.mod replace directive",
-      notes: "In-tree foundation only. No Go module or external Go driver repository has been published."
+      status: "published",
+      mode: "native TCP + optional embedded C ABI",
+      repository: "https://github.com/puffball1567/koutendb-go",
+      packageName: "github.com/puffball1567/koutendb-go",
+      installHint: "go get github.com/puffball1567/koutendb-go@v0.1.0",
+      notes: "Released as koutendb-go v0.1.0. Go 1.26+. Native TCP works with CGO_ENABLED=0; embedded uses the kouten_embedded build tag and libkoutendb."
     )
   ]
 

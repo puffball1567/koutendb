@@ -57,6 +57,12 @@ if require_cmd go; then
 fi
 
 if [[ "$RUN_WIRE" == "1" ]]; then
+  if [[ -n "${KOUTEN_COMPAT_PHP_DIR:-}" ]]; then
+    log "PHP native TCP conformance (FFI disabled)"
+    bash scripts/native_driver_conformance.sh php -n "$KOUTEN_COMPAT_PHP_DIR/tests/tcp_adapter.php"
+  else
+    log "PHP native TCP: set KOUTEN_COMPAT_PHP_DIR to the external driver checkout"
+  fi
   log "Python native wire driver"
   printf '[compat] skip: Python driver is split out of the core repository\n'
 

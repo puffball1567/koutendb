@@ -5,7 +5,7 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
-Current release evidence: [v0.14.3 release notes](./github-release-v0.14.3.md)
+Current release evidence: [v0.14.4 release notes](./github-release-v0.14.4.md)
 
 Current v1.0 preparation: [v1.0 stabilization plan](./v1-stabilization.md)
 
@@ -100,24 +100,28 @@ Translations:
 
 ## Drivers / Bindings
 
+JavaScript's native TCP transport is released on GitHub in v0.2.0, not yet on
+npm. The npm version shown below remains v0.1.5. See
+[Driver Installation](driver-installation.md) for transport-specific setup.
+
 | Target | Status | Notes |
 |---|---|---|
 | Nim API | Done | Native public API |
 | C ABI | Done | ABI version / last error / put/get/retrieve/batch/atlas plus additive codec-aware put/get calls; C ABI vectors are host-native float arrays, while TCP wire vectors are canonical little-endian float32 |
 | JavaScript / TypeScript | Published | npm [`koutendb` v0.1.5](https://www.npmjs.com/package/koutendb); repository [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js); Node-API C ABI wrapper with TypeScript API |
 | Bun | Partial | The npm package uses Node-API and includes Bun compatibility verification, but Bun support remains experimental |
-| Rust | Published | crates.io [`koutendb` v0.1.6](https://crates.io/crates/koutendb); repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust); C ABI wrapper |
-| Python | Published | PyPI [`koutendb` v0.2.1](https://pypi.org/project/koutendb/); repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python); native TCP wire driver |
-| Go | In-tree only | Minimal C ABI wrapper; no Go module or external driver repository has been published |
-| PHP | Published | Packagist [`koutendb/koutendb` v0.1.3](https://packagist.org/packages/koutendb/koutendb); repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php); FFI / C ABI wrapper with Docker smoke |
+| Rust | Published | crates.io [`koutendb` v0.2.0](https://crates.io/crates/koutendb); repository [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust); C ABI wrapper + optional native TCP |
+| Python | Published | PyPI [`koutendb` v0.3.0](https://pypi.org/project/koutendb/); repository [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python); native TCP wire driver |
+| Go | Published | [`koutendb-go` v0.1.0](https://github.com/puffball1567/koutendb-go); native TCP + optional embedded C ABI; `go get github.com/puffball1567/koutendb-go@v0.1.0` |
+| PHP | Published | Packagist [`koutendb/koutendb` v0.2.0](https://packagist.org/packages/koutendb/koutendb); repository [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php); Native TCP + optional FFI / C ABI wrapper with Docker smoke |
 | Swift | In-tree only | SwiftPM-compatible C ABI wrapper with Linux Docker smoke; no SwiftPM package has been published |
 | C# minimal | In-tree only | Generic C# wrapper; no NuGet package has been published. Unity official asset is separate |
-| C++ | Released | Repository [`puffball1567/koutendb-cpp` v0.1.3](https://github.com/puffball1567/koutendb-cpp); C++17 C ABI wrapper with CMake smoke; Unreal official plugin is separate |
+| C++ | Released | Repository [`puffball1567/koutendb-cpp` v0.2.0](https://github.com/puffball1567/koutendb-cpp); C++17 C ABI wrapper + optional native TCP with CMake smoke; Unreal official plugin is separate |
 | Kotlin-first JVM | In-tree only | JNI / C ABI wrapper with Docker smoke; no Maven package has been published |
 | React Native / WASM local state | Post-v0.1 candidate | Browser / React Native state boundary; handled with the WASM line, not before Kotlin |
 | Driver discovery CLI | Done | `kouten driver list/info/install` prints official driver metadata and setup commands without executing remote scripts |
 | Driver compatibility test suite | Partial | `scripts/driver_compat.sh`; Docker-backed PHP / Swift / Kotlin are opt-in and verified |
-| Package publishing | Partial | `nimble install koutendb`, `cargo add koutendb`, `npm install koutendb`, `composer require koutendb/koutendb`, and `python3 -m pip install koutendb` are available. NuGet, Maven, Go, SwiftPM, and other registry packages remain future work |
+| Package publishing | Partial | `nimble install koutendb`, `cargo add koutendb`, `npm install koutendb`, `composer require koutendb/koutendb`, `python3 -m pip install koutendb`, and `go get github.com/puffball1567/koutendb-go@v0.1.0` are available. NuGet, Maven, SwiftPM, and other registry packages remain future work |
 
 ## Benchmarks / Demos
 

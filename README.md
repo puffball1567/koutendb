@@ -90,7 +90,7 @@ Typical NoSQL](docs/nosql-positioning.md) for the full model.
 | See the ring model with three CLI writes | [Five-Minute Quickstart](docs/quickstart.md) |
 | Prove reopen, migration, backup, and restore | [Hands-on Evaluation](docs/hands-on-evaluation.md) |
 | Embed the database in a Nim application | [Public API](docs/public-api.md) |
-| Use Rust, TypeScript, Python, PHP, or C++ | [Driver Installation](docs/driver-installation.md) |
+| Use Rust, TypeScript, Python, PHP, C++, or Go | [Driver Installation](docs/driver-installation.md) |
 | Run a TLS/authenticated persistent server | [v0.14 Self-Hosted Operations](docs/v0.14-self-hosted-operations.md) |
 | Measure AI/RAG working-set reduction | [Effect Validation](docs/effect-validation.md) |
 | Evaluate an ongoing service deployment | [Service Trial](docs/service-trial.md) |
@@ -107,11 +107,11 @@ Choose the artifact that matches the first task:
 | Task | Install path |
 |---|---|
 | Local CLI or embedded Nim | `nimble install koutendb` |
-| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.14.3` and the self-host bundle |
+| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.14.4` and the self-host bundle |
 | Existing-language application | published driver plus a compatible KoutenDB server or native library |
 | Core development and full validation | source checkout |
 
-Rust, JavaScript / TypeScript, PHP, Python, and C++ drivers are published. The
+Rust, JavaScript / TypeScript, PHP, Python, C++, and Go drivers are published. The
 remaining non-Nim language drivers are repository-local foundations.
 
 Prerequisites:
@@ -274,11 +274,17 @@ Published external drivers:
 
 | Language / runtime | Package | Version | Repository | Mode |
 |---|---|---:|---|---|
-| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.1.6` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper |
+| Rust | [`koutendb`](https://crates.io/crates/koutendb) | `0.2.0` | [`puffball1567/koutendb-rust`](https://github.com/puffball1567/koutendb-rust) | C ABI wrapper + optional native TCP |
 | JavaScript / TypeScript | [`koutendb`](https://www.npmjs.com/package/koutendb) | `0.1.5` | [`puffball1567/koutendb-js`](https://github.com/puffball1567/koutendb-js) | Node-API C ABI wrapper |
-| PHP | [`koutendb/koutendb`](https://packagist.org/packages/koutendb/koutendb) | `0.1.3` | [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) | FFI / C ABI wrapper |
-| C++ | GitHub / CMake source package | `0.1.3` | [`puffball1567/koutendb-cpp`](https://github.com/puffball1567/koutendb-cpp) | C++17 C ABI wrapper |
-| Python | [`koutendb`](https://pypi.org/project/koutendb/) | `0.2.1` | [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) | Native TCP wire driver |
+| PHP | [`koutendb/koutendb`](https://packagist.org/packages/koutendb/koutendb) | `0.2.0` | [`puffball1567/koutendb-php`](https://github.com/puffball1567/koutendb-php) | Native TCP + optional FFI / C ABI wrapper |
+| C++ | GitHub / CMake source package | `0.2.0` | [`puffball1567/koutendb-cpp`](https://github.com/puffball1567/koutendb-cpp) | C++17 C ABI wrapper + optional native TCP |
+| Python | [`koutendb`](https://pypi.org/project/koutendb/) | `0.3.0` | [`puffball1567/koutendb-python`](https://github.com/puffball1567/koutendb-python) | Native TCP wire driver |
+| Go | [`github.com/puffball1567/koutendb-go`](https://pkg.go.dev/github.com/puffball1567/koutendb-go) | `0.1.0` | [`puffball1567/koutendb-go`](https://github.com/puffball1567/koutendb-go) | Native TCP + optional embedded C ABI |
+
+JavaScript also has a [GitHub v0.2.0 release](https://github.com/puffball1567/koutendb-js/releases/tag/v0.2.0)
+with addon-free native TCP. The npm release remains v0.1.5; `npm install koutendb`
+does not yet install that TCP release. Driver API coverage differs by transport;
+see each driver's compatibility table.
 
 The table below lists current core-repository driver foundations. Publication
 priority for remaining language packages is tracked in
@@ -290,15 +296,15 @@ priority for remaining language packages is tracked in
 | C ABI | `include/koutendb.h` | Embedded / cluster foundation for bindings | Shipped with the core source release | contract smoke |
 | Node.js / TypeScript | `drivers/node` | Native TCP wire driver, ESM | In-tree test foundation; the published Node-API driver is listed above | `node --test` |
 | Bun | `drivers/node` | Node-compatible TCP wire driver | In-tree experimental path; no separate Bun package | `bun test` |
-| Go | `drivers/go` | C ABI wrapper | **In-tree only; no Go module has been published** | `go test` |
+| Go (legacy foundation) | `drivers/go` | C ABI wrapper | In-tree compatibility fixture; use the external module above for applications | `go test` |
 | Swift | `drivers/swift` | SwiftPM C ABI wrapper | **In-tree only; no SwiftPM package has been published** | Linux Docker smoke |
 | C# | `drivers/csharp` | Generic .NET C ABI wrapper | **In-tree only; no NuGet package has been published** | contract smoke |
 | Kotlin/JVM | `drivers/kotlin` | JNI / C ABI wrapper | **In-tree only; no Maven package has been published** | Docker smoke |
 
 Detailed setup notes are in
 [docs/driver-installation.md](docs/driver-installation.md). Nimble package
-registration is complete. Rust, JavaScript / TypeScript, PHP, Python, and C++
-source releases are published; NuGet, Maven, Go, SwiftPM, and other registry
+registration is complete. Rust, JavaScript / TypeScript, PHP, Python, C++, and Go
+releases are published; NuGet, Maven, SwiftPM, and other registry
 packages remain roadmap items.
 
 ## Cluster Mode
@@ -725,7 +731,7 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.14.3 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.14.4 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster

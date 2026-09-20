@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v0.14.4 - 2026-09-20
+
+### Changed
+
+- Updated published driver versions, transport choices, installation commands
+  and CLI discovery, including the standalone Go v0.1.0 module.
+- Distinguished JavaScript's GitHub v0.2.0 native TCP release from npm v0.1.5.
+- Added discovery regression checks for all six external driver entries.
+- Added shared native-driver conformance fixtures and an authenticated/TLS
+  real-server harness, including explicit server-authentication certificate usage.
+
 ## v0.14.3 - 2026-09-07
 
 ### Fixed

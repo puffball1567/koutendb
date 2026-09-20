@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "wireVersion": 1,
+  "id": "18446744073709551615:1:7:1.25:60:0.5",
+  "handshake": [
+    {"request": "WIREVER\n", "response": "WIREVER 1\n"},
+    {"request": "CODECMETA ON\n", "response": "OK codec-metadata\n"}
+  ],
+  "cases": [
+    {"name": "fragmented-unicode", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 9 json\n\"日本\"\n", "chunk": 1}]], "op": {"op": "get", "id": "$id"}, "result": {"payload": "IuaXpeacrCIK", "codec": "json"}},
+    {"name": "binary-nul", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "responseBase64": "VkFMIDAgNCByYXcKAAD//g=="}]], "op": {"op": "get", "id": "$id"}, "result": {"payload": "AAD//g==", "codec": "raw"}},
+    {"name": "empty-value", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 0 raw\n"}]], "op": {"op": "get", "id": "$id"}, "result": {"payload": "", "codec": "raw"}},
+    {"name": "missing", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "MISS\n"}]], "op": {"op": "get", "id": "$id"}, "result": null},
+    {"name": "gone", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "GONE\n"}]], "op": {"op": "get", "id": "$id"}, "result": null},
+    {"name": "query", "sessions": [[{"request": "QRYID 18446744073709551615 1 7 1.25 60 0.5 9\n{ title }", "response": "VAL 0 13 json\n{\"title\":\"x\"}"}]], "op": {"op": "query", "id": "$id", "selection": "{ title }"}, "result": {"title": "x"}},
+    {"name": "negative-length", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 -1 raw\n"}]], "op": {"op": "get", "id": "$id"}, "error": "ProtocolException"},
+    {"name": "oversized-length", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 99999999999999999999 raw\n"}]], "op": {"op": "get", "id": "$id"}, "error": "ProtocolException"},
+    {"name": "unknown-codec", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 1 unknown\nx"}]], "op": {"op": "get", "id": "$id"}, "error": "ProtocolException"},
+    {"name": "malformed-header", "sessions": [[{"request": "HEALTH\n", "response": "WHAT\n"}]], "op": {"op": "health"}, "error": "ProtocolException"},
+    {"name": "server-error-redacted", "sessions": [[{"request": "HEALTH\n", "response": "ERR secret-password\n"}]], "op": {"op": "health"}, "error": "ServerException"},
+    {"name": "write-disconnected-after-body", "sessions": [[{"request": "PUTR 1 1 0 raw\nrx", "disconnect": true}]], "op": {"op": "put", "ring": "r", "payload": "eA=="}, "error": "IndeterminateWriteException"},
+    {"name": "write-malformed-id", "sessions": [[{"request": "PUTR 1 1 0 raw\nrx", "response": "ID 1 1 7 NaN 60 0\n"}]], "op": {"op": "put", "ring": "r", "payload": "eA=="}, "error": "IndeterminateWriteException"},
+    {"name": "read-reconnect-once", "sessions": [[{"request": "HEALTH\n", "disconnect": true}], [{"request": "HEALTH\n", "response": "OK node=0\n"}]], "op": {"op": "health"}, "result": "node=0"},
+    {"name": "partial-body-reconnect", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 2 raw\nx"}], [{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "VAL 0 2 raw\nxy"}]], "op": {"op": "get", "id": "$id"}, "result": {"payload": "eHk=", "codec": "raw"}},
+    {"name": "read-retry-exhausted", "sessions": [[{"request": "HEALTH\n", "disconnect": true}], [{"request": "HEALTH\n", "disconnect": true}]], "op": {"op": "health"}, "error": "ConnectionException"},
+    {"name": "read-timeout", "connect": {"readTimeout": 0.05, "options": {"retryReads": false}}, "sessions": [[{"request": "HEALTH\n", "delay": 0.15}]], "op": {"op": "health"}, "error": "ConnectionTimeoutException"},
+    {"name": "write-timeout-after-send", "connect": {"readTimeout": 0.05}, "sessions": [[{"request": "PUTR 1 1 0 raw\nrx", "delay": 0.15}]], "op": {"op": "put", "ring": "r", "payload": "eA=="}, "error": "IndeterminateWriteException"},
+    {"name": "redirect-no-owner", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "FWD 18446744073709551615 1 8 1.25 60 0.5\n"}, {"request": "GETID 18446744073709551615 1 8 1.25 60 0.5\n", "response": "VAL 0 1 raw\nx"}]], "op": {"op": "get", "id": "$id"}, "result": {"payload": "eA==", "codec": "raw"}},
+    {"name": "redirect-out-of-bounds", "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "FWD 18446744073709551615 1 7 1.25 60 0.5 99\n"}]], "op": {"op": "get", "id": "$id"}, "error": "ProtocolException"},
+    {"name": "redirect-cycle", "connect": {"options": {"maxRedirects": 1}}, "sessions": [[{"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "FWD 18446744073709551615 1 7 1.25 60 0.5 0\n"}, {"request": "GETID 18446744073709551615 1 7 1.25 60 0.5\n", "response": "FWD 18446744073709551615 1 7 1.25 60 0.5 0\n"}]], "op": {"op": "get", "id": "$id"}, "error": "ProtocolException"}
+  ]
+}
