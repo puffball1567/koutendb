@@ -9,6 +9,11 @@ The fixture pins Jazzy commit `d45d49d07a6d130b56c1070f723cf668094e276b`
 (package version 0.5.3). Jazzy is a demo-only dependency; it is not required
 by the KoutenDB library or normal core tests.
 
+Jazzy initializes its SQL subsystem at startup. The demo explicitly uses an
+empty in-memory SQLite connection for that unused framework subsystem, so a
+non-root container does not need to create a SQL database file. All task CRUD
+and related-record queries use KoutenDB; SQLite is not a fallback data store.
+
 ## Docker
 
 From the KoutenDB repository root:

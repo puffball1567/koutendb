@@ -4,6 +4,9 @@ on:
   pull_request:
     branches: [devel]
     paths:
+      - src/**
+      - koutendb.nimble
+      - config.nims
       - examples/web/**
       - examples/compose/Dockerfile
       - scripts/jazzy_demo_smoke.sh
@@ -12,6 +15,9 @@ on:
   push:
     branches: [devel]
     paths:
+      - src/**
+      - koutendb.nimble
+      - config.nims
       - examples/web/**
       - examples/compose/Dockerfile
       - scripts/jazzy_demo_smoke.sh
@@ -71,6 +77,10 @@ jobs:
         run: |
           docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml up -d --build --wait
           docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml --profile test run --rm --build smoke
+
+      - name: Show API startup failures
+        if: failure()
+        run: docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml logs --no-color --tail 60 api
 
       - name: Remove isolated containers and volumes
         if: always()

@@ -16,6 +16,8 @@
 
 - Registered the demo's ring metadata on each request-owned Nim client so
   ID reads keep working across reconnections and API restarts.
+- Kept Jazzy's unused SQL subsystem in memory so its non-root container does
+  not attempt to create an unrelated SQLite database file.
 
 ## v0.14.4 - 2026-09-20
 

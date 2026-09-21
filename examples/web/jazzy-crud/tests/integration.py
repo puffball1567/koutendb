@@ -180,6 +180,7 @@ def run():
                 stop(proc)
             for log in logs:
                 log.close()
+            assert not list(work.glob("*.sqlite*")), "unexpected SQL persistence"
             for path in work.glob("*.log"):
                 content = path.read_text(errors="replace")
                 assert password not in content and secret not in content, "credential leaked in service log"

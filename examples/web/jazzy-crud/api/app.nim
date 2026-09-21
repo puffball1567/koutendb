@@ -326,6 +326,9 @@ proc main() =
   let port = parseInt(getEnv("PORT", "3000"))
   if port notin 1..65535:
     raise newException(ValueError, "PORT must be in 1..65535")
+  # Jazzy initializes SQL at startup even when handlers never use it.
+  # Keep that unused subsystem in memory; task data belongs only to KoutenDB.
+  connectDB(":memory:")
   Route.get("/health", healthRoute)
   Route.get("/meta", metaRoute)
   Route.get("/tasks", listTasks)
