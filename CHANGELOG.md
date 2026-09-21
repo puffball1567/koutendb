@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.14.5 - 2026-09-22
+
+### Added
+
+- Jazzy Framework / React / KoutenDB CRUD demo with category rings, tags,
+  related-record retrieval and an isolated Docker Compose stack.
+- Jazzy integration matrix covering concurrent requests, input boundaries,
+  database/API restarts, persistence, authentication and verified TLS.
+- Dedicated HTTP/Docker CI validation and updated web-demo documentation.
+
+### Fixed
+
+- Registered the demo's ring metadata on each request-owned Nim client so
+  ID reads keep working across reconnections and API restarts.
+
 ## v0.14.4 - 2026-09-20
 
 ### Changed
