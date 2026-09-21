@@ -103,6 +103,9 @@ and the pinned Jazzy revision on 2026-09-22. Every run used a fresh data
 directory. The server used ARC and the multithreaded API used atomicARC.
 The React TypeScript/production build and Compose configuration validation
 also passed, including the test profile.
-The Docker stack itself has not been executed in this validation session
-because no Docker daemon was available; its build/runtime result remains
-separate from the local integration result.
+The Docker stack and shared CRUD contract also passed on GitHub Actions,
+including the non-root Jazzy API, nginx/React service and persistent KoutenDB
+container. The same job passed the HTTP/restart/authentication/TLS matrix.
+See the [successful validation run](https://github.com/puffball1567/koutendb/actions/runs/35633165422).
+No Docker daemon was available on the local workstation; container evidence
+comes from the CI runner, separately from the local Ubuntu validation above.

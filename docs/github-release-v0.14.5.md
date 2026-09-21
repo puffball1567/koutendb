@@ -25,7 +25,8 @@ DB/API restart, database outage, authentication rejection, credential redaction
 and verified TLS including wrong-hostname/untrusted-CA rejection.
 
 A dedicated GitHub Actions workflow runs the HTTP matrix and the Docker CRUD
-contract. The shared React production build and Compose configurations are
+contract; [both passed before release](https://github.com/puffball1567/koutendb/actions/runs/35633165422).
+The shared React production build and Compose configurations are
 also checked. See the [demo guide](https://github.com/puffball1567/koutendb/tree/v0.14.5/examples/web/jazzy-crud) for
 reproduction commands and validation results.
 
