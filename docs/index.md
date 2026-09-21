@@ -29,6 +29,7 @@ whether the locality-first model fits the workload.
 - [C ABI Reference](c-abi.md)
 - [Driver Installation](driver-installation.md)
 - [Use Case Recipes](use-case-recipes.md)
+- [Web Integration Demos: REKT, PRK and Jazzy](https://github.com/puffball1567/koutendb/tree/main/examples/web)
 - [Configuration Reference](config-reference.md)
 - [CLI Reference](cli-reference.md)
 - [Unique Data Model And Operating Patterns](unique-data-model.md)
@@ -97,6 +98,7 @@ trial to maintained application is in the
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.14.5 Release Notes](github-release-v0.14.5.md)
 - [v0.14.2 Release Notes](github-release-v0.14.2.md)
 - [v0.14.4 Release Notes](github-release-v0.14.4.md)
 - [v0.14.3 Release Notes](github-release-v0.14.3.md)

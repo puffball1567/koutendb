@@ -7,13 +7,15 @@ without exposing database credentials to the browser.
   through the published `koutendb` npm driver.
 - [PRK CRUD](prk-crud/README.md): Prologue, React, and KoutenDB through the
   public Nim client API.
+- [Jazzy CRUD](jazzy-crud/README.md): Jazzy Framework, the shared React UI,
+  and KoutenDB's public Nim client API with request-owned connections.
 
-Both stacks expose the same task application and HTTP contract. Categories
+All three stacks expose the same task application and HTTP contract. Categories
 select ring placement, while tags rank related records only after the selected
 ring has narrowed the candidate set. This makes the locality boundary visible
 in a normal CRUD application.
 
-Run both integration contracts from the repository root:
+Run the three integration contracts from the repository root:
 
 ```sh
 scripts/web_crud_demo_smoke.sh

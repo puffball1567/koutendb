@@ -1,0 +1,89 @@
+name: Jazzy Integration
+
+on:
+  pull_request:
+    branches: [devel]
+    paths:
+      - src/**
+      - koutendb.nimble
+      - config.nims
+      - examples/web/**
+      - examples/compose/Dockerfile
+      - scripts/jazzy_demo_smoke.sh
+      - scripts/web_crud_demo_smoke.sh
+      - .github/workflows/jazzy.yml
+  push:
+    branches: [devel]
+    paths:
+      - src/**
+      - koutendb.nimble
+      - config.nims
+      - examples/web/**
+      - examples/compose/Dockerfile
+      - scripts/jazzy_demo_smoke.sh
+      - scripts/web_crud_demo_smoke.sh
+      - .github/workflows/jazzy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jazzy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: Jazzy HTTP and Docker contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout validated Jazzy revision
+        uses: actions/checkout@v4
+        with:
+          repository: canermastan/jazzy-framework
+          ref: d45d49d07a6d130b56c1070f723cf668094e276b
+          path: .integration/jazzy
+          persist-credentials: false
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.10'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev openssl libsqlite3-0 libpq5
+
+      - name: Install core dependencies
+        run: nimble install -y --depsOnly
+
+      - name: Install Jazzy dependencies
+        working-directory: .integration/jazzy
+        run: nimble install -y --depsOnly
+
+      - name: Local HTTP, restart, authentication and TLS matrix
+        env:
+          JAZZY_DIR: ${{ github.workspace }}/.integration/jazzy
+        run: bash scripts/jazzy_demo_smoke.sh
+
+      - name: Start Docker stack and test shared CRUD contract
+        env:
+          JAZZY_PORT: '0'
+        run: |
+          docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml up -d --build --wait
+          docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml --profile test run --rm --build smoke
+
+      - name: Show API startup failures
+        if: failure()
+        run: docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml logs --no-color --tail 60 api
+
+      - name: Remove isolated containers and volumes
+        if: always()
+        env:
+          JAZZY_PORT: '0'
+        run: docker compose -p jazzy-ci -f examples/web/jazzy-crud/compose.yml down -v --remove-orphans
