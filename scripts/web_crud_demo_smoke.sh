@@ -14,6 +14,8 @@ cleanup_all() {
     -f examples/web/rekt-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
   env PRK_PORT=0 docker compose --project-name koutendb-prk-crud-smoke \
     -f examples/web/prk-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
+  env JAZZY_PORT=0 docker compose --project-name koutendb-jazzy-crud-smoke \
+    -f examples/web/jazzy-crud/compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
 trap cleanup_all EXIT
@@ -25,8 +27,10 @@ run_stack() {
   local port_variable
   if [[ "$name" == "rekt" ]]; then
     port_variable="REKT_PORT=0"
-  else
+  elif [[ "$name" == "prk" ]]; then
     port_variable="PRK_PORT=0"
+  else
+    port_variable="JAZZY_PORT=0"
   fi
 
   echo "[web-crud] build and start ${name^^}"
@@ -43,5 +47,6 @@ run_stack() {
 
 run_stack rekt
 run_stack prk
+run_stack jazzy
 
 echo "[web-crud] all CRUD contracts passed"
