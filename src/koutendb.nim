@@ -47,6 +47,9 @@ type
   KoutenOperationError* = object of IOError
     ## Operational failure from remote cluster, durability, backup, or sync paths.
 
+  KoutenIndeterminateWriteError* = IndeterminateWriteError
+    ## A remote mutation may have committed; reconcile before attempting again.
+
   KoutenNotFoundError* = object of KeyError
     ## Requested record or maintenance job does not exist.
 

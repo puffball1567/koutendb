@@ -20,6 +20,7 @@ scripts/cluster_authz_smoke.sh
 scripts/cluster_rbac_smoke.sh
 scripts/cluster_wire_driver_smoke.sh
 scripts/cluster_wire_fuzz_smoke.sh
+bash scripts/wire_security_matrix.sh
 scripts/cluster_retrieve_routing_smoke.sh
 scripts/handoff_reclamation_smoke.sh
 scripts/placement_migration_smoke.sh

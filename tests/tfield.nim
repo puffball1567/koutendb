@@ -1,7 +1,23 @@
 ## kouten/field の単体テスト
 
 import std/[math, tables, unittest]
-import ../src/kouten/[field, store]
+import ../src/kouten/[field, store, vector_backend]
+
+suite "retained vector candidate byte accounting":
+  test "insert, replacement, rejection and zero budget preserve exact totals":
+    var hits: seq[VectorCandidate] = @[]
+    check hits.addTopCandidate(VectorCandidate(score: 1, payload: "abc"), 0) == 0
+    check hits.len == 0
+    var bytes = hits.addTopCandidate(VectorCandidate(score: 1, payload: "abc"), 2)
+    bytes += hits.addTopCandidate(VectorCandidate(score: 2, payload: "defgh"), 2)
+    check bytes == 8
+    check hits.addTopCandidate(VectorCandidate(score: 0, payload: "ignored"), 2) == 0
+    bytes += hits.addTopCandidate(VectorCandidate(score: 3, payload: "x"), 2)
+    check bytes == 6
+    bytes += hits.addTopCandidate(VectorCandidate(score: 4, payload: "abcdefg"), 2)
+    check bytes == 8
+    check hits.len == 2
+    check hits[0].payload.len + hits[1].payload.len == bytes
 
 proc vec2(x, y: float32): seq[float32] =
   normalize(@[x, y])

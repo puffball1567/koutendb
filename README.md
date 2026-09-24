@@ -107,7 +107,7 @@ Choose the artifact that matches the first task:
 | Task | Install path |
 |---|---|
 | Local CLI or embedded Nim | `nimble install koutendb` |
-| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.14.5` and the self-host bundle |
+| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.15.0` and the self-host bundle |
 | Existing-language application | published driver plus a compatible KoutenDB server or native library |
 | Core development and full validation | source checkout |
 
@@ -731,7 +731,7 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.14.5 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.15.0 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster
@@ -752,6 +752,11 @@ remain active validation tracks. See
 [Operational Trials](docs/operational-trials.md),
 [Soak Testing](docs/soak-testing.md), and
 [Feature Status](docs/koutendb-status.md) for the current evidence and roadmap.
+
+The v0.15 transport boundary rejects unbounded aggregate responses, prevents
+automatic replay of writes with unknown outcomes, requires TLS for
+authenticated non-loopback listeners by default, and applies cumulative frame
+read deadlines. See the [v0.15 Security Review](docs/v0.15-security-review.md).
 
 ## License
 

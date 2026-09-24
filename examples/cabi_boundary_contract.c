@@ -23,6 +23,16 @@ int main(int argc, char **argv) {
   snprintf(checkpoints, sizeof checkpoints, "%s/checkpoints", argv[1]);
   snprintf(restored, sizeof restored, "%s/restored", argv[1]);
   kouten_init();
+  void *invalid = kouten_connect_auth("127.0.0.1:17301", "alice",
+      "secret-marker\nSHUTDOWN", "", "", "");
+  CHECK(invalid == NULL, "C ABI rejects authentication header injection");
+  CHECK(kouten_last_error() && !strstr(kouten_last_error(), "secret-marker"),
+        "authentication validation must not disclose the supplied secret");
+  if (invalid) kouten_close(invalid);
+  invalid = kouten_connect_auth("127.0.0.1:17301", "alice", "secret", "", "",
+                                "galaxy\nSHUTDOWN");
+  CHECK(invalid == NULL, "C ABI rejects galaxy header injection");
+  if (invalid) kouten_close(invalid);
   void *db = kouten_open_dir_options(1, data, 1, 1);
   if (!db) return 2;
   kouten_id id;

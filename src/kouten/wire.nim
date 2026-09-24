@@ -74,6 +74,9 @@ const
   MaxWireBodyBytes* = 64 * 1024 * 1024
   MaxWireResponseItems* = 1_000_000
   MaxSecureFrameBytes = 64 * 1024 * 1024 + MaxWireHeaderBytes
+  WireReadDeadlineMs* =
+    when defined(koutenTestWireDeadline) or defined(koutenTestBackpressure): 250
+    else: 10_000
 
 type
   Peer* = tuple[host: string, port: int]
@@ -192,6 +195,13 @@ proc parsePeers*(s: string): seq[Peer] =
   if result.len == 0:
     raise newException(ValueError, "peers must not be empty")
 
+proc validateHeaderToken(value, label: string) =
+  if value.len > MaxWireHeaderBytes div 4:
+    raise newException(ValueError, label & " exceeds wire token limit")
+  for ch in value:
+    if ord(ch) <= 32 or ord(ch) == 127:
+      raise newException(ValueError, label & " contains a wire delimiter")
+
 proc newClusterClient*(peers: seq[Peer], username: string = "",
                        password: string = "", authToken: string = "",
                        secretKey: string = "", galaxy: string = "",
@@ -200,6 +210,11 @@ proc newClusterClient*(peers: seq[Peer], username: string = "",
                        tlsInsecureSkipVerify: bool = false): ClusterClient =
   if peers.len == 0:
     raise newException(ValueError, "at least one cluster peer is required")
+  validateHeaderToken(username, "username")
+  validateHeaderToken(galaxy, "galaxy")
+  if secretKey.len == 0:
+    validateHeaderToken(password, "password")
+    validateHeaderToken(authToken, "auth token")
   if authToken.len > 0 and username.len == 0:
     return ClusterClient(peers: peers, username: "token", password: authToken,
                          secretKey: secretKey, galaxy: galaxy, tls: tls,
@@ -215,6 +230,15 @@ proc close*(c: ClusterClient) =
     secureConns.del s.getFd.int
     s.close()
   c.socks.clear()
+  c.codecMetadata.clear()
+
+proc dropConnection(c: ClusterClient, node: int) =
+  if node in c.socks:
+    let sock = c.socks[node]
+    secureConns.del sock.getFd.int
+    sock.close()
+    c.socks.del node
+  c.codecMetadata.del node
 
 # ---------------------------------------------------------------- 低レベル入出力
 
@@ -222,17 +246,18 @@ proc rawReadExact(sock: Socket, n: int): string =
   if n < 0:
     raise newException(ValueError, "read length must be non-negative")
   result = newString(n)
-  var got = 0
-  while got < n:
-    let r = sock.recv(addr result[got], n - got)
-    if r <= 0:
-      raise newException(IOError, "接続が切断された")
-    got += r
+  if n == 0:
+    return
+  # Apply one cumulative deadline to the complete body. Repeated blocking recv
+  # calls would let a peer reset SO_RCVTIMEO indefinitely by dripping bytes.
+  let got = sock.recv(addr result[0], n, WireReadDeadlineMs)
+  if got != n:
+    raise newException(IOError, "接続が切断された")
 
 proc readSecureFrame(sock: Socket) =
   let fd = sock.getFd.int
   var st = secureConns[fd]
-  let line = sock.recvLine(timeout = 10_000,
+  let line = sock.recvLine(timeout = WireReadDeadlineMs,
                            maxLength = MaxWireHeaderBytes)
   if line.len == 0 or line == "\r\n":
     raise newException(IOError, "接続が切断された")
@@ -272,6 +297,9 @@ proc readExact*(sock: Socket, n: int): string =
   secureConns[fd] = st
 
 proc sendFrame*(sock: Socket, header: string, payload: string = "") =
+  if header.len > MaxWireHeaderBytes or '\n' in header or '\r' in header or
+      '\0' in header:
+    raise newException(ValueError, "invalid wire header")
   # ヘッダと payload を1回の send にまとめる（syscall 削減）
   let plaintext = header & "\n" & payload
   let fd = sock.getFd.int
@@ -325,7 +353,7 @@ proc splitHeaderLine(line: string): seq[string] =
   if result.len == 0:
     raise newException(ValueError, "empty wire header")
 
-proc readHeader*(sock: Socket, timeoutMs = 10_000): seq[string] =
+proc readHeader*(sock: Socket, timeoutMs = WireReadDeadlineMs): seq[string] =
   let fd = sock.getFd.int
   if fd notin secureConns:
     let line = sock.recvLine(timeout = timeoutMs,
@@ -370,6 +398,11 @@ proc socketFor(c: ClusterClient, node: int): Socket =
   if node in c.socks:
     return c.socks[node]
   result = newSocket()
+  var connected = false
+  defer:
+    if not connected:
+      result.disableSecure()
+      result.close()
   result.connect(c.peers[node].host, Port(c.peers[node].port))
   result.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)  # short request/response frames dominate
   if c.tls:
@@ -406,6 +439,7 @@ proc socketFor(c: ClusterClient, node: int): Socket =
     let r = result.readHeader()
     expect(r, "OK", "HELLO")
   c.socks[node] = result
+  connected = true
 
 proc ensureCodecMetadata*(c: ClusterClient, node: int) =
   ## Enable codec metadata only for calls that need it. Keeping ordinary
@@ -419,10 +453,32 @@ proc ensureCodecMetadata*(c: ClusterClient, node: int) =
   expect(r, "OK", "CODECMETA")
   c.codecMetadata[node] = true
 
+type IndeterminateWriteError* = object of IOError
+  ## The peer may have applied the mutation before the response was lost.
+
+proc canReplayAfterTransportFailure(header: string): bool =
+  # Explicit allowlists prevent new mutation commands from inheriting retries.
+  let command = header.split(' ', maxsplit = 1)[0]
+  let readOnly = command in
+    ["GET", "GETID", "QRY", "QRYID", "TXGETID", "TXQRYID", "BGET",
+     "LISTR", "COUNTR", "RETRIEVE", "RINGS", "STATS", "HEALTH",
+     "METRICS", "WIREVER", "CODECS", "TOPOLOGY", "ACTIVATION",
+     "COORDINATOR", "TXSTATUS", "USTATUS", "MIGVERIFY", "MIGMETAVERIFY"]
+  # These controls are safe because the server fences or deduplicates them by
+  # coordinator epoch, transaction id, or Universe event key.
+  let idempotentControl = command in
+    ["TXCOMMIT", "TXMIRROR", "TXMIRRORAPPLIED", "UAPPLY",
+     "COORDPROMOTE", "COORDRESUME"]
+  readOnly or idempotentControl
+
 proc rpc(c: ClusterClient, node: int, header: string,
          payload: string = "", timeoutMs = 10_000): seq[string] =
-  ## One round trip. Reconnect and retry once after disconnect or timeout.
+  ## Retry reads and explicitly idempotent control requests once; never replay
+  ## an ordinary mutation with an ambiguous outcome.
+  let restoreCodec = c.codecMetadata.getOrDefault(node, false)
   for attempt in 0 .. 1:
+    if attempt > 0 and restoreCodec:
+      c.ensureCodecMetadata(node)
     let sock = c.socketFor(node)
     try:
       sock.sendFrame(header, payload)
@@ -431,10 +487,10 @@ proc rpc(c: ClusterClient, node: int, header: string,
         raise newException(IOError, "server returned an empty response")
       return response
     except IOError, OSError, TimeoutError:
-      sock.disableSecure()
-      sock.close()
-      c.socks.del node
-      c.codecMetadata.del node
+      c.dropConnection(node)
+      if not canReplayAfterTransportFailure(header):
+        raise newException(IndeterminateWriteError,
+          "write outcome is unknown after transport failure; not retried")
       if attempt == 1: raise
   @[]
 
@@ -634,6 +690,9 @@ proc getValueReq*(c: ClusterClient, node: int, parent: uint64, seq: uint32,
 proc batchGetReq*(c: ClusterClient, node: int,
                   ids: seq[tuple[parent: uint64, seq: uint32, period: float,
                                  head: float, tWrite: float]]): seq[string] =
+  var complete = false
+  defer:
+    if not complete: c.dropConnection(node)
   var body = ""
   for id in ids:
     body.add($id.parent & " " & $id.seq & " " & $id.period & " " &
@@ -659,26 +718,36 @@ proc batchGetReq*(c: ClusterClient, node: int,
     pos += len
   if pos != payloads.len:
     raise newException(IOError, "BGET response contains trailing bytes")
+  complete = true
 
 proc listRingReq*(c: ClusterClient, node: int, ringKey: uint64, limit: int,
                   cursor: string = ""): WireListResult =
+  var complete = false
+  defer:
+    if not complete: c.dropConnection(node)
   c.ensureCodecMetadata(node)
   let r = c.rpc(node, "LISTR " & $ringKey & " " & $limit & " " & $cursor.len,
                 cursor)
   expect(r, "LVAL", "LISTR", 3)
   let n = responseInt(r[1], "LISTR item count", MaxWireResponseItems)
+  if n > limit:
+    raise newException(IOError, "LISTR response exceeds requested limit")
   result.nextCursor = if r[2] == "_": "" else: r[2]
+  var responseBytes = 0
   for _ in 0 ..< n:
     let h = c.socks[node].readHeader()
     if h.len < 5 or h[0] != "ITEM":
       raise newException(IOError, "LISTR item failed: " & h.join(" "))
-    let payload = c.socks[node].readExact(
-      responseInt(h[4], "LISTR payload length", MaxWireBodyBytes))
+    let payloadLen = responseInt(h[4], "LISTR payload length",
+                                MaxWireBodyBytes - responseBytes)
+    responseBytes += payloadLen
+    let payload = c.socks[node].readExact(payloadLen)
     result.items.add WireListItem(parent: ringKey,
                                   seq: parseUInt(h[1]).uint32,
                                   tWrite: parseFloat(h[2]),
                                   payload: payload,
                                   codec: if h.len >= 6: parsePayloadCodec(h[5]) else: pcRaw)
+  complete = true
 
 proc countRingReq*(c: ClusterClient, node: int, ringKey: uint64): int =
   let r = c.rpc(node, "COUNTR " & $ringKey)
@@ -957,6 +1026,9 @@ proc applyTxReq*(c: ClusterClient, node: int, txid: uint64, op: TxWireOp,
 
 proc retrieveReq*(c: ClusterClient, node: int, hasRing: bool, ringKey: uint64,
                   queryVec: seq[float32], budget: int): RetrieveWireResult =
+  var complete = false
+  defer:
+    if not complete: c.dropConnection(node)
   c.ensureCodecMetadata(node)
   let body = queryVec.vecBytes
   let r = c.rpc(node, "RETRIEVE " & (if hasRing: "1" else: "0") & " " &
@@ -965,42 +1037,53 @@ proc retrieveReq*(c: ClusterClient, node: int, hasRing: bool, ringKey: uint64,
   result.scanned = responseInt(r[1], "RETRIEVE scanned count")
   result.ringsTouched = responseInt(r[2], "RETRIEVE ring count")
   let n = responseInt(r[3], "RETRIEVE hit count", MaxWireResponseItems)
+  if n > budget:
+    raise newException(IOError, "RETRIEVE response exceeds requested budget")
   if r.len >= 6:
     result.totalVectors = responseInt(r[4], "RETRIEVE vector count")
-    result.payloadBytes = responseInt(r[5], "RETRIEVE payload bytes")
+    result.payloadBytes = responseInt(r[5], "RETRIEVE payload bytes", MaxWireBodyBytes)
   else:
     result.totalVectors = result.scanned
+  var responseBytes = 0
   for _ in 0 ..< n:
     let h = c.socks[node].readHeader()
     if h.len < 6 or h[0] != "HIT":
       raise newException(IOError, "RETRIEVE HIT failed: " & h.join(" "))
+    let payloadLen = responseInt(h[5], "RETRIEVE payload length",
+                                MaxWireBodyBytes - responseBytes)
+    responseBytes += payloadLen
     result.hits.add RetrieveWireHit(parent: parseBiggestUInt(h[1]).uint64,
                                     seq: parseUInt(h[2]).uint32,
                                     tWrite: parseFloat(h[3]),
                                     score: parseFloat(h[4]),
-                                    payload: c.socks[node].readExact(
-                                      responseInt(h[5], "RETRIEVE payload length",
-                                                  MaxWireBodyBytes)),
+                                    payload: c.socks[node].readExact(payloadLen),
                                     codec: if h.len >= 7: parsePayloadCodec(h[6]) else: pcRaw)
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   if result.payloadBytes == 0:
     for h in result.hits:
       result.payloadBytes += h.payload.len
   result.estimatedTokens = (result.payloadBytes + 3) div 4
+  complete = true
 
 proc ringsReq*(c: ClusterClient, node: int): seq[RingSummary] =
+  var complete = false
+  defer:
+    if not complete: c.dropConnection(node)
   let r = c.rpc(node, "RINGS")
   expect(r, "RINGS", "RINGS", 2)
   let n = responseInt(r[1], "RINGS count", MaxWireResponseItems)
+  var responseBytes = 0
   for _ in 0 ..< n:
     let h = c.socks[node].readHeader()
     if h.len < 4 or h[0] != "RING":
       raise newException(IOError, "RING failed: " & h.join(" "))
     let dim = responseInt(h[3], "RING vector dimension",
-                          MaxWireBodyBytes div sizeof(float32))
+                          (MaxWireBodyBytes - responseBytes) div sizeof(float32))
+    responseBytes += dim * sizeof(float32)
     result.add RingSummary(ringKey: parseBiggestUInt(h[1]).uint64,
                            count: parseInt(h[2]),
                            centroid: c.socks[node].readExact(dim * sizeof(float32)).bytesVec(dim))
+  complete = true
 
 proc statsReq*(c: ClusterClient, node: int): tuple[node, count: int] =
   let r = c.rpc(node, "STATS")

@@ -56,6 +56,7 @@ trial to maintained application is in the
 - [Technical FAQ](technical-faq.md)
 - [Test Coverage](test-coverage.md)
 - [Security Validation Matrix](security-validation.md)
+- [v0.15 Security Review](v0.15-security-review.md)
 - [Accelerated Churn Testing](accelerated-churn-testing.md)
 - [Benchmark Notes](koutendb-bench.md)
 - [Benchmark Comparison Tables](benchmark-comparison.md)
@@ -98,6 +99,7 @@ trial to maintained application is in the
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.15.0 Release Notes](github-release-v0.15.0.md)
 - [v0.14.5 Release Notes](github-release-v0.14.5.md)
 - [v0.14.2 Release Notes](github-release-v0.14.2.md)
 - [v0.14.4 Release Notes](github-release-v0.14.4.md)

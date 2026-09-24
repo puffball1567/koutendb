@@ -63,9 +63,10 @@ drivers.
   bounded per-peer authentication failure throttle. Secret-key challenge
   negotiation does not disclose whether the requested username exists in its
   first response.
-- Non-loopback plaintext password authentication fails at startup unless TLS,
-  secret-key transport, or the explicit development-only
-  `--allow-insecure-auth` override is configured.
+- Non-loopback authentication fails at startup unless TLS or the explicit
+  development-only `--allow-insecure-auth` override is configured. The
+  secret-key gate is an additional authentication factor and frame-protection
+  layer; it is not treated as a replacement for verified TLS.
 - Authenticated connections are bound to the configured galaxy before database
   commands are accepted. A wrong galaxy is rejected without disclosing the
   expected galaxy name.
@@ -80,6 +81,9 @@ drivers.
 - Wire frame bounds for header, payload, vector, and encrypted transport frame
   lengths. Oversized, negative, or malformed frames return `ERR` and close only
   the offending connection.
+- Header and body reads use cumulative deadlines, so a peer cannot retain the
+  single request loop indefinitely by sending one byte before each socket
+  timeout.
 - Client response bounds validate item counts, body lengths, vector dimensions,
   required fields, and aggregate framing before allocation or slicing.
 - Global retrieval enumerates only authorized rings, and `STATS` reports only

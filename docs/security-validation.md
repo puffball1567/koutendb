@@ -1,15 +1,18 @@
 # Security Validation Matrix
 
 This document records the executable confidentiality and protocol-hardening
-checks for the v0.14 development line. It complements the canonical
+checks through v0.15. It complements the canonical
 [threat model](./threat-model.md); it is not a claim of independent security
 certification.
+
+The next development review and its resource/framing regression matrix are
+tracked in [v0.15 Security Review](v0.15-security-review.md).
 
 ## Validation Matrix
 
 | Boundary | Expected result | Automated evidence |
 |---|---|---|
-| Remote password transport | A non-loopback listener refuses plaintext password authentication unless TLS, secret-key transport, or the explicit development override is configured. | `scripts/cluster_authz_smoke.sh` |
+| Remote authentication transport | A non-loopback listener refuses password and secret-key authentication unless TLS or the explicit development override is configured. | `scripts/cluster_authz_smoke.sh` |
 | Ring authorization startup | Ring-prefix authorization without authentication fails at startup. | `scripts/cluster_authz_smoke.sh` |
 | Authentication guessing | Repeated failures from one peer are throttled; a valid login succeeds again after the bounded block interval. | `tests/tcluster_authz.nim` |
 | Authentication identity disclosure | Secret-key challenge negotiation follows the same first-response path for configured and unknown usernames. | `scripts/cli_crud_smoke.sh` |
@@ -22,6 +25,7 @@ certification.
 | Migration privilege | A replicator can perform steady-state peer work but cannot submit topology-fenced migration frames; admin remains required. | `tests/tcluster_rbac.nim` |
 | Coordinator routing | Transaction coordinator commands sent to a non-coordinator return the current `COORD` assignment without terminating that node. | `tests/tcluster_wire_fuzz.nim` |
 | Request framing | Negative, oversized, truncated, deep, and invalid request frames are rejected while the node remains responsive. | `scripts/cluster_wire_fuzz_smoke.sh` |
+| Slow request framing | Header and body reads have cumulative deadlines; a client that drips a partial body cannot indefinitely reset the server read timeout. | `scripts/wire_security_matrix.sh` |
 | Response framing | Client parsing bounds response body lengths, item counts, vector dimensions, required fields, and aggregate payload slices before use. | `src/kouten/wire.nim`, compile checks and cluster smoke suites |
 | TLS | Trusted CA succeeds; plaintext and invalid certificate paths fail closed. | `scripts/cluster_tls_smoke.sh` |
 | Backup confidentiality | New encrypted backups use Argon2id password derivation plus authenticated secretbox encryption and do not contain plaintext payloads. | `tests/tstore.nim`, `scripts/cli_crud_smoke.sh` |
