@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## v0.15.0 - 2026-09-24
+
+### Security
+
+- Bound aggregate wire transaction bodies, batch responses, retained list and
+  retrieval payloads, and multi-frame client responses.
+- Reject wire-header delimiters in authentication and galaxy inputs without
+  including supplied secrets in validation errors.
+- Release connections when setup fails and discard malformed multi-frame
+  responses instead of reusing an uncertain framing boundary.
+- Stop automatic transport retries for ordinary mutations with an unknown
+  outcome; reads and explicitly fenced or deduplicated control operations
+  retain one bounded retry.
+- Require TLS for authenticated non-loopback listeners by default; the
+  development-only insecure override remains explicit.
+- Apply cumulative frame-read deadlines to stop slow-drip clients from
+  resetting the body timeout indefinitely.
+
+### Fixed
+
+- Restore codec negotiation after a read reconnect, and clear connection-local
+  negotiation state when a client is explicitly closed.
+
+### Tests
+
+- Add loopback security matrices for aggregate boundaries, rejected transaction
+  atomicity, malformed response recovery, lost write acknowledgements,
+  authentication socket cleanup, and codec renegotiation.
+- Extend the C ABI boundary contract with credential and galaxy injection
+  rejection checks.
+
 ## v0.14.5 - 2026-09-22
 
 ### Added

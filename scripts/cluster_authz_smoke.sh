@@ -72,6 +72,12 @@ if src/koutend --id=0 --peers="0.0.0.0:1" --data="$DATA/bad-plaintext-auth" \
   echo "koutend accepted remote plaintext password auth without opt-in" >&2
   exit 1
 fi
+if src/koutend --id=0 --peers="0.0.0.0:1" --data="$DATA/bad-secret-auth" \
+    --user=alice --password=secret --secret-key=transport-secret \
+    >/dev/null 2>&1; then
+  echo "koutend accepted remote secret-key auth without TLS or opt-in" >&2
+  exit 1
+fi
 cat >"$DATA/bad-peer-missing.json" <<JSON
 {
   "id": 0,

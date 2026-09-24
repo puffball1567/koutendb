@@ -56,8 +56,9 @@ Keep production config files outside the repository, lock down file
 permissions, and prefer external secret injection when the deployment platform
 provides it.
 
-`koutend` rejects plaintext password authentication on non-loopback listeners
-unless TLS or the secret-key transport is enabled. The
+`koutend` rejects authentication on non-loopback listeners unless TLS is
+enabled. The secret-key gate remains an additional authentication factor and
+frame-protection layer, not a replacement for verified TLS. The
 `allowInsecureAuth` / `--allow-insecure-auth` escape hatch is intended only for
 an explicitly protected development network. Ring-prefix authorization also
 requires authentication; a prefix list by itself is not an access-control

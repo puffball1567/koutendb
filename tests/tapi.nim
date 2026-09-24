@@ -4,6 +4,15 @@ import std/[json, os, sequtils, strutils, tempfiles, tables, times, unittest]
 import ../src/koutendb
 
 suite "public api":
+  test "ambiguous remote writes expose a distinct catchable public error":
+    var caught = false
+    try:
+      raise newException(KoutenIndeterminateWriteError, "unknown outcome")
+    except KoutenIndeterminateWriteError:
+      caught = true
+    check caught
+    check KoutenIndeterminateWriteError is IOError
+
   test "put/get の往復":
     var db = open()
     let id = db.put("hello")

@@ -96,17 +96,19 @@ proc exactCandidate(p: VectorEntry, queryVec: seq[float32]): VectorCandidate =
                   payload: p.payload, codec: p.codec)
 
 proc addTopCandidate*(hits: var seq[VectorCandidate], cand: VectorCandidate,
-                      budget: int) =
+                      budget: int): int {.discardable.} =
+  ## Return the retained payload-byte delta for bounded server retrievals.
   if budget <= 0:
-    return
+    return 0
   if hits.len < budget:
     hits.add cand
-    return
+    return cand.payload.len
   var worst = 0
   for i in 1 ..< hits.len:
     if hits[i].score < hits[worst].score:
       worst = i
   if cand.score > hits[worst].score:
+    result = cand.payload.len - hits[worst].payload.len
     hits[worst] = cand
 
 proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
