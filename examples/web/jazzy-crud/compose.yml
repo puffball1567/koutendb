@@ -11,6 +11,7 @@ services:
       - --slow-tick=0.05
       - --galaxy=jazzy-demo
       - --user=demo
+      - --allow-insecure-auth
     environment:
       KOUTEN_PASSWORD: ${KOUTEN_PASSWORD:-demo-password}
       KOUTEN_SECRET_KEY: ${KOUTEN_SECRET_KEY:-demo-secret-key}
