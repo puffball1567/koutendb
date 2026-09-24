@@ -203,6 +203,9 @@ jobs:
       - name: Run cluster wire fuzz smoke
         run: scripts/cluster_wire_fuzz_smoke.sh
 
+      - name: Run wire security regression matrix
+        run: bash scripts/wire_security_matrix.sh
+
       - name: Run disk-backed server maintenance and pagination smoke
         run: scripts/auto_pack_server_smoke.sh
 

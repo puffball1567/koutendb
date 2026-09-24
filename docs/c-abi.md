@@ -41,6 +41,10 @@ The script resolves an installed `nimsodium` package through Nimble. Set
   thread.
 - Recoverable exceptions do not cross the C boundary. Failures return `KOUTEN_ERR`, `NULL`,
   or the documented negative sentinel and set `kouten_last_error()`.
+- Remote mutations are not automatically resent after a transport failure.
+  An error reporting an unknown write outcome does not mean the write rolled
+  back. Reconcile application state before retrying; see the
+  [v0.15 security review](v0.15-security-review.md).
 - Unrecoverable Nim defects terminate the process under `--panics:on`; they
   must not be mistaken for recoverable API errors.
 

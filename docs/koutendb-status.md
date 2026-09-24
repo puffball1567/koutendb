@@ -5,7 +5,7 @@ references and may lag behind this file.
 
 Release checklist: [release-checklist.md](./release-checklist.md)
 
-Current release evidence: [v0.14.5 release notes](./github-release-v0.14.5.md)
+Current release evidence: [v0.15.0 release notes](./github-release-v0.15.0.md)
 
 Current v1.0 preparation: [v1.0 stabilization plan](./v1-stabilization.md)
 

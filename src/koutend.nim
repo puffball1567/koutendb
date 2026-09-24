@@ -62,6 +62,9 @@ const
     else: 1_000_000
   MaxClusterTxOps = 10_000
   MaxBatchGetItems = 10_000
+  MaxAggregateWireBytes =
+    when defined(koutenTestSmallLimits): 4096
+    else: MaxWireBodyBytes
   AuthFailureWindowSec = 60.0
   MaxAuthFailuresPerPeer =
     when defined(koutenTestAuthThrottle): 3
@@ -992,10 +995,11 @@ proc rejectIfDraining(sv: Server, sock: Socket, command: string): bool =
   sv.rejectDrainedWrite(sock, command)
   true
 
-proc drainTxCommitOps(sock: Socket, nOps: int) =
+proc drainTxCommitOps(sock: Socket, nOps: int, consumedBytes = 0) =
   if nOps < 0 or nOps > MaxClusterTxOps:
     raise newException(ValueError,
       "cluster transaction operation count is invalid")
+  var totalBytes = consumedBytes
   for _ in 0 ..< nOps:
     let h = sock.readHeader()
     if h.len == 0 or h[0] notin ["P", "D"]:
@@ -1004,7 +1008,11 @@ proc drainTxCommitOps(sock: Socket, nOps: int) =
     requireParts(h, "TXCOMMIT op", data + 7)
     let payloadLen = parseInt(h[data + 5])
     let vecDim = parseInt(h[data + 6])
-    sock.drainBytes(checkedFrameBytes(payloadLen, vecDim, extra = 1))
+    let bodyBytes = checkedFrameBytes(payloadLen, vecDim, extra = 1)
+    if bodyBytes > MaxAggregateWireBytes - totalBytes:
+      raise newException(ValueError, "transaction exceeds aggregate byte limit")
+    totalBytes += bodyBytes
+    sock.drainBytes(bodyBytes)
 
 proc jsonFloat32Seq(node: JsonNode): seq[float32] =
   if node.isNil or node.kind != JArray:
@@ -1456,6 +1464,7 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
       "RETRIEVE budget exceeds max " & $MaxRetrieveBudget)
 
   var hits: seq[VectorCandidate] = @[]
+  var retainedBytes = 0
   var totalVectors = 0
   var scanned = 0
   var physicalVisited = 0
@@ -1486,7 +1495,9 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
           "RETRIEVE scan exceeds max " & $MaxRetrieveScan &
           "; use a ring-scoped query or narrower retrieval plan")
       rings[p.parent] = true
-      hits.addTopCandidate(p.exactCandidate(q), budget)
+      retainedBytes += hits.addTopCandidate(p.exactCandidate(q), budget)
+      if retainedBytes > MaxAggregateWireBytes:
+        raise newException(ValueError, "RETRIEVE exceeds aggregate byte limit")
     totalVectors = sv.visibleVectorCount(sock)
     if hasRing:
       for p in sv.st.particlesByRing(ringKey):
@@ -1703,6 +1714,7 @@ proc readClusterTxOps(sv: Server, sock: Socket,
   if nOps < 0 or nOps > MaxClusterTxOps:
     raise newException(ValueError, "cluster transaction operation count is invalid")
   result.ok = true
+  var totalBytes = 0
   for opIndex in 0 ..< nOps:
     let h = sock.readHeader()
     if h.len == 0 or h[0] notin ["P", "D"]:
@@ -1723,9 +1735,12 @@ proc readClusterTxOps(sv: Server, sock: Socket,
     if h.len >= data + 11:
       op.version = parseMutationVersion(h, data + 8, op.tWrite)
     let bodyBytes = checkedFrameBytes(payloadLen, vecDim, extra = 1)
+    if bodyBytes > MaxAggregateWireBytes - totalBytes:
+      raise newException(ValueError, "transaction exceeds aggregate byte limit")
+    totalBytes += bodyBytes
     if not sv.ringKeyAllowed(sock, op.parent):
       sock.drainBytes(bodyBytes)
-      sock.drainTxCommitOps(nOps - opIndex - 1)
+      sock.drainTxCommitOps(nOps - opIndex - 1, totalBytes)
       sv.denyRingKey(sock, op.parent)
       return (false, @[])
     op.payload = sock.readExact(payloadLen)
@@ -2502,12 +2517,18 @@ proc handleFrame(sv: Server, sock: Socket): bool =
       return true
     let cursor = sock.readExact(cursorLen)
     let afterSeq = if cursor.len == 0: -1'i64 else: int64(parseBiggestInt(cursor))
-    var rows: seq[Particle] = @[]
+    var rows: seq[WireListItem] = @[]
+    var responseBytes = 0
     var nextCursor = "_"
     if limit > 0:
       let page = sv.st.itemKeysByRingPage(ringKey, afterSeq, limit)
       for k in page.items:
-        rows.add sv.st.getParticle(k[0], k[1])
+        let item = sv.st.getParticle(k[0], k[1])
+        if item.payload.len > MaxAggregateWireBytes - responseBytes:
+          raise newException(ValueError, "LISTR exceeds aggregate byte limit")
+        responseBytes += item.payload.len
+        rows.add WireListItem(parent: item.parent, seq: item.seq,
+          tWrite: item.tWrite, payload: item.payload, codec: item.codec)
       if page.hasMore and rows.len > 0:
         nextCursor = $(rows[^1].seq)
     sock.sendFrame("LVAL " & $rows.len & " " & nextCursor)
@@ -2621,23 +2642,27 @@ proc handleFrame(sv: Server, sock: Socket): bool =
     for _ in 0 ..< n:
       let nl = body.find('\n', pos)
       if nl < 0:
-        break
+        raise newException(ValueError, "BGET item is truncated")
       let h = body[pos ..< nl].split(' ')
       pos = nl + 1
-      if h.len < 5:
-        payload.add "0\n"
-        continue
+      if h.len != 5:
+        raise newException(ValueError, "BGET item must contain five fields")
       let parent = parseBiggestUInt(h[0]).uint64
-      if not sv.ringKeyAllowed(sock, parent):
-        payload.add "0\n"
-        continue
-      let seq = parseUInt(h[1]).uint32
-      if sv.st.contains(parent, seq):
-        let value = sv.st.getParticle(parent, seq).payload
-        payload.add $value.len & "\n"
-        payload.add value
-      else:
-        payload.add "0\n"
+      let seqValue = parseBiggestUInt(h[1])
+      if seqValue > uint32.high.uint64:
+        raise newException(ValueError, "BGET sequence is out of range")
+      let seq = uint32(seqValue)
+      var value = ""
+      if sv.ringKeyAllowed(sock, parent) and sv.st.contains(parent, seq):
+        value = sv.st.getParticle(parent, seq).payload
+      let prefix = $value.len & "\n"
+      if prefix.len > MaxAggregateWireBytes - payload.len or
+          value.len > MaxAggregateWireBytes - payload.len - prefix.len:
+        raise newException(ValueError, "BGET exceeds aggregate byte limit")
+      payload.add prefix
+      payload.add value
+    if pos != body.len:
+      raise newException(ValueError, "BGET contains trailing items")
     sock.sendFrame("BVAL " & $n & " " & $payload.len, payload)
   of "TRF":
     if not sv.requireRole(sock, roleReplicator):
@@ -3227,13 +3252,11 @@ proc main() =
   if allowedRingPrefixes.len > 0 and not authEnabled:
     raise newException(ValueError,
       "ring-prefix authorization requires authentication")
-  let passwordTransportProtected = tlsCertFile.len > 0 or
-    authSecretKey.len > 0
   if authEnabled and not peers[id].host.isLoopbackHost and
-      not passwordTransportProtected and not allowInsecureAuth:
+      tlsCertFile.len == 0 and not allowInsecureAuth:
     raise newException(ValueError,
-      "plaintext password authentication outside loopback requires TLS, " &
-      "secret-key transport, or --allow-insecure-auth")
+      "authentication outside loopback requires TLS or the " &
+      "development-only --allow-insecure-auth override")
   if virtualArcsPerNode <= 0:
     raise newException(ValueError, "--virtual-arcs-per-node must be positive")
   if coordinatorNode < 0 or coordinatorNode >= peers.len:

@@ -95,6 +95,9 @@ production authorization example. Dev UI and CSRF are disabled explicitly;
 add application authentication, authorization, CSRF policy and HTTPS before
 exposing a browser app. The DB client can enable verified TLS through
 `KOUTEN_TLS=true`, `KOUTEN_TLS_CA_FILE`, and `KOUTEN_TLS_SERVER_NAME`.
+The Compose stack explicitly uses `--allow-insecure-auth` only inside its
+isolated Docker network. Remove that development override and configure
+verified TLS before exposing `koutend` outside the local Docker host.
 
 ## Validation Record
 
