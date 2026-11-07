@@ -1,0 +1,4 @@
+# Optional experiment dependencies; PyTorch is reused from the local environment.
+transformers==4.57.6
+sentencepiece==0.2.3
+safetensors==0.8.0
