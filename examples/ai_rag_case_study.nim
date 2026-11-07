@@ -39,11 +39,25 @@ proc vec(values: openArray[float32]): seq[float32] =
   for value in values:
     result.add value
 
+proc exportPrompt(output: File, q: QueryCase, variant: string,
+                  hits: seq[KoutenHit], scanned, budget: int) =
+  var prompt = "Answer using the supplied references.\nQuestion: " & q.name & "\nReferences:\n"
+  for hit in hits:
+    let doc = parseJson(hit.payload)
+    prompt.add doc{"title"}.getStr() & "\n" & doc{"text"}.getStr() & "\n"
+  prompt.add "Answer:"
+  output.writeLine($(%*{
+    "query": q.name, "variant": variant, "prompt": prompt,
+    "target_recalled": hits.hasTarget(q.targetId),
+    "scanned": scanned, "budget": budget, "returned": hits.len
+  }))
+
 proc main() =
   var corpus = ""
   var dataDir = ""
   var globalBudget = 8
   var routedBudget = 3
+  var exportPath = ""
 
   for kind, key, val in getopt():
     case kind
@@ -53,6 +67,7 @@ proc main() =
       of "data": dataDir = val
       of "global-budget": globalBudget = parseInt(val)
       of "routed-budget": routedBudget = parseInt(val)
+      of "export-prompts": exportPath = val
       else: discard
     of cmdArgument:
       discard
@@ -63,7 +78,14 @@ proc main() =
 
   if corpus.len == 0 or dataDir.len == 0:
     raise newException(ValueError,
-      "usage: ai_rag_case_study --corpus=FILE --data=DIR [--global-budget=N] [--routed-budget=N]")
+      "usage: ai_rag_case_study --corpus=FILE --data=DIR [--global-budget=N] [--routed-budget=N] [--export-prompts=FILE]")
+
+  var promptOutput: File
+  if exportPath.len > 0:
+    promptOutput = open(exportPath, fmWrite)
+  defer:
+    if exportPath.len > 0:
+      promptOutput.close()
 
   var db = open(dataDir = dataDir)
   defer: db.close()
@@ -131,6 +153,13 @@ proc main() =
     let global = db.retrieveWithStats(q.vec, budget = globalBudget)
     let routed = db.retrieveWithStats(q.vec, ring = q.ring, budget = routedBudget)
     let wrong = db.retrieveWithStats(q.vec, ring = q.wrongRing, budget = routedBudget)
+    if exportPath.len > 0:
+      let sameBudget = db.retrieveWithStats(q.vec, budget = routedBudget)
+      promptOutput.exportPrompt(q, "global", global.hits, global.stats.scanned, globalBudget)
+      promptOutput.exportPrompt(q, "routed", routed.hits, routed.stats.scanned, routedBudget)
+      promptOutput.exportPrompt(q, "global_same_budget", sameBudget.hits,
+                                sameBudget.stats.scanned, routedBudget)
+      promptOutput.exportPrompt(q, "wrong_ring", wrong.hits, wrong.stats.scanned, routedBudget)
     globalAgg.addRun(global, q.targetId)
     routedAgg.addRun(routed, q.targetId)
     wrongAgg.addRun(wrong, q.targetId)

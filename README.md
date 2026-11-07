@@ -33,6 +33,31 @@ corpus size matter less when the request can name a meaningful scope such as a
 tenant, repository, product, language, version, region, user, or document
 family.
 
+## Measured Answer Quality, CPU Cost, and RAG Energy
+
+**Smaller working sets can reduce the energy and computation needed per answer.**
+The optional experiments now include measured RAG energy and trained internal
+memory models that read learned latent vectors from KoutenDB rings:
+
+| Experiment | Observed result |
+|---|---|
+| Warm RAG pipeline, 100 held-out questions | CPU package energy/request **4.2715 → 3.7213 J (12.9% lower)**; token F1 **0.571 → 0.582** |
+| Trained ring memory, three synthetic worlds | **100%** single-fact accuracy; **99.28%** held-out fact-comparison accuracy versus **93.29%** for the matched dense baseline |
+| Trained 10 MiB knowledge layer | Whole-model CPU time **6.005 → 5.314 ms/question (11.5% lower on the release-core recheck)**; ring accuracy **100%** for facts and **99.61%** for comparisons |
+
+The RAG energy result combines automatic ring routing and context compaction.
+The additional ring-specific energy gain over an equally compact global control
+was not established. The internal-memory result is a limited synthetic CPU
+experiment; its electricity use has not been measured, and its dense baseline
+was not tuned to full convergence. These are promising, scoped results rather
+than a general LLM or data-center energy claim.
+
+See [RAG Energy](docs/real-rag-energy-bench.md),
+[Trained Memory Answer Quality](docs/ring-memory-quality-bench.md), and the
+[Recorded Evidence](docs/validation-evidence/v0.15.1-ai/README.md) for controls,
+limitations and reproduction commands. Model weights and downloaded corpora are
+not included in the repository.
+
 ## Retrieve Related Data Without Join Shaping
 
 Related records can be stored as nearby subrings and read as one bounded bundle.
@@ -107,7 +132,7 @@ Choose the artifact that matches the first task:
 | Task | Install path |
 |---|---|
 | Local CLI or embedded Nim | `nimble install koutendb` |
-| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.15.0` and the self-host bundle |
+| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.15.1` and the self-host bundle |
 | Existing-language application | published driver plus a compatible KoutenDB server or native library |
 | Core development and full validation | source checkout |
 
@@ -731,7 +756,7 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.15.0 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.15.1 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster

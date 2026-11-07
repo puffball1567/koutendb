@@ -78,8 +78,13 @@ nim c -d:release --nimcache:/tmp/nimcache_kouten_ai_rag_case -o:bin/ai_rag_case_
 
 echo
 echo "== Run KoutenDB AI/RAG case study =="
+EXPORT_ARGS=()
+if [[ -n "${PROMPTS_OUT:-}" ]]; then
+  EXPORT_ARGS+=("--export-prompts=$PROMPTS_OUT")
+fi
 bin/ai_rag_case_study \
   --corpus="$CORPUS" \
   --data="$DATA" \
   --global-budget="$GLOBAL_BUDGET" \
-  --routed-budget="$ROUTED_BUDGET"
+  --routed-budget="$ROUTED_BUDGET" \
+  "${EXPORT_ARGS[@]}"

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## v0.15.1 - 2026-11-07
+
+### Added
+
+- Reproducible CPU experiments for RAG package energy, learned internal ring
+  memory, answer quality, and bounded memory/disk capacity scaling.
+- Recorded evidence: 12.9% lower CPU package joules/request in the combined RAG
+  recipe; 99.28% held-out comparison accuracy across three synthetic worlds;
+  and lower whole-model CPU time in a trained 10 MiB memory experiment
+  (13.0% originally; 11.5% in the release-core recheck).
+- CPU-only CI contracts for prompt packing, automatic routing, read-only energy
+  measurement, held-out data, latent memory training and actual C ABI reads.
+
+### Fixed
+
+- Score exact vector candidates before copying retained result payloads,
+  avoiding result allocations for candidates that never enter top-k.
+- Preserve exact score/tie behavior, scan statistics and the retained-payload
+  byte deltas used by the server's aggregate response limit.
+
+### Measurement Scope
+
+- RAG energy savings include context compaction; a ring-specific energy gain
+  against the matched compact global control was not established.
+- Internal-memory CPU and accuracy results use synthetic tasks and fixed
+  training budgets. Their electricity use and large-LLM applicability remain
+  unmeasured; the dense baseline was not tuned to convergence.
+
 ## v0.15.0 - 2026-09-25
 
 ### Security

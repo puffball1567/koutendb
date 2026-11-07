@@ -52,6 +52,7 @@ run_nim_test tests/tcore.nim
 run_nim_test tests/tauth.nim
 run_nim_test tests/tselect.nim
 run_nim_test tests/tfield.nim
+run_nim_test tests/tvector_backend.nim
 run_nim_test tests/tstore.nim
 run_nim_test tests/tapi.nim
 run_nim_test tests/tread_boundaries.nim

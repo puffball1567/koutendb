@@ -1,0 +1,2461 @@
+{
+  "scope": "generated_knowledge_layer_capacity_cost_not_quality_equivalence",
+  "settings": {
+    "seed": 731,
+    "width": 64,
+    "questions": 64,
+    "rounds": 5,
+    "threads": 2,
+    "min_block_seconds": 0.2
+  },
+  "runtime": {
+    "torch": "2.12.1+cpu",
+    "python": "3.12.8",
+    "cpu": "AMD Ryzen 5 5600H with Radeon Graphics"
+  },
+  "cases": [
+    {
+      "case": "rings-16",
+      "rings": 16,
+      "slots_per_ring": 32,
+      "memory_parameters": 46400,
+      "logical_parameter_bytes": 185600,
+      "db_snapshot_bytes": 615054,
+      "results": {
+        "tensor_sparse": {
+          "backend": "tensor_sparse",
+          "parameter_count": 46400,
+          "summary": {
+            "wall_ms": 2.4937635937476443,
+            "cpu_ms": 2.9200266875000005,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 192,
+              "wall_ms": 1.3577384426450105,
+              "cpu_ms": 1.9390888437500013,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.4937635937476443,
+              "cpu_ms": 2.9200266875000005,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.7819300624069,
+              "cpu_ms": 2.2334198124999984,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 3.058337476431916,
+              "cpu_ms": 3.2752503359375003,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.851905046758475,
+              "cpu_ms": 3.508842781249993,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 0.0,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 272104,
+          "worker_wall_seconds_including_setup": 9.554543764999835
+        },
+        "dense": {
+          "backend": "dense",
+          "parameter_count": 46375,
+          "summary": {
+            "wall_ms": 0.46370502013814985,
+            "cpu_ms": 0.6620228281249994,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 576,
+              "wall_ms": 0.4671794860971406,
+              "cpu_ms": 0.6681365260416667,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.46370502013814985,
+              "cpu_ms": 0.6138203705357143,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 768,
+              "wall_ms": 0.2621145403812382,
+              "cpu_ms": 0.45042932942708386,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4610812053605124,
+              "cpu_ms": 0.6620228281249994,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.0681558854533553,
+              "cpu_ms": 0.9722386458333361,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": null,
+          "access_counts_per_question": null,
+          "peak_process_rss_kib": 231296,
+          "worker_wall_seconds_including_setup": 8.713222514023073
+        },
+        "koutendb_memory": {
+          "backend": "koutendb_memory",
+          "parameter_count": 5440,
+          "summary": {
+            "wall_ms": 5.571435671754443,
+            "cpu_ms": 5.834600718749999,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.7379724217553303,
+              "cpu_ms": 4.072517125000001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 5.664283234409595,
+              "cpu_ms": 5.834600718749999,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 9.881037187369657,
+              "cpu_ms": 9.064092609375004,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.304794312451122,
+              "cpu_ms": 5.6410434999999985,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.571435671754443,
+              "cpu_ms": 5.937540265625013,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 4.470348358154297e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 273124,
+          "worker_wall_seconds_including_setup": 10.864711244998034
+        },
+        "tensor_full": {
+          "backend": "tensor_full",
+          "parameter_count": 46400,
+          "summary": {
+            "wall_ms": 0.5480633775884295,
+            "cpu_ms": 1.0880366302083329,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 256,
+              "wall_ms": 0.9210731093389768,
+              "cpu_ms": 1.5924099335937505,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 320,
+              "wall_ms": 0.7112265125215345,
+              "cpu_ms": 1.3339411656249995,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5480633775884295,
+              "cpu_ms": 1.0752247890624977,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4796981048847166,
+              "cpu_ms": 0.9592859687500012,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5471455989815391,
+              "cpu_ms": 1.0880366302083329,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 1024,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 271676,
+          "worker_wall_seconds_including_setup": 8.452645996003412
+        },
+        "koutendb_disk_advised": {
+          "backend": "koutendb_disk_advised",
+          "parameter_count": 5440,
+          "summary": {
+            "wall_ms": 3.326063937493018,
+            "cpu_ms": 6.438840890625006,
+            "package_j": null,
+            "storage_read_bytes_per_question": 4096.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 4.046789671974693,
+              "cpu_ms": 6.955215203125004,
+              "package_j": null,
+              "storage_read_bytes_per_question": 4096.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.763195906230976,
+              "cpu_ms": 6.757240703125,
+              "package_j": null,
+              "storage_read_bytes_per_question": 4096.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.1582850933773443,
+              "cpu_ms": 5.989055531249996,
+              "package_j": null,
+              "storage_read_bytes_per_question": 4096.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 2.9258354375087947,
+              "cpu_ms": 5.655492749999991,
+              "package_j": null,
+              "storage_read_bytes_per_question": 4096.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.326063937493018,
+              "cpu_ms": 6.438840890625006,
+              "package_j": null,
+              "storage_read_bytes_per_question": 4096.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 4.470348358154297e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 272640,
+          "worker_wall_seconds_including_setup": 6.927559181000106
+        },
+        "koutendb_disk_warm": {
+          "backend": "koutendb_disk_warm",
+          "parameter_count": 5440,
+          "summary": {
+            "wall_ms": 2.9080242891268426,
+            "cpu_ms": 5.638927976562499,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.6895411406258063,
+              "cpu_ms": 5.363113921875002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.9080242891268426,
+              "cpu_ms": 5.638927976562499,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.864494562298205,
+              "cpu_ms": 7.7980056562499955,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.098403015632357,
+              "cpu_ms": 7.516246046874994,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.579553750138075,
+              "cpu_ms": 5.15617765625001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 4.470348358154297e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 273072,
+          "worker_wall_seconds_including_setup": 7.321548595005879
+        }
+      }
+    },
+    {
+      "case": "rings-64",
+      "rings": 64,
+      "slots_per_ring": 32,
+      "memory_parameters": 170048,
+      "logical_parameter_bytes": 680192,
+      "db_snapshot_bytes": 2292109,
+      "results": {
+        "tensor_full": {
+          "backend": "tensor_full",
+          "parameter_count": 170048,
+          "summary": {
+            "wall_ms": 0.477817520082421,
+            "cpu_ms": 0.954700218750001,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 448,
+              "wall_ms": 0.46749061831568334,
+              "cpu_ms": 0.9360311049107148,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.5068923035521168,
+              "cpu_ms": 1.0135464263392853,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5277789088419619,
+              "cpu_ms": 1.0534510703125004,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.47715929466513834,
+              "cpu_ms": 0.954700218750001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.477817520082421,
+              "cpu_ms": 0.9524014575892855,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 4096,
+            "router_keys_scored": 128,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 272380,
+          "worker_wall_seconds_including_setup": 5.580668120994233
+        },
+        "dense": {
+          "backend": "dense",
+          "parameter_count": 170086,
+          "summary": {
+            "wall_ms": 0.1727126052508921,
+            "cpu_ms": 0.3457416472039479,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 1216,
+              "wall_ms": 0.1718469671016608,
+              "cpu_ms": 0.35881516940789476,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 1216,
+              "wall_ms": 0.1727126052508921,
+              "cpu_ms": 0.3454119991776315,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 1216,
+              "wall_ms": 0.17308439967229405,
+              "cpu_ms": 0.3457416472039479,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 1216,
+              "wall_ms": 0.16911743832200668,
+              "cpu_ms": 0.3376218281249998,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 1088,
+              "wall_ms": 0.18564807626663585,
+              "cpu_ms": 0.3712866681985301,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": null,
+          "access_counts_per_question": null,
+          "peak_process_rss_kib": 231132,
+          "worker_wall_seconds_including_setup": 4.277219623996643
+        },
+        "koutendb_disk_warm": {
+          "backend": "koutendb_disk_warm",
+          "parameter_count": 6208,
+          "summary": {
+            "wall_ms": 2.27204135944703,
+            "cpu_ms": 4.544688632812502,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.4077172108718514,
+              "cpu_ms": 4.812171249999997,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.27204135944703,
+              "cpu_ms": 4.544688632812502,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.088775710944901,
+              "cpu_ms": 4.157299546875,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.2000794062932982,
+              "cpu_ms": 4.395996117187502,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.546871710819687,
+              "cpu_ms": 5.086327554687499,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 4.842877388000488e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 128,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 273900,
+          "worker_wall_seconds_including_setup": 6.152281986986054
+        },
+        "koutendb_memory": {
+          "backend": "koutendb_memory",
+          "parameter_count": 6208,
+          "summary": {
+            "wall_ms": 1.1014242084759946,
+            "cpu_ms": 2.197487156249997,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 192,
+              "wall_ms": 1.1014242084759946,
+              "cpu_ms": 2.197487156249997,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.108086645823884,
+              "cpu_ms": 2.2167880885416666,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1099586198118534,
+              "cpu_ms": 2.218995609375001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.0875962655821543,
+              "cpu_ms": 2.170322088541667,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.0674379739915214,
+              "cpu_ms": 2.135047390625001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 4.842877388000488e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 128,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 275892,
+          "worker_wall_seconds_including_setup": 5.94449983999948
+        },
+        "koutendb_disk_advised": {
+          "backend": "koutendb_disk_advised",
+          "parameter_count": 6208,
+          "summary": {
+            "wall_ms": 2.990270843838516,
+            "cpu_ms": 5.743967031250005,
+            "package_j": null,
+            "storage_read_bytes_per_question": 15616.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 2.3925117343424063,
+              "cpu_ms": 4.508899015624998,
+              "package_j": null,
+              "storage_read_bytes_per_question": 15616.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 2.822278015628399,
+              "cpu_ms": 5.426595843750007,
+              "package_j": null,
+              "storage_read_bytes_per_question": 15616.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 2.990270843838516,
+              "cpu_ms": 5.743967031250005,
+              "package_j": null,
+              "storage_read_bytes_per_question": 15616.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.1577420313624316,
+              "cpu_ms": 5.967762078124994,
+              "package_j": null,
+              "storage_read_bytes_per_question": 15616.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.4658273280001595,
+              "cpu_ms": 6.696973125000005,
+              "package_j": null,
+              "storage_read_bytes_per_question": 15616.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 4.842877388000488e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 128,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 274040,
+          "worker_wall_seconds_including_setup": 5.382170910015702
+        },
+        "tensor_sparse": {
+          "backend": "tensor_sparse",
+          "parameter_count": 170048,
+          "summary": {
+            "wall_ms": 0.5042487767760966,
+            "cpu_ms": 1.0080032812500008,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 512,
+              "wall_ms": 0.4320768730394775,
+              "cpu_ms": 0.8636273964843754,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.5042487767760966,
+              "cpu_ms": 1.0080032812500008,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5696677734097951,
+              "cpu_ms": 1.1339594427083322,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5364523281059519,
+              "cpu_ms": 1.072798385416666,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4995566294253097,
+              "cpu_ms": 0.9992524129464272,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 0.0,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 128,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 272116,
+          "worker_wall_seconds_including_setup": 5.381539027992403
+        }
+      }
+    },
+    {
+      "case": "rings-256",
+      "rings": 256,
+      "slots_per_ring": 32,
+      "memory_parameters": 664640,
+      "logical_parameter_bytes": 2658560,
+      "db_snapshot_bytes": 9008870,
+      "results": {
+        "koutendb_memory": {
+          "backend": "koutendb_memory",
+          "parameter_count": 9280,
+          "summary": {
+            "wall_ms": 0.9357644102010454,
+            "cpu_ms": 1.8725404531250018,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 256,
+              "wall_ms": 0.9284886367595391,
+              "cpu_ms": 1.8560326132812492,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.9015728633130493,
+              "cpu_ms": 1.803467746093749,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.9357644102010454,
+              "cpu_ms": 1.8725404531250018,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1099346041495057,
+              "cpu_ms": 2.2162092447916653,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 1.0475630858763907,
+              "cpu_ms": 2.0964153593749995,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 512,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 285568,
+          "worker_wall_seconds_including_setup": 5.433037708018674
+        },
+        "koutendb_disk_warm": {
+          "backend": "koutendb_disk_warm",
+          "parameter_count": 9280,
+          "summary": {
+            "wall_ms": 2.2361253595590824,
+            "cpu_ms": 4.470485226562501,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.075050164194181,
+              "cpu_ms": 4.144197039062498,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.3350448907422106,
+              "cpu_ms": 4.6703179609374965,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.4622851092317433,
+              "cpu_ms": 4.929489499999995,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.230352874903474,
+              "cpu_ms": 4.456733218750002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.2361253595590824,
+              "cpu_ms": 4.470485226562501,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 512,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 277676,
+          "worker_wall_seconds_including_setup": 5.782625605992507
+        },
+        "koutendb_disk_advised": {
+          "backend": "koutendb_disk_advised",
+          "parameter_count": 9280,
+          "summary": {
+            "wall_ms": 3.5223479999331175,
+            "cpu_ms": 6.442363453125003,
+            "package_j": null,
+            "storage_read_bytes_per_question": 37120.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 3.671959968869487,
+              "cpu_ms": 6.6994815937499865,
+              "package_j": null,
+              "storage_read_bytes_per_question": 37120.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.100419250335108,
+              "cpu_ms": 7.601325249999999,
+              "package_j": null,
+              "storage_read_bytes_per_question": 37120.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.5223479999331175,
+              "cpu_ms": 6.442363453125003,
+              "package_j": null,
+              "storage_read_bytes_per_question": 37120.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.4095916716978536,
+              "cpu_ms": 6.242418531250002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 37120.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.351318999648356,
+              "cpu_ms": 6.0999647187500035,
+              "package_j": null,
+              "storage_read_bytes_per_question": 37120.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 512,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 278104,
+          "worker_wall_seconds_including_setup": 6.193692022003233
+        },
+        "tensor_full": {
+          "backend": "tensor_full",
+          "parameter_count": 664640,
+          "summary": {
+            "wall_ms": 0.5412676171848337,
+            "cpu_ms": 1.0828528046874994,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 384,
+              "wall_ms": 0.5301804531730644,
+              "cpu_ms": 1.0579529609375018,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5412676171848337,
+              "cpu_ms": 1.0828528046874994,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5358056093124711,
+              "cpu_ms": 1.0721811223958326,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5684721692584086,
+              "cpu_ms": 1.1358281406250008,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 384,
+              "wall_ms": 0.5639308671258428,
+              "cpu_ms": 1.1256962213541666,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 5.21540641784668e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 16384,
+            "router_keys_scored": 512,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 275076,
+          "worker_wall_seconds_including_setup": 5.333089093997842
+        },
+        "tensor_sparse": {
+          "backend": "tensor_sparse",
+          "parameter_count": 664640,
+          "summary": {
+            "wall_ms": 0.4924057411049684,
+            "cpu_ms": 0.985685205357144,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 448,
+              "wall_ms": 0.4612577098279352,
+              "cpu_ms": 0.9196242321428564,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.5067683214292629,
+              "cpu_ms": 1.0108397589285723,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4924057411049684,
+              "cpu_ms": 0.985685205357144,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.46719366965979653,
+              "cpu_ms": 0.9358608816964269,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4940572053523543,
+              "cpu_ms": 0.9866531584821442,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 0.0,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 512,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 274732,
+          "worker_wall_seconds_including_setup": 5.532882278988836
+        },
+        "dense": {
+          "backend": "dense",
+          "parameter_count": 664672,
+          "summary": {
+            "wall_ms": 0.3984913046792826,
+            "cpu_ms": 0.7941596054687506,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 640,
+              "wall_ms": 0.331355882826756,
+              "cpu_ms": 0.6670800609374999,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 512,
+              "wall_ms": 0.395591011738361,
+              "cpu_ms": 0.7902793222656244,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 512,
+              "wall_ms": 0.3984913046792826,
+              "cpu_ms": 0.7941596054687506,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.47907716069468215,
+              "cpu_ms": 0.9558784575892872,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.764148578104141,
+              "cpu_ms": 1.7957074687499976,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": null,
+          "access_counts_per_question": null,
+          "peak_process_rss_kib": 233896,
+          "worker_wall_seconds_including_setup": 4.402534532011487
+        }
+      }
+    },
+    {
+      "case": "rings-1024",
+      "rings": 1024,
+      "slots_per_ring": 32,
+      "memory_parameters": 2643008,
+      "logical_parameter_bytes": 10572032,
+      "db_snapshot_bytes": 35884661,
+      "results": {
+        "koutendb_disk_warm": {
+          "backend": "koutendb_disk_warm",
+          "parameter_count": 21568,
+          "summary": {
+            "wall_ms": 2.1465658203396742,
+            "cpu_ms": 4.291445437500006,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.1828022031513683,
+              "cpu_ms": 4.356683289062496,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.9191288904494286,
+              "cpu_ms": 3.8376755937499993,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.8997412107637501,
+              "cpu_ms": 3.7960029765625043,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.2672380782751134,
+              "cpu_ms": 4.530448999999999,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.1465658203396742,
+              "cpu_ms": 4.291445437500006,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 2048,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 289752,
+          "worker_wall_seconds_including_setup": 6.335769975994481
+        },
+        "koutendb_disk_advised": {
+          "backend": "koutendb_disk_advised",
+          "parameter_count": 21568,
+          "summary": {
+            "wall_ms": 3.485367624762148,
+            "cpu_ms": 6.169661593750001,
+            "package_j": null,
+            "storage_read_bytes_per_question": 54528.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 3.485367624762148,
+              "cpu_ms": 6.169661593750001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 54528.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.4169795781053836,
+              "cpu_ms": 6.040101953124988,
+              "package_j": null,
+              "storage_read_bytes_per_question": 54528.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.3547933908266714,
+              "cpu_ms": 5.9549368437500085,
+              "package_j": null,
+              "storage_read_bytes_per_question": 54528.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.303972280922608,
+              "cpu_ms": 7.411200374999996,
+              "package_j": null,
+              "storage_read_bytes_per_question": 54528.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.6705425000036485,
+              "cpu_ms": 6.576398906250002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 54528.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 2048,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 290044,
+          "worker_wall_seconds_including_setup": 6.534367861982901
+        },
+        "koutendb_memory": {
+          "backend": "koutendb_memory",
+          "parameter_count": 21568,
+          "summary": {
+            "wall_ms": 1.0188576211476175,
+            "cpu_ms": 2.0374596406249994,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 192,
+              "wall_ms": 1.0679300468533863,
+              "cpu_ms": 2.128765390625,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.9938035547065738,
+              "cpu_ms": 1.9853176406250013,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.9422156367691059,
+              "cpu_ms": 1.8827956601562488,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 1.0188576211476175,
+              "cpu_ms": 2.0374596406249994,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1673889218097127,
+              "cpu_ms": 2.336947244791665,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 3.725290298461914e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 2048,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 322172,
+          "worker_wall_seconds_including_setup": 5.73198869699263
+        },
+        "dense": {
+          "backend": "dense",
+          "parameter_count": 2643016,
+          "summary": {
+            "wall_ms": 1.1896969114483606,
+            "cpu_ms": 2.3811214010416673,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 192,
+              "wall_ms": 1.1265958125174318,
+              "cpu_ms": 2.2480999375,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.3455940261337673,
+              "cpu_ms": 2.688298749999998,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.3761467500141105,
+              "cpu_ms": 2.7489356875,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1896969114483606,
+              "cpu_ms": 2.3811214010416673,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1858402344842034,
+              "cpu_ms": 2.3719199479166666,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": null,
+          "access_counts_per_question": null,
+          "peak_process_rss_kib": 243220,
+          "worker_wall_seconds_including_setup": 4.182251352991443
+        },
+        "tensor_sparse": {
+          "backend": "tensor_sparse",
+          "parameter_count": 2643008,
+          "summary": {
+            "wall_ms": 0.42207010545780577,
+            "cpu_ms": 0.8423869785156249,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 512,
+              "wall_ms": 0.42207010545780577,
+              "cpu_ms": 0.8423869785156249,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 576,
+              "wall_ms": 0.3899801007113031,
+              "cpu_ms": 0.778792734375001,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 512,
+              "wall_ms": 0.42486440821676297,
+              "cpu_ms": 0.8484574902343743,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4669228459793625,
+              "cpu_ms": 0.9304266116071419,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 576,
+              "wall_ms": 0.37850812148260754,
+              "cpu_ms": 0.7565057604166677,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 0.0,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 2048,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 286504,
+          "worker_wall_seconds_including_setup": 5.227756462991238
+        },
+        "tensor_full": {
+          "backend": "tensor_full",
+          "parameter_count": 2643008,
+          "summary": {
+            "wall_ms": 0.8408775859152229,
+            "cpu_ms": 1.6771293632812516,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 256,
+              "wall_ms": 0.8408775859152229,
+              "cpu_ms": 1.6771293632812516,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.793603589841041,
+              "cpu_ms": 1.5854996445312484,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.8284205313202619,
+              "cpu_ms": 1.6554799882812499,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.8423702265645261,
+              "cpu_ms": 1.6853563554687505,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 256,
+              "wall_ms": 0.8451301640661768,
+              "cpu_ms": 1.689308800781251,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 2.9802322387695312e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 65536,
+            "router_keys_scored": 2048,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 287300,
+          "worker_wall_seconds_including_setup": 5.681745863024844
+        }
+      }
+    },
+    {
+      "case": "rings-4096",
+      "rings": 4096,
+      "slots_per_ring": 32,
+      "memory_parameters": 10556480,
+      "logical_parameter_bytes": 42225920,
+      "db_snapshot_bytes": 143438550,
+      "results": {
+        "tensor_full": {
+          "backend": "tensor_full",
+          "parameter_count": 10556480,
+          "summary": {
+            "wall_ms": 2.2358911171522777,
+            "cpu_ms": 4.466424898437501,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.2358911171522777,
+              "cpu_ms": 4.466424898437501,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.1545517499816924,
+              "cpu_ms": 4.309979249999999,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.967178687436899,
+              "cpu_ms": 3.935033304687495,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.422878984361887,
+              "cpu_ms": 4.840929257812501,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.236673101606357,
+              "cpu_ms": 4.470354749999996,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 2.9802322387695312e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 262144,
+            "router_keys_scored": 8192,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 337992,
+          "worker_wall_seconds_including_setup": 5.279715448996285
+        },
+        "koutendb_disk_advised": {
+          "backend": "koutendb_disk_advised",
+          "parameter_count": 70720,
+          "summary": {
+            "wall_ms": 4.040081390940031,
+            "cpu_ms": 7.017122968750011,
+            "package_j": null,
+            "storage_read_bytes_per_question": 62208.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 4.331345281116228,
+              "cpu_ms": 7.610914937500018,
+              "package_j": null,
+              "storage_read_bytes_per_question": 62208.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.9065208907231863,
+              "cpu_ms": 6.782327703124979,
+              "package_j": null,
+              "storage_read_bytes_per_question": 62208.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 3.855551140532043,
+              "cpu_ms": 6.6604432968750125,
+              "package_j": null,
+              "storage_read_bytes_per_question": 62208.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.040081390940031,
+              "cpu_ms": 7.017122968750011,
+              "package_j": null,
+              "storage_read_bytes_per_question": 62208.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.052819203479885,
+              "cpu_ms": 7.103503906250003,
+              "package_j": null,
+              "storage_read_bytes_per_question": 62208.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 2.9802322387695312e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 8192,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 343816,
+          "worker_wall_seconds_including_setup": 9.605728027992882
+        },
+        "koutendb_memory": {
+          "backend": "koutendb_memory",
+          "parameter_count": 70720,
+          "summary": {
+            "wall_ms": 1.1821500573508577,
+            "cpu_ms": 2.364022416666667,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 192,
+              "wall_ms": 1.2681866719503887,
+              "cpu_ms": 2.5314748958333344,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1771911302579003,
+              "cpu_ms": 2.3541295624999967,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1821500573508577,
+              "cpu_ms": 2.364022416666667,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.1934658906890643,
+              "cpu_ms": 2.385722817708334,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.136663369834423,
+              "cpu_ms": 2.2719386406249984,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 2.9802322387695312e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 8192,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 470732,
+          "worker_wall_seconds_including_setup": 6.937918940006057
+        },
+        "koutendb_disk_warm": {
+          "backend": "koutendb_disk_warm",
+          "parameter_count": 70720,
+          "summary": {
+            "wall_ms": 2.2128263437934947,
+            "cpu_ms": 4.416021593749993,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 2.2128263437934947,
+              "cpu_ms": 4.416021593749993,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.431707953064688,
+              "cpu_ms": 4.8596372578125075,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.3310195156227564,
+              "cpu_ms": 4.666092023437499,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.1401012186288426,
+              "cpu_ms": 4.279616929687494,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.1811510077895946,
+              "cpu_ms": 4.3593052265624985,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 2.9802322387695312e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 8192,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 343412,
+          "worker_wall_seconds_including_setup": 9.849193786998512
+        },
+        "tensor_sparse": {
+          "backend": "tensor_sparse",
+          "parameter_count": 10556480,
+          "summary": {
+            "wall_ms": 0.4395992148715777,
+            "cpu_ms": 0.8788334785156237,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 384,
+              "wall_ms": 0.5482498567441022,
+              "cpu_ms": 1.0939750026041664,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 448,
+              "wall_ms": 0.4782489397387378,
+              "cpu_ms": 0.9578797745535728,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 512,
+              "wall_ms": 0.39165082421277475,
+              "cpu_ms": 0.7840778925781253,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 512,
+              "wall_ms": 0.4395992148715777,
+              "cpu_ms": 0.8788334785156237,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 512,
+              "wall_ms": 0.4106388789182347,
+              "cpu_ms": 0.8223262792968755,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 0.0,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 128,
+            "router_keys_scored": 8192,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 328776,
+          "worker_wall_seconds_including_setup": 5.130342940974515
+        },
+        "dense": {
+          "backend": "dense",
+          "parameter_count": 10556521,
+          "summary": {
+            "wall_ms": 4.93286165601603,
+            "cpu_ms": 9.865071374999992,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 4.6635164217150304,
+              "cpu_ms": 9.305028265624994,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.772006202983903,
+              "cpu_ms": 9.536004453124997,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.2330559533402266,
+              "cpu_ms": 10.464486328124995,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.033524421833135,
+              "cpu_ms": 10.064687562500009,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.93286165601603,
+              "cpu_ms": 9.865071374999992,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": null,
+          "access_counts_per_question": null,
+          "peak_process_rss_kib": 283228,
+          "worker_wall_seconds_including_setup": 4.526170867000474
+        }
+      }
+    },
+    {
+      "case": "wide-rings",
+      "rings": 16,
+      "slots_per_ring": 8192,
+      "memory_parameters": 10491200,
+      "logical_parameter_bytes": 41964800,
+      "db_snapshot_bytes": 144223204,
+      "results": {
+        "dense": {
+          "backend": "dense",
+          "parameter_count": 10491247,
+          "summary": {
+            "wall_ms": 5.03599631247198,
+            "cpu_ms": 10.060041968749996,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 5.03599631247198,
+              "cpu_ms": 10.060041968749996,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.000815609491838,
+              "cpu_ms": 9.994169125000008,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 4.881614624991926,
+              "cpu_ms": 9.751701,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.541945312415919,
+              "cpu_ms": 11.036215171875002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 5.311413765866746,
+              "cpu_ms": 10.599776249999998,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": null,
+          "access_counts_per_question": null,
+          "peak_process_rss_kib": 274480,
+          "worker_wall_seconds_including_setup": 4.37795277000987
+        },
+        "koutendb_memory": {
+          "backend": "koutendb_memory",
+          "parameter_count": 5440,
+          "summary": {
+            "wall_ms": 9.872119077954267,
+            "cpu_ms": 19.435675687499987,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 11.106876249868947,
+              "cpu_ms": 20.790709859375006,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 9.554153171848156,
+              "cpu_ms": 18.87902409375,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 9.659621218816028,
+              "cpu_ms": 18.854520656250013,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 10.339562015815318,
+              "cpu_ms": 20.065606968749982,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 9.872119077954267,
+              "cpu_ms": 19.435675687499987,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 5.774199962615967e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 32768,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 447664,
+          "worker_wall_seconds_including_setup": 9.4978849789768
+        },
+        "koutendb_disk_warm": {
+          "backend": "koutendb_disk_warm",
+          "parameter_count": 5440,
+          "summary": {
+            "wall_ms": 171.33726418751394,
+            "cpu_ms": 179.91454979687504,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 181.84177743751206,
+              "cpu_ms": 190.90742898437506,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 178.69656504672093,
+              "cpu_ms": 187.5574190625,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 171.33726418751394,
+              "cpu_ms": 179.91454979687504,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 165.53503910927247,
+              "cpu_ms": 174.0057471718749,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 169.47505467169321,
+              "cpu_ms": 178.10339446875,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 5.774199962615967e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 32768,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 335736,
+          "worker_wall_seconds_including_setup": 75.5896796429879
+        },
+        "koutendb_disk_advised": {
+          "backend": "koutendb_disk_advised",
+          "parameter_count": 5440,
+          "summary": {
+            "wall_ms": 161.01461601556366,
+            "cpu_ms": 168.94718903125,
+            "package_j": null,
+            "storage_read_bytes_per_question": 842624.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 163.73367534379213,
+              "cpu_ms": 171.7288474375,
+              "package_j": null,
+              "storage_read_bytes_per_question": 842624.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 161.01461601556366,
+              "cpu_ms": 168.94718903125,
+              "package_j": null,
+              "storage_read_bytes_per_question": 842624.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 167.57318871850657,
+              "cpu_ms": 175.80169525,
+              "package_j": null,
+              "storage_read_bytes_per_question": 842624.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 149.52961142171262,
+              "cpu_ms": 157.03346084375002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 842624.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 64,
+              "wall_ms": 155.50813882782677,
+              "cpu_ms": 163.15565104687514,
+              "package_j": null,
+              "storage_read_bytes_per_question": 842624.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 5.774199962615967e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 32768,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16,
+            "returned_value_bytes": 4096
+          },
+          "peak_process_rss_kib": 339168,
+          "worker_wall_seconds_including_setup": 68.343140699988
+        },
+        "tensor_sparse": {
+          "backend": "tensor_sparse",
+          "parameter_count": 10491200,
+          "summary": {
+            "wall_ms": 2.1750497344328323,
+            "cpu_ms": 3.8969532031250047,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 64,
+              "wall_ms": 3.5366191718821938,
+              "cpu_ms": 4.924175640625,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.8243221092907334,
+              "cpu_ms": 4.436667406250004,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 2.1750497344328323,
+              "cpu_ms": 3.8969532031250047,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.3988827343685746,
+              "cpu_ms": 2.639461817708332,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 192,
+              "wall_ms": 1.2246447604411514,
+              "cpu_ms": 2.3899743802083306,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 0.0,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 32768,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 323396,
+          "worker_wall_seconds_including_setup": 6.51726624800358
+        },
+        "tensor_full": {
+          "backend": "tensor_full",
+          "parameter_count": 10491200,
+          "summary": {
+            "wall_ms": 1.828240538998216,
+            "cpu_ms": 3.6556098281250033,
+            "package_j": null,
+            "storage_read_bytes_per_question": 0.0
+          },
+          "samples": [
+            {
+              "questions": 128,
+              "wall_ms": 1.798098312519869,
+              "cpu_ms": 3.6023234921875003,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.8442648749896762,
+              "cpu_ms": 3.687761390625002,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.8864355938603694,
+              "cpu_ms": 3.7765565156250016,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.8185267185799603,
+              "cpu_ms": 3.6379065546875005,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            },
+            {
+              "questions": 128,
+              "wall_ms": 1.828240538998216,
+              "cpu_ms": 3.6556098281250033,
+              "package_j": null,
+              "storage_read_bytes_per_question": 0.0,
+              "major_faults": 0
+            }
+          ],
+          "energy": {
+            "available": false,
+            "domains": [],
+            "reason": "intel-rapl:0: Permission denied"
+          },
+          "max_abs_read_difference": 5.960464477539063e-08,
+          "access_counts_per_question": {
+            "queries": 2,
+            "scored_keys": 262144,
+            "router_keys_scored": 32,
+            "read_value_vectors": 16
+          },
+          "peak_process_rss_kib": 327628,
+          "worker_wall_seconds_including_setup": 4.677443299005972
+        }
+      }
+    }
+  ],
+  "peak_temporary_bytes_observed": 144224908,
+  "disk_budget_bytes": 268435456,
+  "temporary_snapshots_remaining": 0,
+  "sha256": {
+    "ring_memory_capacity_bench.py": "162d68e2edbecb96c059717bed5ca6ec90870ad74cbf193cfc289d6385798c9e",
+    "ring_memory_model.py": "d80cb36abe7001b28ef45744b92a6fdd2fde989d68450bf21951c022d46229ca",
+    "rag_energy_capi.py": "91faafb510ed08622000a482dde181a29972b247995fb8cbabe9ac0918d4e950"
+  },
+  "library_sha256": "23b653dc6dfae5c412f6534d9fedd2bfc4334ea9106c54205e4d9d52a4b59df2",
+  "limitations": [
+    "Random kernels measure computational cost, not learned knowledge capacity or equal answer quality.",
+    "Two latent reads per question; only the knowledge layer is timed.",
+    "Actual table data fits in RAM; cache advice is not a real RAM-overflow experiment.",
+    "Advised disk runs use one pass after file-specific eviction advice; read_bytes records actual storage reads.",
+    "Dense weights and tensor tables are warm; allocation, DB export and open are excluded from timing.",
+    "Separate workers prevent another backend's tensors from inflating the resident DB workload.",
+    "Read parity is checked for memory backends; dense and memory kernels implement different functions.",
+    "No 12B/300B model was downloaded or trained; no data-center energy extrapolation."
+  ]
+}

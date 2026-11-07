@@ -31,6 +31,7 @@ tests/tread_boundaries
 tests/tauth
 tests/tcore
 tests/tfield
+tests/tvector_backend
 tests/tselect
 tests/tstore
 tests/twire_driver

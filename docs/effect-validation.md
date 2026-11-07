@@ -10,6 +10,12 @@ The goal is to make KoutenDB's main claim testable:
 - produce a compact prompt before any LLM is called;
 - keep the model choice optional and explicit.
 
+For actual downstream model computation, see the optional
+[Small Transformer Compute and Energy Experiment](transformer-energy-bench.md).
+It runs a local causal Transformer on exported retrieval prompts, compares a
+same-budget global control, and reports CPU package energy only when counters
+are readable.
+
 ## Single Demo
 
 ```sh
