@@ -1495,7 +1495,7 @@ proc handleRetrieve(sv: Server, sock: Socket, parts: seq[string]) =
           "RETRIEVE scan exceeds max " & $MaxRetrieveScan &
           "; use a ring-scoped query or narrower retrieval plan")
       rings[p.parent] = true
-      retainedBytes += hits.addTopCandidate(p.exactCandidate(q), budget)
+      retainedBytes += hits.addExactCandidate(p, q, budget)
       if retainedBytes > MaxAggregateWireBytes:
         raise newException(ValueError, "RETRIEVE exceeds aggregate byte limit")
     totalVectors = sv.visibleVectorCount(sock)

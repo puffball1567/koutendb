@@ -1,0 +1,1698 @@
+{
+  "scope": "trained_synthetic_relational_answer_quality",
+  "plan": {
+    "seeds": [
+      731,
+      732,
+      733
+    ],
+    "entities": 128,
+    "facts": 384,
+    "training_pairs": 4096,
+    "evaluation_pairs_per_split": 512,
+    "parser_steps": 3000,
+    "knowledge_steps": 2000,
+    "soft_steps": 250,
+    "batch_size": 64,
+    "configurations": {
+      "dense": [
+        64,
+        32
+      ],
+      "ring_coarse": [
+        16,
+        128
+      ],
+      "ring_fine": [
+        64,
+        32
+      ]
+    },
+    "exploratory_tolerance": 0.02,
+    "selection": "validation only; train all seeds before opening any held-out test results"
+  },
+  "aggregate": {
+    "dense": {
+      "single": {
+        "mean_accuracy": 1,
+        "seed_accuracies": [
+          1,
+          1,
+          1
+        ],
+        "differences_vs_dense": [
+          0,
+          0,
+          0
+        ],
+        "within_two_percentage_points_every_seed": true
+      },
+      "composition": {
+        "mean_accuracy": 0.9329427083333334,
+        "seed_accuracies": [
+          0.9609375,
+          0.92578125,
+          0.912109375
+        ],
+        "differences_vs_dense": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "within_two_percentage_points_every_seed": true
+      }
+    },
+    "ring_coarse": {
+      "single": {
+        "mean_accuracy": 1,
+        "seed_accuracies": [
+          1,
+          1,
+          1
+        ],
+        "differences_vs_dense": [
+          0,
+          0,
+          0
+        ],
+        "within_two_percentage_points_every_seed": true
+      },
+      "composition": {
+        "mean_accuracy": 0.9928385416666666,
+        "seed_accuracies": [
+          0.99609375,
+          1,
+          0.982421875
+        ],
+        "differences_vs_dense": [
+          0.03515625,
+          0.07421875,
+          0.0703125
+        ],
+        "within_two_percentage_points_every_seed": true
+      }
+    },
+    "ring_fine": {
+      "single": {
+        "mean_accuracy": 1,
+        "seed_accuracies": [
+          1,
+          1,
+          1
+        ],
+        "differences_vs_dense": [
+          0,
+          0,
+          0
+        ],
+        "within_two_percentage_points_every_seed": true
+      },
+      "composition": {
+        "mean_accuracy": 0.9928385416666666,
+        "seed_accuracies": [
+          0.998046875,
+          0.994140625,
+          0.986328125
+        ],
+        "differences_vs_dense": [
+          0.037109375,
+          0.068359375,
+          0.07421875
+        ],
+        "within_two_percentage_points_every_seed": true
+      }
+    }
+  },
+  "seeds": [
+    {
+      "seed": 731,
+      "facts": 384,
+      "test_text_overlap_with_knowledge_training": 0,
+      "test_text_overlap_with_parser_training": 0,
+      "training": {
+        "parser_steps": 3000,
+        "steps": 2000,
+        "soft_steps": 250,
+        "batch_size": 64,
+        "parser_history": [
+          {
+            "step": 200,
+            "validation": {
+              "entity": 0.9614955357142857,
+              "attribute": 0.9988839285714286,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 400,
+            "validation": {
+              "entity": 0.9743303571428571,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 600,
+            "validation": {
+              "entity": 0.9977678571428571,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 800,
+            "validation": {
+              "entity": 0.9849330357142857,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1000,
+            "validation": {
+              "entity": 0.9827008928571429,
+              "attribute": 1.0,
+              "operation": 0.9977678571428571
+            }
+          },
+          {
+            "step": 1200,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1400,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1600,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1800,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2000,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2200,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2400,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2600,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2800,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 3000,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          }
+        ],
+        "history": [
+          {
+            "step": 200,
+            "validation": {
+              "dense": {
+                "single": 0.8697916666666666,
+                "composition": 0.5625
+              },
+              "ring_coarse": {
+                "single": 0.9401041666666666,
+                "composition": 0.90234375
+              },
+              "ring_fine": {
+                "single": 0.9453125,
+                "composition": 0.861328125
+              }
+            }
+          },
+          {
+            "step": 400,
+            "validation": {
+              "dense": {
+                "single": 0.9947916666666666,
+                "composition": 0.630859375
+              },
+              "ring_coarse": {
+                "single": 0.9973958333333334,
+                "composition": 0.986328125
+              },
+              "ring_fine": {
+                "single": 0.9973958333333334,
+                "composition": 0.9921875
+              }
+            }
+          },
+          {
+            "step": 600,
+            "validation": {
+              "dense": {
+                "single": 0.9973958333333334,
+                "composition": 0.74609375
+              },
+              "ring_coarse": {
+                "single": 1.0,
+                "composition": 0.99609375
+              },
+              "ring_fine": {
+                "single": 0.9947916666666666,
+                "composition": 0.982421875
+              }
+            }
+          },
+          {
+            "step": 800,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.841796875
+              },
+              "ring_coarse": {
+                "single": 1.0,
+                "composition": 0.998046875
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 1.0
+              }
+            }
+          },
+          {
+            "step": 1000,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.849609375
+              },
+              "ring_coarse": {
+                "single": 1.0,
+                "composition": 0.998046875
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 1.0
+              }
+            }
+          },
+          {
+            "step": 1200,
+            "validation": {
+              "dense": {
+                "single": 0.9973958333333334,
+                "composition": 0.896484375
+              },
+              "ring_coarse": {
+                "single": 0.9973958333333334,
+                "composition": 0.990234375
+              },
+              "ring_fine": {
+                "single": 0.9973958333333334,
+                "composition": 0.998046875
+              }
+            }
+          },
+          {
+            "step": 1400,
+            "validation": {
+              "dense": {
+                "single": 0.9921875,
+                "composition": 0.900390625
+              },
+              "ring_coarse": {
+                "single": 1.0,
+                "composition": 0.99609375
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 0.990234375
+              }
+            }
+          },
+          {
+            "step": 1600,
+            "validation": {
+              "dense": {
+                "single": 0.9921875,
+                "composition": 0.890625
+              },
+              "ring_coarse": {
+                "single": 0.9973958333333334,
+                "composition": 0.986328125
+              },
+              "ring_fine": {
+                "single": 0.9973958333333334,
+                "composition": 0.9921875
+              }
+            }
+          },
+          {
+            "step": 1800,
+            "validation": {
+              "dense": {
+                "single": 0.9947916666666666,
+                "composition": 0.931640625
+              },
+              "ring_coarse": {
+                "single": 1.0,
+                "composition": 0.97265625
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 0.98828125
+              }
+            }
+          },
+          {
+            "step": 2000,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.94921875
+              },
+              "ring_coarse": {
+                "single": 1.0,
+                "composition": 0.994140625
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 0.998046875
+              }
+            }
+          }
+        ],
+        "selected_steps": {
+          "dense": 2000,
+          "ring_coarse": 800,
+          "ring_fine": 800
+        },
+        "parser_seconds": 53.313592490012525,
+        "knowledge_seconds": 90.93707864300814
+      },
+      "quality": {
+        "dense": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 492,
+            "total": 512,
+            "accuracy": 0.9609375,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.9609375,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 20
+          }
+        },
+        "ring_coarse": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 510,
+            "total": 512,
+            "accuracy": 0.99609375,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.99609375,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 2
+          }
+        },
+        "ring_coarse_db": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 510,
+            "total": 512,
+            "accuracy": 0.99609375,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.99609375,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 2
+          }
+        },
+        "ring_fine": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 511,
+            "total": 512,
+            "accuracy": 0.998046875,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.998046875,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 1
+          }
+        },
+        "ring_fine_db": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 511,
+            "total": 512,
+            "accuracy": 0.998046875,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.998046875,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 1
+          }
+        }
+      },
+      "diagnostics": {
+        "ring_coarse": {
+          "zero_read": {
+            "single": {
+              "correct": 55,
+              "total": 384,
+              "accuracy": 0.14322916666666666,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.14322916666666666,
+              "both_facts_decoded_accuracy": 0.14322916666666666,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            },
+            "composition": {
+              "correct": 256,
+              "total": 512,
+              "accuracy": 0.5,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.5,
+              "both_facts_decoded_accuracy": 0.08203125,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            }
+          },
+          "shifted_ring_routes": {
+            "single": {
+              "correct": 89,
+              "total": 384,
+              "accuracy": 0.23177083333333334,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.23177083333333334,
+              "both_facts_decoded_accuracy": 0.24739583333333334,
+              "final_errors_with_both_facts_decoded_correctly": 11
+            },
+            "composition": {
+              "correct": 247,
+              "total": 512,
+              "accuracy": 0.482421875,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.482421875,
+              "both_facts_decoded_accuracy": 0.068359375,
+              "final_errors_with_both_facts_decoded_correctly": 7
+            }
+          }
+        },
+        "ring_fine": {
+          "zero_read": {
+            "single": {
+              "correct": 50,
+              "total": 384,
+              "accuracy": 0.13020833333333334,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.13020833333333334,
+              "both_facts_decoded_accuracy": 0.14322916666666666,
+              "final_errors_with_both_facts_decoded_correctly": 55
+            },
+            "composition": {
+              "correct": 256,
+              "total": 512,
+              "accuracy": 0.5,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.5,
+              "both_facts_decoded_accuracy": 0.08203125,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            }
+          },
+          "shifted_ring_routes": {
+            "single": {
+              "correct": 52,
+              "total": 384,
+              "accuracy": 0.13541666666666666,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.13541666666666666,
+              "both_facts_decoded_accuracy": 0.14322916666666666,
+              "final_errors_with_both_facts_decoded_correctly": 7
+            },
+            "composition": {
+              "correct": 268,
+              "total": 512,
+              "accuracy": 0.5234375,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.5234375,
+              "both_facts_decoded_accuracy": 0.02734375,
+              "final_errors_with_both_facts_decoded_correctly": 1
+            }
+          }
+        }
+      },
+      "db_parity": {
+        "ring_coarse": {
+          "prediction_mismatches": 0,
+          "questions": 896
+        },
+        "ring_fine": {
+          "prediction_mismatches": 0,
+          "questions": 896
+        }
+      },
+      "peak_file_bytes_observed": 18184443,
+      "knowledge_parameters": {
+        "dense": 170086,
+        "ring_coarse": 169280,
+        "ring_fine": 170048
+      }
+    },
+    {
+      "seed": 732,
+      "facts": 384,
+      "test_text_overlap_with_knowledge_training": 0,
+      "test_text_overlap_with_parser_training": 0,
+      "training": {
+        "parser_steps": 3000,
+        "steps": 2000,
+        "soft_steps": 250,
+        "batch_size": 64,
+        "parser_history": [
+          {
+            "step": 200,
+            "validation": {
+              "entity": 0.9771205357142857,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 400,
+            "validation": {
+              "entity": 0.9977678571428571,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 600,
+            "validation": {
+              "entity": 0.9397321428571429,
+              "attribute": 0.9994419642857143,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 800,
+            "validation": {
+              "entity": 0.9905133928571429,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1000,
+            "validation": {
+              "entity": 0.9782366071428571,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1200,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1400,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1600,
+            "validation": {
+              "entity": 0.984375,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1800,
+            "validation": {
+              "entity": 0.9469866071428571,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2000,
+            "validation": {
+              "entity": 0.9949776785714286,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2200,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2400,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2600,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2800,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 3000,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          }
+        ],
+        "history": [
+          {
+            "step": 200,
+            "validation": {
+              "dense": {
+                "single": 0.890625,
+                "composition": 0.568359375
+              },
+              "ring_coarse": {
+                "single": 0.9557291666666666,
+                "composition": 0.888671875
+              },
+              "ring_fine": {
+                "single": 0.890625,
+                "composition": 0.796875
+              }
+            }
+          },
+          {
+            "step": 400,
+            "validation": {
+              "dense": {
+                "single": 0.9713541666666666,
+                "composition": 0.626953125
+              },
+              "ring_coarse": {
+                "single": 0.9921875,
+                "composition": 0.990234375
+              },
+              "ring_fine": {
+                "single": 0.9921875,
+                "composition": 0.966796875
+              }
+            }
+          },
+          {
+            "step": 600,
+            "validation": {
+              "dense": {
+                "single": 0.9973958333333334,
+                "composition": 0.775390625
+              },
+              "ring_coarse": {
+                "single": 0.9921875,
+                "composition": 0.990234375
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 0.99609375
+              }
+            }
+          },
+          {
+            "step": 800,
+            "validation": {
+              "dense": {
+                "single": 0.9947916666666666,
+                "composition": 0.828125
+              },
+              "ring_coarse": {
+                "single": 0.9869791666666666,
+                "composition": 0.9921875
+              },
+              "ring_fine": {
+                "single": 0.9947916666666666,
+                "composition": 1.0
+              }
+            }
+          },
+          {
+            "step": 1000,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.873046875
+              },
+              "ring_coarse": {
+                "single": 0.9947916666666666,
+                "composition": 0.9921875
+              },
+              "ring_fine": {
+                "single": 0.9921875,
+                "composition": 0.982421875
+              }
+            }
+          },
+          {
+            "step": 1200,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.884765625
+              },
+              "ring_coarse": {
+                "single": 0.9947916666666666,
+                "composition": 0.998046875
+              },
+              "ring_fine": {
+                "single": 0.9921875,
+                "composition": 0.986328125
+              }
+            }
+          },
+          {
+            "step": 1400,
+            "validation": {
+              "dense": {
+                "single": 0.9973958333333334,
+                "composition": 0.916015625
+              },
+              "ring_coarse": {
+                "single": 0.9869791666666666,
+                "composition": 0.9921875
+              },
+              "ring_fine": {
+                "single": 0.9947916666666666,
+                "composition": 1.0
+              }
+            }
+          },
+          {
+            "step": 1600,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.94921875
+              },
+              "ring_coarse": {
+                "single": 0.9947916666666666,
+                "composition": 0.99609375
+              },
+              "ring_fine": {
+                "single": 0.9973958333333334,
+                "composition": 0.974609375
+              }
+            }
+          },
+          {
+            "step": 1800,
+            "validation": {
+              "dense": {
+                "single": 1.0,
+                "composition": 0.9375
+              },
+              "ring_coarse": {
+                "single": 0.9921875,
+                "composition": 0.98046875
+              },
+              "ring_fine": {
+                "single": 1.0,
+                "composition": 0.99609375
+              }
+            }
+          },
+          {
+            "step": 2000,
+            "validation": {
+              "dense": {
+                "single": 0.9947916666666666,
+                "composition": 0.92578125
+              },
+              "ring_coarse": {
+                "single": 0.9895833333333334,
+                "composition": 0.998046875
+              },
+              "ring_fine": {
+                "single": 0.9947916666666666,
+                "composition": 1.0
+              }
+            }
+          }
+        ],
+        "selected_steps": {
+          "dense": 1600,
+          "ring_coarse": 1200,
+          "ring_fine": 600
+        },
+        "parser_seconds": 63.021922248997726,
+        "knowledge_seconds": 101.0012158479949
+      },
+      "quality": {
+        "dense": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 474,
+            "total": 512,
+            "accuracy": 0.92578125,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.92578125,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 38
+          }
+        },
+        "ring_coarse": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 512,
+            "total": 512,
+            "accuracy": 1,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          }
+        },
+        "ring_coarse_db": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 512,
+            "total": 512,
+            "accuracy": 1,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          }
+        },
+        "ring_fine": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 509,
+            "total": 512,
+            "accuracy": 0.994140625,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.994140625,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 3
+          }
+        },
+        "ring_fine_db": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 509,
+            "total": 512,
+            "accuracy": 0.994140625,
+            "parser_correct_questions": 512,
+            "accuracy_when_parser_correct": 0.994140625,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 3
+          }
+        }
+      },
+      "diagnostics": {
+        "ring_coarse": {
+          "zero_read": {
+            "single": {
+              "correct": 43,
+              "total": 384,
+              "accuracy": 0.11197916666666667,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.11197916666666667,
+              "both_facts_decoded_accuracy": 0.15104166666666666,
+              "final_errors_with_both_facts_decoded_correctly": 58
+            },
+            "composition": {
+              "correct": 256,
+              "total": 512,
+              "accuracy": 0.5,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.5,
+              "both_facts_decoded_accuracy": 0.09375,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            }
+          },
+          "shifted_ring_routes": {
+            "single": {
+              "correct": 106,
+              "total": 384,
+              "accuracy": 0.2760416666666667,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.2760416666666667,
+              "both_facts_decoded_accuracy": 0.2578125,
+              "final_errors_with_both_facts_decoded_correctly": 3
+            },
+            "composition": {
+              "correct": 264,
+              "total": 512,
+              "accuracy": 0.515625,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.515625,
+              "both_facts_decoded_accuracy": 0.0703125,
+              "final_errors_with_both_facts_decoded_correctly": 13
+            }
+          }
+        },
+        "ring_fine": {
+          "zero_read": {
+            "single": {
+              "correct": 58,
+              "total": 384,
+              "accuracy": 0.15104166666666666,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.15104166666666666,
+              "both_facts_decoded_accuracy": 0.15104166666666666,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            },
+            "composition": {
+              "correct": 256,
+              "total": 512,
+              "accuracy": 0.5,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.5,
+              "both_facts_decoded_accuracy": 0.09375,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            }
+          },
+          "shifted_ring_routes": {
+            "single": {
+              "correct": 66,
+              "total": 384,
+              "accuracy": 0.171875,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.171875,
+              "both_facts_decoded_accuracy": 0.15885416666666666,
+              "final_errors_with_both_facts_decoded_correctly": 1
+            },
+            "composition": {
+              "correct": 259,
+              "total": 512,
+              "accuracy": 0.505859375,
+              "parser_correct_questions": 512,
+              "accuracy_when_parser_correct": 0.505859375,
+              "both_facts_decoded_accuracy": 0.04296875,
+              "final_errors_with_both_facts_decoded_correctly": 12
+            }
+          }
+        }
+      },
+      "db_parity": {
+        "ring_coarse": {
+          "prediction_mismatches": 0,
+          "questions": 896
+        },
+        "ring_fine": {
+          "prediction_mismatches": 0,
+          "questions": 896
+        }
+      },
+      "peak_file_bytes_observed": 18772671,
+      "knowledge_parameters": {
+        "dense": 170086,
+        "ring_coarse": 169280,
+        "ring_fine": 170048
+      }
+    },
+    {
+      "seed": 733,
+      "facts": 384,
+      "test_text_overlap_with_knowledge_training": 0,
+      "test_text_overlap_with_parser_training": 0,
+      "training": {
+        "parser_steps": 3000,
+        "steps": 2000,
+        "soft_steps": 250,
+        "batch_size": 64,
+        "parser_history": [
+          {
+            "step": 200,
+            "validation": {
+              "entity": 0.984375,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 400,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 600,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 800,
+            "validation": {
+              "entity": 1.0,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1000,
+            "validation": {
+              "entity": 0.9520089285714286,
+              "attribute": 0.9983258928571429,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1200,
+            "validation": {
+              "entity": 0.9944196428571429,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1400,
+            "validation": {
+              "entity": 0.9988839285714286,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1600,
+            "validation": {
+              "entity": 0.9988839285714286,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 1800,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2000,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2200,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2400,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2600,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 2800,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          },
+          {
+            "step": 3000,
+            "validation": {
+              "entity": 0.9994419642857143,
+              "attribute": 1.0,
+              "operation": 1.0
+            }
+          }
+        ],
+        "history": [
+          {
+            "step": 200,
+            "validation": {
+              "dense": {
+                "single": 0.8515625,
+                "composition": 0.537109375
+              },
+              "ring_coarse": {
+                "single": 0.9427083333333334,
+                "composition": 0.9140625
+              },
+              "ring_fine": {
+                "single": 0.9192708333333334,
+                "composition": 0.880859375
+              }
+            }
+          },
+          {
+            "step": 400,
+            "validation": {
+              "dense": {
+                "single": 0.9791666666666666,
+                "composition": 0.681640625
+              },
+              "ring_coarse": {
+                "single": 0.9895833333333334,
+                "composition": 0.990234375
+              },
+              "ring_fine": {
+                "single": 0.9739583333333334,
+                "composition": 0.978515625
+              }
+            }
+          },
+          {
+            "step": 600,
+            "validation": {
+              "dense": {
+                "single": 0.9895833333333334,
+                "composition": 0.763671875
+              },
+              "ring_coarse": {
+                "single": 0.9895833333333334,
+                "composition": 0.984375
+              },
+              "ring_fine": {
+                "single": 0.9869791666666666,
+                "composition": 0.9921875
+              }
+            }
+          },
+          {
+            "step": 800,
+            "validation": {
+              "dense": {
+                "single": 0.9921875,
+                "composition": 0.837890625
+              },
+              "ring_coarse": {
+                "single": 0.984375,
+                "composition": 0.99609375
+              },
+              "ring_fine": {
+                "single": 0.9869791666666666,
+                "composition": 0.998046875
+              }
+            }
+          },
+          {
+            "step": 1000,
+            "validation": {
+              "dense": {
+                "single": 0.9947916666666666,
+                "composition": 0.86328125
+              },
+              "ring_coarse": {
+                "single": 0.984375,
+                "composition": 0.99609375
+              },
+              "ring_fine": {
+                "single": 0.9895833333333334,
+                "composition": 0.99609375
+              }
+            }
+          },
+          {
+            "step": 1200,
+            "validation": {
+              "dense": {
+                "single": 0.9895833333333334,
+                "composition": 0.83984375
+              },
+              "ring_coarse": {
+                "single": 0.9869791666666666,
+                "composition": 0.98828125
+              },
+              "ring_fine": {
+                "single": 0.9869791666666666,
+                "composition": 0.994140625
+              }
+            }
+          },
+          {
+            "step": 1400,
+            "validation": {
+              "dense": {
+                "single": 0.9817708333333334,
+                "composition": 0.91015625
+              },
+              "ring_coarse": {
+                "single": 0.984375,
+                "composition": 0.99609375
+              },
+              "ring_fine": {
+                "single": 0.9895833333333334,
+                "composition": 0.99609375
+              }
+            }
+          },
+          {
+            "step": 1600,
+            "validation": {
+              "dense": {
+                "single": 0.9947916666666666,
+                "composition": 0.94140625
+              },
+              "ring_coarse": {
+                "single": 0.9869791666666666,
+                "composition": 0.990234375
+              },
+              "ring_fine": {
+                "single": 0.9791666666666666,
+                "composition": 0.986328125
+              }
+            }
+          },
+          {
+            "step": 1800,
+            "validation": {
+              "dense": {
+                "single": 0.9921875,
+                "composition": 0.9296875
+              },
+              "ring_coarse": {
+                "single": 0.9895833333333334,
+                "composition": 1.0
+              },
+              "ring_fine": {
+                "single": 0.9921875,
+                "composition": 0.99609375
+              }
+            }
+          },
+          {
+            "step": 2000,
+            "validation": {
+              "dense": {
+                "single": 0.9869791666666666,
+                "composition": 0.9140625
+              },
+              "ring_coarse": {
+                "single": 0.9921875,
+                "composition": 0.9921875
+              },
+              "ring_fine": {
+                "single": 0.9895833333333334,
+                "composition": 0.998046875
+              }
+            }
+          }
+        ],
+        "selected_steps": {
+          "dense": 1600,
+          "ring_coarse": 1800,
+          "ring_fine": 1800
+        },
+        "parser_seconds": 71.26054852700327,
+        "knowledge_seconds": 106.01930712000467
+      },
+      "quality": {
+        "dense": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 467,
+            "total": 512,
+            "accuracy": 0.912109375,
+            "parser_correct_questions": 503,
+            "accuracy_when_parser_correct": 0.9184890656063618,
+            "both_facts_decoded_accuracy": 0.974609375,
+            "final_errors_with_both_facts_decoded_correctly": 39
+          }
+        },
+        "ring_coarse": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 503,
+            "total": 512,
+            "accuracy": 0.982421875,
+            "parser_correct_questions": 503,
+            "accuracy_when_parser_correct": 0.9920477137176938,
+            "both_facts_decoded_accuracy": 0.978515625,
+            "final_errors_with_both_facts_decoded_correctly": 2
+          }
+        },
+        "ring_coarse_db": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 503,
+            "total": 512,
+            "accuracy": 0.982421875,
+            "parser_correct_questions": 503,
+            "accuracy_when_parser_correct": 0.9920477137176938,
+            "both_facts_decoded_accuracy": 0.978515625,
+            "final_errors_with_both_facts_decoded_correctly": 2
+          }
+        },
+        "ring_fine": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 505,
+            "total": 512,
+            "accuracy": 0.986328125,
+            "parser_correct_questions": 503,
+            "accuracy_when_parser_correct": 0.9920477137176938,
+            "both_facts_decoded_accuracy": 0.984375,
+            "final_errors_with_both_facts_decoded_correctly": 4
+          }
+        },
+        "ring_fine_db": {
+          "single": {
+            "correct": 384,
+            "total": 384,
+            "accuracy": 1,
+            "parser_correct_questions": 384,
+            "accuracy_when_parser_correct": 1,
+            "both_facts_decoded_accuracy": 1,
+            "final_errors_with_both_facts_decoded_correctly": 0
+          },
+          "composition": {
+            "correct": 505,
+            "total": 512,
+            "accuracy": 0.986328125,
+            "parser_correct_questions": 503,
+            "accuracy_when_parser_correct": 0.9920477137176938,
+            "both_facts_decoded_accuracy": 0.984375,
+            "final_errors_with_both_facts_decoded_correctly": 4
+          }
+        }
+      },
+      "diagnostics": {
+        "ring_coarse": {
+          "zero_read": {
+            "single": {
+              "correct": 53,
+              "total": 384,
+              "accuracy": 0.13802083333333334,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.13802083333333334,
+              "both_facts_decoded_accuracy": 0.13802083333333334,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            },
+            "composition": {
+              "correct": 256,
+              "total": 512,
+              "accuracy": 0.5,
+              "parser_correct_questions": 503,
+              "accuracy_when_parser_correct": 0.5009940357852882,
+              "both_facts_decoded_accuracy": 0.091796875,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            }
+          },
+          "shifted_ring_routes": {
+            "single": {
+              "correct": 108,
+              "total": 384,
+              "accuracy": 0.28125,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.28125,
+              "both_facts_decoded_accuracy": 0.2890625,
+              "final_errors_with_both_facts_decoded_correctly": 7
+            },
+            "composition": {
+              "correct": 258,
+              "total": 512,
+              "accuracy": 0.50390625,
+              "parser_correct_questions": 503,
+              "accuracy_when_parser_correct": 0.5029821073558648,
+              "both_facts_decoded_accuracy": 0.087890625,
+              "final_errors_with_both_facts_decoded_correctly": 11
+            }
+          }
+        },
+        "ring_fine": {
+          "zero_read": {
+            "single": {
+              "correct": 57,
+              "total": 384,
+              "accuracy": 0.1484375,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.1484375,
+              "both_facts_decoded_accuracy": 0.1484375,
+              "final_errors_with_both_facts_decoded_correctly": 0
+            },
+            "composition": {
+              "correct": 0,
+              "total": 512,
+              "accuracy": 0,
+              "parser_correct_questions": 503,
+              "accuracy_when_parser_correct": 0,
+              "both_facts_decoded_accuracy": 0.091796875,
+              "final_errors_with_both_facts_decoded_correctly": 47
+            }
+          },
+          "shifted_ring_routes": {
+            "single": {
+              "correct": 61,
+              "total": 384,
+              "accuracy": 0.15885416666666666,
+              "parser_correct_questions": 384,
+              "accuracy_when_parser_correct": 0.15885416666666666,
+              "both_facts_decoded_accuracy": 0.1640625,
+              "final_errors_with_both_facts_decoded_correctly": 6
+            },
+            "composition": {
+              "correct": 259,
+              "total": 512,
+              "accuracy": 0.505859375,
+              "parser_correct_questions": 503,
+              "accuracy_when_parser_correct": 0.5049701789264414,
+              "both_facts_decoded_accuracy": 0.02734375,
+              "final_errors_with_both_facts_decoded_correctly": 5
+            }
+          }
+        }
+      },
+      "db_parity": {
+        "ring_coarse": {
+          "prediction_mismatches": 0,
+          "questions": 896
+        },
+        "ring_fine": {
+          "prediction_mismatches": 0,
+          "questions": 896
+        }
+      },
+      "peak_file_bytes_observed": 13742585,
+      "knowledge_parameters": {
+        "dense": 170086,
+        "ring_coarse": 169280,
+        "ring_fine": 170048
+      }
+    }
+  ],
+  "runtime": {
+    "torch": "2.12.1+cpu",
+    "python": "3.12.8",
+    "threads": 2
+  },
+  "implementation_sha256": {
+    "ring_memory_quality_bench.py": "8d53ccecbce4e853a7525e52212f3aadac618fd03715372a2b8a79004e48aabc",
+    "ring_memory_model.py": "d80cb36abe7001b28ef45744b92a6fdd2fde989d68450bf21951c022d46229ca",
+    "ring_memory_data.py": "3e9668defbff9e55778bcb6c3379b5429a61c52af9486104826a4aca0cd145cb"
+  },
+  "limitations": [
+    "Synthetic recall and two-fact comparison, not unrestricted natural-language generation.",
+    "The common role parser sees all grammar templates on alias entities, without their fact values.",
+    "Facts are all learned; test holds out question strings and unordered comparison pairs, not new facts.",
+    "Knowledge capacity is approximately 0.65 MiB; the separate 10/40 MiB speed results do not imply equal quality here.",
+    "Two-point tolerance is an exploratory check, not a statistical noninferiority claim."
+  ],
+  "peak_file_bytes_observed": 18772671,
+  "library_sha256": "23b653dc6dfae5c412f6534d9fedd2bfc4334ea9106c54205e4d9d52a4b59df2"
+}

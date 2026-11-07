@@ -54,6 +54,13 @@ does not repeat the complete suite. Its required gate validates the already
 successful CI evidence for the exact current `devel` commit. Tags are created
 only from `main`.
 
+Patch releases for fixes and validated experiment updates follow the same
+protected-branch flow. Keep package metadata, current installation examples,
+the changelog, the release tag and the GitHub Release aligned. Attach or link
+the numerical evidence when publishing measured results. Distinguish measured
+joules per request from CPU time, and identify combined pipeline improvements
+separately from benefits attributable to rings alone.
+
 ## Hotfix Flow
 
 Use a hotfix only when the currently released state needs a direct correction.

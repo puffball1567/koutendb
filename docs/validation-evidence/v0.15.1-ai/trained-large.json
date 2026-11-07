@@ -1,0 +1,736 @@
+{
+  "scope": "trained_internal_latent_memory_prototype",
+  "quality": {
+    "dense": {
+      "single": 0.9739583333333334,
+      "composition": 0.796875
+    },
+    "tensor_full": {
+      "single": 1.0,
+      "composition": 0.99609375
+    },
+    "tensor_sparse": {
+      "single": 1.0,
+      "composition": 0.99609375
+    },
+    "ablated": {
+      "single": 0.12239583333333333,
+      "composition": 0.5
+    },
+    "koutendb": {
+      "single": 1.0,
+      "composition": 0.99609375
+    }
+  },
+  "test_counts": {
+    "single": 384,
+    "composition": 512
+  },
+  "test_text_overlap_with_training": 0,
+  "test_text_overlap_with_parser_training": 0,
+  "model_config": {
+    "width": 64,
+    "rings": 1024,
+    "slots": 32,
+    "entities": 256
+  },
+  "parameter_counts": {
+    "dense": {
+      "total": 2765475,
+      "trainable": 2661278,
+      "knowledge_layer": 2643016
+    },
+    "ring": {
+      "total": 2765467,
+      "trainable": 2661270,
+      "knowledge_layer": 2643008
+    }
+  },
+  "training": {
+    "steps": 1500,
+    "soft_steps": 250,
+    "learning_rate": 0.003,
+    "batch_size": 32,
+    "times": {
+      "dense": {
+        "wall_seconds": 53.33839894804987,
+        "cpu_seconds": 106.42157543300034
+      },
+      "ring": {
+        "wall_seconds": 166.56472060483065,
+        "cpu_seconds": 332.33156246100043
+      }
+    },
+    "history": [
+      {
+        "step": 150,
+        "loss": {
+          "dense": 1.7966471910476685,
+          "ring": 0.9319188594818115
+        },
+        "validation": {
+          "dense": {
+            "single": 0.625,
+            "composition": 0.537109375
+          },
+          "ring": {
+            "single": 0.7421875,
+            "composition": 0.646484375
+          }
+        }
+      },
+      {
+        "step": 300,
+        "loss": {
+          "dense": 1.17596435546875,
+          "ring": 0.2379358410835266
+        },
+        "validation": {
+          "dense": {
+            "single": 0.8541666666666666,
+            "composition": 0.513671875
+          },
+          "ring": {
+            "single": 0.9635416666666666,
+            "composition": 0.953125
+          }
+        }
+      },
+      {
+        "step": 450,
+        "loss": {
+          "dense": 1.092838168144226,
+          "ring": 0.1960134506225586
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9114583333333334,
+            "composition": 0.580078125
+          },
+          "ring": {
+            "single": 1.0,
+            "composition": 0.98828125
+          }
+        }
+      },
+      {
+        "step": 600,
+        "loss": {
+          "dense": 0.7915531992912292,
+          "ring": 0.0018554131966084242
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9427083333333334,
+            "composition": 0.611328125
+          },
+          "ring": {
+            "single": 0.9947916666666666,
+            "composition": 0.99609375
+          }
+        }
+      },
+      {
+        "step": 750,
+        "loss": {
+          "dense": 0.3859650194644928,
+          "ring": 0.0003807149769272655
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9609375,
+            "composition": 0.591796875
+          },
+          "ring": {
+            "single": 1.0,
+            "composition": 0.990234375
+          }
+        }
+      },
+      {
+        "step": 900,
+        "loss": {
+          "dense": 0.4706672430038452,
+          "ring": 0.0032523409463465214
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9635416666666666,
+            "composition": 0.6328125
+          },
+          "ring": {
+            "single": 0.9947916666666666,
+            "composition": 0.984375
+          }
+        }
+      },
+      {
+        "step": 1050,
+        "loss": {
+          "dense": 0.31661537289619446,
+          "ring": 0.0008867632132023573
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9713541666666666,
+            "composition": 0.693359375
+          },
+          "ring": {
+            "single": 1.0,
+            "composition": 0.99609375
+          }
+        }
+      },
+      {
+        "step": 1200,
+        "loss": {
+          "dense": 0.24537719786167145,
+          "ring": 0.014725843444466591
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9375,
+            "composition": 0.72265625
+          },
+          "ring": {
+            "single": 1.0,
+            "composition": 0.994140625
+          }
+        }
+      },
+      {
+        "step": 1350,
+        "loss": {
+          "dense": 0.42447981238365173,
+          "ring": 0.0013164913980290294
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9661458333333334,
+            "composition": 0.779296875
+          },
+          "ring": {
+            "single": 0.9973958333333334,
+            "composition": 0.9921875
+          }
+        }
+      },
+      {
+        "step": 1500,
+        "loss": {
+          "dense": 0.19974151253700256,
+          "ring": 0.0006292957696132362
+        },
+        "validation": {
+          "dense": {
+            "single": 0.9739583333333334,
+            "composition": 0.798828125
+          },
+          "ring": {
+            "single": 1.0,
+            "composition": 0.99609375
+          }
+        }
+      }
+    ],
+    "parser_history": [
+      {
+        "step": 200,
+        "validation": {
+          "entity": 0.9614955357142857,
+          "attribute": 0.9988839285714286,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 400,
+        "validation": {
+          "entity": 0.9743303571428571,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 600,
+        "validation": {
+          "entity": 0.9977678571428571,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 800,
+        "validation": {
+          "entity": 0.9849330357142857,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1000,
+        "validation": {
+          "entity": 0.9827008928571429,
+          "attribute": 1.0,
+          "operation": 0.9977678571428571
+        }
+      },
+      {
+        "step": 1200,
+        "validation": {
+          "entity": 0.9994419642857143,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1400,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1600,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1800,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2000,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2200,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2400,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2600,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2800,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 3000,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      }
+    ],
+    "parser_source_sha256": "be17a5a27245ad748da9cf6328bcb7348f194f2a4216898eee2ee4a5a6cb4a9c",
+    "selected_steps": {
+      "dense": 1500,
+      "ring": 1050
+    }
+  },
+  "energy": {
+    "available": false,
+    "domains": [],
+    "reason": "intel-rapl:0: Permission denied"
+  },
+  "parity": {
+    "max_logit_error": 1.1086463928222656e-05,
+    "prediction_mismatches": 0
+  },
+  "access_counts": {
+    "tensor_full": {
+      "queries": 2,
+      "scored_keys": 65536,
+      "router_keys_scored": 2048,
+      "read_value_vectors": 16
+    },
+    "tensor_sparse": {
+      "queries": 2,
+      "scored_keys": 128,
+      "router_keys_scored": 2048,
+      "read_value_vectors": 16
+    },
+    "koutendb": {
+      "queries": 2,
+      "scored_keys": 128,
+      "router_keys_scored": 2048,
+      "read_value_vectors": 16,
+      "returned_value_bytes": 4096
+    }
+  },
+  "summaries": {
+    "dense": {
+      "wall_ms": 1.9713145468358562,
+      "cpu_ms": 3.939629234375186,
+      "package_j": null
+    },
+    "tensor_full": {
+      "wall_ms": 1.5923536875561695,
+      "cpu_ms": 3.1858672374998065,
+      "package_j": null
+    },
+    "tensor_sparse": {
+      "wall_ms": 1.183775991064197,
+      "cpu_ms": 2.364449285714443,
+      "package_j": null
+    },
+    "koutendb": {
+      "wall_ms": 1.7145134874226642,
+      "cpu_ms": 3.4260595562500384,
+      "package_j": null
+    }
+  },
+  "samples": {
+    "tensor_full/knowledge_layer": [
+      {
+        "requests": 512,
+        "wall_ms": 0.5016411465135207,
+        "cpu_ms": 1.0034122304687365,
+        "package_j": null
+      },
+      {
+        "requests": 544,
+        "wall_ms": 0.47412985660390833,
+        "cpu_ms": 0.9482469485294044,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 0.5431656229120563,
+        "cpu_ms": 1.0868731270833838,
+        "package_j": null
+      },
+      {
+        "requests": 512,
+        "wall_ms": 0.5155699257670676,
+        "cpu_ms": 1.0309213105468285,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 0.5392102812644831,
+        "cpu_ms": 1.0787229583332447,
+        "package_j": null
+      }
+    ],
+    "tensor_full/model": [
+      {
+        "requests": 192,
+        "wall_ms": 1.5026568542756042,
+        "cpu_ms": 3.001989802083512,
+        "package_j": null
+      },
+      {
+        "requests": 160,
+        "wall_ms": 1.5923536875561695,
+        "cpu_ms": 3.1858672374998065,
+        "package_j": null
+      },
+      {
+        "requests": 160,
+        "wall_ms": 1.7213151062605903,
+        "cpu_ms": 3.4460650124998438,
+        "package_j": null
+      },
+      {
+        "requests": 192,
+        "wall_ms": 1.467638067727724,
+        "cpu_ms": 2.935574640625068,
+        "package_j": null
+      },
+      {
+        "requests": 96,
+        "wall_ms": 3.06883178109274,
+        "cpu_ms": 6.132100052083682,
+        "package_j": null
+      }
+    ],
+    "koutendb/knowledge_layer": [
+      {
+        "requests": 320,
+        "wall_ms": 0.7825389937352156,
+        "cpu_ms": 1.5633436656250055,
+        "package_j": null
+      },
+      {
+        "requests": 384,
+        "wall_ms": 0.6737362421821066,
+        "cpu_ms": 1.3481726145833466,
+        "package_j": null
+      },
+      {
+        "requests": 320,
+        "wall_ms": 0.8463434937766579,
+        "cpu_ms": 1.693142803124914,
+        "package_j": null
+      },
+      {
+        "requests": 352,
+        "wall_ms": 0.710641843811159,
+        "cpu_ms": 1.4205730823864116,
+        "package_j": null
+      },
+      {
+        "requests": 352,
+        "wall_ms": 0.7201726335055851,
+        "cpu_ms": 1.4386456420454734,
+        "package_j": null
+      }
+    ],
+    "koutendb/model": [
+      {
+        "requests": 160,
+        "wall_ms": 1.7145134874226642,
+        "cpu_ms": 3.4260595562500384,
+        "package_j": null
+      },
+      {
+        "requests": 192,
+        "wall_ms": 1.6133608854336974,
+        "cpu_ms": 3.227773776041628,
+        "package_j": null
+      },
+      {
+        "requests": 160,
+        "wall_ms": 1.7318116249953164,
+        "cpu_ms": 3.462288500000099,
+        "package_j": null
+      },
+      {
+        "requests": 160,
+        "wall_ms": 1.681407668729662,
+        "cpu_ms": 3.360945137499982,
+        "package_j": null
+      },
+      {
+        "requests": 128,
+        "wall_ms": 2.0977390390726214,
+        "cpu_ms": 4.197306234375198,
+        "package_j": null
+      }
+    ],
+    "dense/model": [
+      {
+        "requests": 160,
+        "wall_ms": 1.7827696061431197,
+        "cpu_ms": 3.5691540000001964,
+        "package_j": null
+      },
+      {
+        "requests": 160,
+        "wall_ms": 1.9723870374946273,
+        "cpu_ms": 3.9471182749998945,
+        "package_j": null
+      },
+      {
+        "requests": 128,
+        "wall_ms": 2.2054449218558148,
+        "cpu_ms": 4.416435203124625,
+        "package_j": null
+      },
+      {
+        "requests": 128,
+        "wall_ms": 1.9623350312940602,
+        "cpu_ms": 3.9213620781248792,
+        "package_j": null
+      },
+      {
+        "requests": 128,
+        "wall_ms": 1.9713145468358562,
+        "cpu_ms": 3.939629234375186,
+        "package_j": null
+      }
+    ],
+    "tensor_sparse/model": [
+      {
+        "requests": 256,
+        "wall_ms": 1.1038043007829401,
+        "cpu_ms": 2.2092046523438658,
+        "package_j": null
+      },
+      {
+        "requests": 224,
+        "wall_ms": 1.1265846339613614,
+        "cpu_ms": 2.256040843750132,
+        "package_j": null
+      },
+      {
+        "requests": 224,
+        "wall_ms": 1.183775991064197,
+        "cpu_ms": 2.364449285714443,
+        "package_j": null
+      },
+      {
+        "requests": 224,
+        "wall_ms": 1.251820299200647,
+        "cpu_ms": 2.501172098214052,
+        "package_j": null
+      },
+      {
+        "requests": 160,
+        "wall_ms": 1.6373893873605994,
+        "cpu_ms": 3.232543262500087,
+        "package_j": null
+      }
+    ],
+    "tensor_sparse/knowledge_layer": [
+      {
+        "requests": 416,
+        "wall_ms": 0.6320529952203148,
+        "cpu_ms": 1.2630633221154797,
+        "package_j": null
+      },
+      {
+        "requests": 800,
+        "wall_ms": 0.316322883736575,
+        "cpu_ms": 0.6323482612499731,
+        "package_j": null
+      },
+      {
+        "requests": 832,
+        "wall_ms": 0.3051468810064342,
+        "cpu_ms": 0.6103757824519244,
+        "package_j": null
+      },
+      {
+        "requests": 832,
+        "wall_ms": 0.30493935453425647,
+        "cpu_ms": 0.6099151862980233,
+        "package_j": null
+      },
+      {
+        "requests": 736,
+        "wall_ms": 0.34222938721422513,
+        "cpu_ms": 0.6844085081522074,
+        "package_j": null
+      }
+    ],
+    "dense/knowledge_layer": [
+      {
+        "requests": 256,
+        "wall_ms": 1.0625575077938265,
+        "cpu_ms": 2.108175046874994,
+        "package_j": null
+      },
+      {
+        "requests": 256,
+        "wall_ms": 0.9997225624829298,
+        "cpu_ms": 1.998818457031204,
+        "package_j": null
+      },
+      {
+        "requests": 288,
+        "wall_ms": 0.8865963681172515,
+        "cpu_ms": 1.7719063923612073,
+        "package_j": null
+      },
+      {
+        "requests": 352,
+        "wall_ms": 0.7700654999677102,
+        "cpu_ms": 1.5397241931818038,
+        "package_j": null
+      },
+      {
+        "requests": 320,
+        "wall_ms": 0.8352859687875025,
+        "cpu_ms": 1.6692584624999895,
+        "package_j": null
+      }
+    ]
+  },
+  "access_count_batch_size": 1,
+  "knowledge_layer_summaries": {
+    "dense": {
+      "wall_ms": 0.8865963681172515,
+      "cpu_ms": 1.7719063923612073,
+      "package_j": null
+    },
+    "tensor_full": {
+      "wall_ms": 0.5155699257670676,
+      "cpu_ms": 1.0309213105468285,
+      "package_j": null
+    },
+    "tensor_sparse": {
+      "wall_ms": 0.316322883736575,
+      "cpu_ms": 0.6323482612499731,
+      "package_j": null
+    },
+    "koutendb": {
+      "wall_ms": 0.7201726335055851,
+      "cpu_ms": 1.4386456420454734,
+      "package_j": null
+    }
+  },
+  "runtime": {
+    "torch": "2.12.1+cpu",
+    "python": "3.12.8",
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+    "threads": 2,
+    "rounds": 5,
+    "min_block_seconds": 0.25
+  },
+  "timing_workload": {
+    "questions": 32,
+    "batch_size": 1,
+    "kinds": {
+      "single": 16,
+      "composition": 16
+    }
+  },
+  "implementation_sha256": {
+    "ring_memory_model.py": "d80cb36abe7001b28ef45744b92a6fdd2fde989d68450bf21951c022d46229ca",
+    "ring_memory_data.py": "3e9668defbff9e55778bcb6c3379b5429a61c52af9486104826a4aca0cd145cb",
+    "ring_memory_experiment.py": "1955034ab64f988886267136d38e789ac6566cf04f1cd65e4a26e8b2af048795"
+  },
+  "checkpoint_sha256": "7b5e638e92f9027cd7c25dca6921aeb1f23489e363772775424035f38610f93c",
+  "library_sha256": "23b653dc6dfae5c412f6534d9fedd2bfc4334ea9106c54205e4d9d52a4b59df2",
+  "limitations": [
+    "Synthetic relational classification, not a general-purpose language model.",
+    "Single-fact test uses unseen phrasing of learned facts; composition uses held-out fact pairs.",
+    "A shared parser learns entity/attribute roles without fact values, then is frozen in both models.",
+    "The model uses continuous semantic probabilities, not oracle IDs or ring labels at inference.",
+    "Ring memory replaces one knowledge layer, not all weights.",
+    "Training uses a dense straight-through surrogate; no sparse-training energy claim.",
+    "Access counts are algorithmic counts, not measured DRAM traffic or isolated weight-access time.",
+    "Reference tensor tables remain resident for comparison; no deployment RAM-saving claim.",
+    "Initialization/export/training/tokenization are outside the timed inference blocks.",
+    "CPU package energy is not data-center or whole-system energy."
+  ],
+  "parser_transfer_verified": {
+    "tensors": 33,
+    "unchanged_in_both_models": true
+  }
+}

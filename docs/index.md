@@ -51,6 +51,13 @@ trial to maintained application is in the
 
 ## Review Maturity
 
+- [Measured AI Quality, CPU Cost and Energy](validation-evidence/v0.15.1-ai/README.md)
+- [Trained-Model RAG Quality and Energy](real-rag-energy-bench.md)
+- [Trained Ring Memory Answer Quality](ring-memory-quality-bench.md)
+- [Internal Learned Ring Memory](ring-memory-experiment.md)
+- [Bounded Ring Memory Capacity Probe](ring-memory-capacity-bench.md)
+- [Small Transformer Compute and Energy](transformer-energy-bench.md)
+
 - [Feature Status / Roadmap](koutendb-status.md)
 - [v1.0 Stabilization Plan](v1-stabilization.md)
 - [Technical FAQ](technical-faq.md)
@@ -99,6 +106,7 @@ trial to maintained application is in the
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.15.1 Release Notes](github-release-v0.15.1.md)
 - [v0.15.0 Release Notes](github-release-v0.15.0.md)
 - [v0.14.5 Release Notes](github-release-v0.14.5.md)
 - [v0.14.2 Release Notes](github-release-v0.14.2.md)

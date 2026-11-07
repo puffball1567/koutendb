@@ -90,11 +90,6 @@ proc exactCandidate*(p: Particle, queryVec: seq[float32]): VectorCandidate =
                   score: 1.0 - cosineDistance(queryVec, p.vec),
                   payload: p.payload, codec: p.codec)
 
-proc exactCandidate(p: VectorEntry, queryVec: seq[float32]): VectorCandidate =
-  VectorCandidate(parent: p.parent, seq: p.seq, tWrite: p.tWrite,
-                  score: 1.0 - cosineDistance(queryVec, p.vec),
-                  payload: p.payload, codec: p.codec)
-
 proc addTopCandidate*(hits: var seq[VectorCandidate], cand: VectorCandidate,
                       budget: int): int {.discardable.} =
   ## Return the retained payload-byte delta for bounded server retrievals.
@@ -111,6 +106,40 @@ proc addTopCandidate*(hits: var seq[VectorCandidate], cand: VectorCandidate,
     result = cand.payload.len - hits[worst].payload.len
     hits[worst] = cand
 
+proc candidateSlot(hits: seq[VectorCandidate], score: float, budget: int): int =
+  if budget <= 0:
+    return -1
+  if hits.len < budget:
+    return hits.len
+  var worst = 0
+  for i in 1 ..< hits.len:
+    if hits[i].score < hits[worst].score:
+      worst = i
+  if score > hits[worst].score: worst else: -1
+
+template considerExact(hits, entry, queryVec, budget, payloadDelta: untyped) =
+  block:
+    let score = 1.0 - cosineDistance(queryVec, entry.vec)
+    let slot = candidateSlot(hits, score, budget)
+    if slot >= 0:
+      var candidate = VectorCandidate(parent: entry.parent, seq: entry.seq,
+        tWrite: entry.tWrite, score: score, payload: entry.payload, codec: entry.codec)
+      if slot == hits.len:
+        payloadDelta = candidate.payload.len
+        hits.add move(candidate)
+      else:
+        payloadDelta = candidate.payload.len - hits[slot].payload.len
+        hits[slot] = move(candidate)
+
+proc addExactCandidate*(hits: var seq[VectorCandidate], entry: Particle,
+                       queryVec: seq[float32], budget: int): int {.discardable.} =
+  ## Materialize only competitive payloads; preserve aggregate byte accounting.
+  considerExact(hits, entry, queryVec, budget, result)
+
+proc addExactCandidate(hits: var seq[VectorCandidate], entry: VectorEntry,
+                       queryVec: seq[float32], budget: int): int {.discardable.} =
+  considerExact(hits, entry, queryVec, budget, result)
+
 proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
              hasRing: bool, ringKey: uint64, budget: int): VectorSearchResult =
   if queryVec.len == 0 or budget <= 0:
@@ -124,14 +153,14 @@ proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
           continue
         inc result.scanned
         rings[p.parent] = true
-        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
+        result.hits.addExactCandidate(p, queryVec, budget)
     else:
       for p in st.allParticles():
         if p.vec.len == 0:
           continue
         inc result.scanned
         rings[p.parent] = true
-        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
+        result.hits.addExactCandidate(p, queryVec, budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -145,7 +174,7 @@ proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
     for p in b.byRing.getOrDefault(ringKey, @[]):
       inc result.scanned
       rings[p.parent] = true
-      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
+      result.hits.addExactCandidate(p, queryVec, budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -160,7 +189,7 @@ proc search*(b: VectorBackend, st: Store, queryVec: seq[float32],
     for p in entries:
       inc result.scanned
       rings[ring] = true
-      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
+      result.hits.addExactCandidate(p, queryVec, budget)
   result.ringsTouched = rings.len
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -189,7 +218,7 @@ proc searchMany*(b: VectorBackend, st: Store, queryVec: seq[float32],
           continue
         inc result.scanned
         rings[p.parent] = true
-        result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
+        result.hits.addExactCandidate(p, queryVec, budget)
     result.ringsTouched = rings.len
     result.skippedVectors = max(0, result.totalVectors - result.scanned)
     result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
@@ -212,7 +241,7 @@ proc searchMany*(b: VectorBackend, st: Store, queryVec: seq[float32],
     for p in b.byRing.getOrDefault(ring, @[]):
       inc result.scanned
       rings[p.parent] = true
-      result.hits.addTopCandidate(p.exactCandidate(queryVec), budget)
+      result.hits.addExactCandidate(p, queryVec, budget)
   result.ringsTouched = rings.len
   result.skippedVectors = max(0, result.totalVectors - result.scanned)
   result.hits.sort(proc(a, b: VectorCandidate): int = cmp(b.score, a.score))
