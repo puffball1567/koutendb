@@ -62,6 +62,9 @@ The optional [product-key ring router](docs/product-ring-routing.md) also reduce
 the work of selecting rings inside the learned-memory model. It uses structured
 representatives and bounded candidate combinations; its matched training and
 CPU benchmark reports accuracy separately from routing cost and measured energy.
+Batched latent aggregation also lowers whole-model CPU time by **16.4%** for
+the unchanged flat-router prototype in a controlled recheck, with its measured
+answer accuracy preserved. Electricity use remains unmeasured for this feature.
 
 ## Retrieve Related Data Without Join Shaping
 

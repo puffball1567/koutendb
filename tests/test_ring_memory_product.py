@@ -92,6 +92,21 @@ class ProductChecks(unittest.TestCase):
                 torch.testing.assert_close(memory(hidden), expected, atol=2e-6, rtol=2e-5)
                 self.assertEqual(memory.last_stats["router_keys_scored"], 4 * 8)
                 self.assertEqual(memory.last_stats["scored_keys"], 4 * 2 * 8)
+                batched_stats = dict(memory.last_stats)
+                store.aggregation = "per_ring"
+                torch.testing.assert_close(memory(hidden), expected, atol=2e-6, rtol=2e-5)
+                self.assertEqual(memory.last_stats, batched_stats)
+                # A larger read budget pads short rings. Masking must preserve
+                # their original softmax and never introduce NaN or fake hits.
+                queries = F.normalize(memory.query(hidden.flatten(0, 1)), dim=-1)
+                scores, selected = memory.product_router.topk(queries, 2)
+                gates = (scores * 8).softmax(-1)
+                reference, reference_stats = store.read(queries, selected, gates, 10)
+                store.aggregation = "batched"
+                actual, actual_stats = store.read(queries, selected, gates, 10)
+                torch.testing.assert_close(actual, reference, atol=2e-6, rtol=2e-5)
+                self.assertEqual(actual_stats, reference_stats)
+                self.assertEqual(actual_stats["read_value_vectors"], 4 * 2 * 8)
             finally:
                 store.close()
         Path(directory + ".kouten-dir.lock").unlink(missing_ok=True)

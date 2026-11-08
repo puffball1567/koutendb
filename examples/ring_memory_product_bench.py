@@ -158,8 +158,12 @@ def benchmark(args, checkpoint):
                 raise RuntimeError(f"{name}: DB/reference prediction mismatch")
             quality[name]["koutendb"] = {kind: statistics.mean(row["prediction"] == row["label"] for row in predictions if row["kind"] == kind)
                                          for kind in ("single", "composition")}
+            store.aggregation = "per_ring"
+            quality[name]["koutendb_per_ring"] = accuracy(model, task["test"], task["vocabulary"])
+            store.aggregation = "batched"
             parity[name] = {"prediction_mismatches": mismatches, "max_logit_error": max_error,
                             "test_questions": len(predictions)}
+            model(inputs[0])
             counts[name] = dict(model.knowledge.last_stats)
             print(f"{name}: held-out quality {quality[name]}, DB parity {parity[name]}", flush=True)
         product = models["product"]
@@ -173,12 +177,13 @@ def benchmark(args, checkpoint):
         finally:
             router.topk = original
         for _ in range(args.rounds):
-            order = [(name, backend, scope) for name in models for backend in ("tensor_sparse", "koutendb")
+            order = [(name, backend, scope) for name in models for backend in ("tensor_sparse", "koutendb", "koutendb_per_ring")
                      for scope in ("model", "knowledge_layer")]
             rng.shuffle(order)
             for name, backend, scope in order:
                 model = models[name]
-                model.knowledge.backend = backend
+                model.knowledge.backend = "koutendb" if backend.startswith("koutendb") else backend
+                model.knowledge.store.aggregation = "per_ring" if backend == "koutendb_per_ring" else "batched"
                 values = inputs if scope == "model" else [model.semantic_input(ids)[0] for ids in inputs]
                 execute = model if scope == "model" else model.knowledge
                 samples.setdefault(f"{name}/{backend}/{scope}", []).append(
@@ -190,7 +195,7 @@ def benchmark(args, checkpoint):
     test_texts = {r["text"] for r in task["test"]}
     files = ("ring_memory_product_bench.py", "ring_memory_router.py", "ring_memory_model.py",
              "ring_memory_experiment.py", "ring_memory_data.py")
-    report = {"scope": "matched_learned_flat_vs_product_ring_routing", "schema_version": 1,
+    report = {"scope": "matched_learned_flat_vs_product_ring_routing", "schema_version": 2,
               "plan": json.loads((args.work / "plan.json").read_text()),
               "model_config": checkpoint["model_config"], "training": checkpoint["training"],
               "quality": quality, "parity": parity,
@@ -198,6 +203,7 @@ def benchmark(args, checkpoint):
               "test_text_overlap_with_knowledge_training": len(test_texts & trained_texts),
               "test_text_overlap_with_parser_training": len(test_texts & {r["text"] for r in task["parser_training"]}),
               "access_counts_per_question": counts, "timing_workload": {"single": 16, "composition": 16, "batch_size": 1},
+              "db_aggregation": {"koutendb": "batched", "koutendb_per_ring": "original per-ring reference"},
               "summaries": medians(samples), "samples": samples, "router_only_scaling": scaling,
               "energy": energy.status, "work_bytes_with_db_snapshots": peak_disk,
               "runtime": {"torch": torch.__version__, "python": platform.python_version(),

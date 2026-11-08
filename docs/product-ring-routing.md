@@ -75,6 +75,22 @@ These counts are not hardware memory-traffic measurements. Factorization
 reduces representative storage; it does not remove local keys or value tables,
 nor imply that hundreds of billions of ordinary parameters fit in RAM.
 
+## Batched Latent Aggregation
+
+`TensorMemoryStore` now packs returned float vectors and scores into contiguous
+CPU arrays and performs the local and ring-weighted reductions over the whole
+read batch. This replaces per-value tensor construction and repeated per-ring
+softmax/reduction dispatch. It keeps the same scoped retrieval requests, read
+budget, keys, values and learned weights. Short rings use masked padding, which
+does not add artificial hits or change their local softmax.
+
+The default is `aggregation="batched"`. The original `aggregation="per_ring"`
+path remains available as a correctness/performance control. The matched
+benchmark times both readers in the same randomized run, using unchanged
+checkpoints. This optimization batches **aggregation**, not native DB queries
+or device transfers; those remain future work. It also applies to a flat router,
+so its gains must be attributed to the reader rather than product routing.
+
 ## Matched Quality and Cost Experiment
 
 With an existing local PyTorch/NumPy environment and built C ABI:
@@ -127,7 +143,7 @@ read-only energy helper requests the terminal password. Warm-cache timing
 excludes training, initialization, export and tokenization. Both tensor tables
 remain resident for the comparison, so it is not a deployment-RAM measurement.
 
-## Next Evaluation Gates
+## Recorded CPU Results
 
 ### Initial CPU Run
 
@@ -169,7 +185,33 @@ a portable deployment threshold. Measured temporary files including both DB
 snapshots were about 63.2 MiB and were removed after evaluation; the reusable
 checkpoint and reports remain.
 
-### Larger Model Integration
+### Batched Reader Recheck
+
+The [optimized recheck](validation-evidence/product-ring-routing/optimized-results.json)
+reuses the **same checkpoint hash** and compares both reader implementations
+within one run: seven randomized rounds, blocks of at least 0.5 seconds,
+32 balanced questions, batch size one, two CPU threads. The CPU was an AMD
+Ryzen 5 5600H. Median whole-model CPU milliseconds per question:
+
+| Unchanged trained model | Original per-ring aggregation | Batched aggregation | Reduction |
+| --- | ---: | ---: | ---: |
+| Flat router | 2.192 | 1.833 | 16.4% |
+| Product router | 2.400 | 2.073 | 13.6% |
+
+Each model retains its answer accuracy from the initial run; the batched DB
+reader has zero prediction mismatches against tensors on all 896 questions per
+model. Read counts and returned bytes are unchanged. These improvements come
+from reducing aggregation/dispatch overhead, not from fewer retrieved values,
+new factual knowledge, or product routing. The default flat router benefits
+without retraining. Product routing still adds overhead at 1,024 rings.
+
+Do not compare absolute timings across the two runs as an optimization effect;
+use the original/batched controls within the recheck. All rounds and samples
+are retained. Electricity remains unmeasured because package counters require
+terminal-based access. Lower CPU time is a useful result to test next with
+actual energy counters, not a measured electricity-saving percentage.
+
+## Next Evaluation Gates
 
 Before proposing integration with a large pretrained model, validate the
 product router on independent worlds and useful natural-language tasks. Then

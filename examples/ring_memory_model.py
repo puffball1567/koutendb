@@ -171,8 +171,11 @@ class TaskModel(nn.Module):
 class TensorMemoryStore(Database):
     """Persist learned keys and raw latent values in real KoutenDB rings."""
 
-    def __init__(self, library, directory, memory, disk_backed=False, progress=None):
+    def __init__(self, library, directory, memory, disk_backed=False, progress=None, aggregation="batched"):
+        if aggregation not in ("batched", "per_ring"):
+            raise ValueError("aggregation must be batched or per_ring")
         super().__init__(library, directory, disk_backed=disk_backed)
+        self.aggregation = aggregation
         self.width = memory.width
         self.ring_count = memory.rings
         self.lib.kouten_put_vec_codec.argtypes = [C.c_void_p, C.c_char_p, C.c_void_p, C.c_size_t,
@@ -195,10 +198,12 @@ class TensorMemoryStore(Database):
                     progress(completed)
 
     @classmethod
-    def open_snapshot(cls, library, directory, width, rings, disk_backed=False):
+    def open_snapshot(cls, library, directory, width, rings, disk_backed=False, aggregation="batched"):
+        if aggregation not in ("batched", "per_ring"):
+            raise ValueError("aggregation must be batched or per_ring")
         store = cls.__new__(cls)
         Database.__init__(store, library, directory, disk_backed=disk_backed)
-        store.width, store.ring_count = width, rings
+        store.width, store.ring_count, store.aggregation = width, rings, aggregation
         return store
 
     @staticmethod
@@ -206,6 +211,48 @@ class TensorMemoryStore(Database):
         return f"neural-memory/ring-{ring:04d}".encode()
 
     def read(self, queries, selected, gates, budget):
+        if self.aggregation == "per_ring":
+            return self.read_per_ring(queries, selected, gates, budget)
+        if self.aggregation != "batched":
+            raise ValueError("aggregation must be batched or per_ring")
+        # Retrieval still uses the scoped C ABI. Aggregate all returned latent
+        # vectors in two tensor reductions instead of constructing a tensor for
+        # every value and dispatching softmax/reductions for every ring/query.
+        shape = (len(queries), selected.shape[1], budget)
+        values = np.zeros((*shape, self.width), dtype=np.float32)
+        scores = np.full(shape, -np.inf, dtype=np.float32)
+        scored, vectors, payload_bytes = 0, 0, 0
+        for row, (query, rings) in enumerate(zip(queries.detach(), selected)):
+            vector = (C.c_float * len(query))(*query.tolist())
+            for column, ring in enumerate(rings.tolist()):
+                pointer = self.lib.kouten_retrieve(self.handle, vector, len(query),
+                                                    self.name(ring), budget, 0, 0)
+                if not pointer:
+                    self.fail()
+                try:
+                    result = pointer.contents
+                    if not 0 < result.len <= budget:
+                        raise ValueError("selected ring returned an invalid number of memory values")
+                    scored += result.scanned
+                    for i in range(result.len):
+                        hit = result.hits[i]
+                        if hit.payload_len != 4 * self.width:
+                            raise ValueError("latent value size mismatch")
+                        raw = C.string_at(hit.payload, hit.payload_len)
+                        values[row, column, i] = np.frombuffer(raw, dtype=np.float32)
+                        scores[row, column, i] = hit.score
+                        vectors += 1
+                        payload_bytes += len(raw)
+                finally:
+                    self.lib.kouten_retrieve_free(pointer)
+        local_weights = (torch.from_numpy(scores) * 8).softmax(-1)
+        per_ring = (torch.from_numpy(values) * local_weights.unsqueeze(-1)).sum(-2)
+        read = (per_ring * gates.unsqueeze(-1)).sum(1)
+        return read, {"queries": len(queries), "scored_keys": scored,
+                      "read_value_vectors": vectors, "returned_value_bytes": payload_bytes}
+
+    def read_per_ring(self, queries, selected, gates, budget):
+        """Original aggregation path retained as a correctness/cost control."""
         rows, scored, vectors, payload_bytes = [], 0, 0, 0
         for query, rings, weights in zip(queries.detach(), selected, gates):
             vector = (C.c_float * len(query))(*query.tolist())
