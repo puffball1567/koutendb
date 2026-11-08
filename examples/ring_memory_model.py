@@ -13,6 +13,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from rag_energy_capi import Database, Id
+from ring_memory_router import ProductRingRouter
 
 
 def sparse_weights(scores, count, straight_through=False, soft=False):
@@ -27,13 +28,17 @@ def sparse_weights(scores, count, straight_through=False, soft=False):
 
 class RingMemory(nn.Module):
     def __init__(self, width, key_dim=16, rings=16, slots=32, read_rings=2, read_slots=4,
-                 allocate_tables=True):
+                 allocate_tables=True, router_kind="flat"):
         super().__init__()
         self.width, self.key_dim = width, key_dim
         self.rings, self.slots = rings, slots
         self.read_rings, self.read_slots = min(read_rings, rings), min(read_slots, slots)
         self.query = nn.Linear(width, key_dim, bias=False)
-        self.ring_keys = nn.Parameter(torch.randn(rings, key_dim))
+        if router_kind not in ("flat", "product"):
+            raise ValueError("router_kind must be flat or product")
+        self.router_kind = router_kind
+        self.ring_keys = nn.Parameter(torch.randn(rings, key_dim)) if router_kind == "flat" else None
+        self.product_router = ProductRingRouter(rings, key_dim) if router_kind == "product" else None
         self.keys = nn.Parameter(torch.randn(rings, slots, key_dim)) if allocate_tables else None
         self.values = nn.Parameter(torch.randn(rings, slots, width) * .1) if allocate_tables else None
         self.output = nn.Linear(width, width)
@@ -51,15 +56,15 @@ class RingMemory(nn.Module):
         else:
             with torch.no_grad():
                 self.eval_keys = None if self.keys is None else F.normalize(self.keys.detach(), dim=-1)
-                self.eval_ring_keys = F.normalize(self.ring_keys.detach(), dim=-1)
+                self.eval_ring_keys = None if self.ring_keys is None else F.normalize(self.ring_keys.detach(), dim=-1)
         return self
 
     def forward(self, hidden):
         shape = hidden.shape
         q = F.normalize(self.query(hidden.reshape(-1, self.width)), dim=-1)
-        ring_keys = F.normalize(self.ring_keys, dim=-1) if self.training else self.eval_ring_keys
-        ring_scores = q @ ring_keys.T * 8
         if self.training:
+            ring_scores = (self.product_router.full_scores(q) * 8 if self.product_router is not None else
+                           q @ F.normalize(self.ring_keys, dim=-1).T * 8)
             local_scores = torch.einsum("bd,red->bre", q, F.normalize(self.keys, dim=-1)) * 8
             local_weights = sparse_weights(local_scores, self.read_slots, True, self.soft_training)
             ring_weights = sparse_weights(ring_scores, self.read_rings, True, self.soft_training)
@@ -68,8 +73,15 @@ class RingMemory(nn.Module):
         elif self.backend == "ablated":
             read = q.new_zeros((len(q), self.width))
         else:
-            chosen = ring_scores.topk(self.read_rings, dim=-1).indices
-            ring_weights = ring_scores.gather(-1, chosen).softmax(-1)
+            if self.product_router is not None:
+                selected_scores, chosen = self.product_router.topk(q, self.read_rings)
+                ring_weights = (selected_scores * 8).softmax(-1)
+                routing_counts = self.product_router.access_counts(len(q), self.read_rings)
+            else:
+                ring_scores = q @ self.eval_ring_keys.T * 8
+                chosen = ring_scores.topk(self.read_rings, dim=-1).indices
+                ring_weights = ring_scores.gather(-1, chosen).softmax(-1)
+                routing_counts = {"router_keys_scored": len(q) * self.rings}
             if self.backend == "koutendb":
                 read, stats = self.store.read(q, chosen, ring_weights, self.read_slots)
                 self.last_stats = stats
@@ -92,13 +104,13 @@ class RingMemory(nn.Module):
                 per_ring = ((scores * 8).softmax(-1).unsqueeze(-1) * values).sum(2)
                 read = (per_ring * ring_weights.unsqueeze(-1)).sum(1)
                 self.last_stats = {"queries": len(q), "scored_keys": scored,
-                                   "router_keys_scored": len(q) * self.rings,
                                    "read_value_vectors": len(q) * self.read_rings * self.read_slots}
+            self.last_stats.update(routing_counts)
         return self.output(read).reshape(shape)
 
 
 class TaskModel(nn.Module):
-    def __init__(self, vocabulary, classes, width=64, rings=16, slots=32, entities=32, kind="ring"):
+    def __init__(self, vocabulary, classes, width=64, rings=16, slots=32, entities=32, kind="ring", router_kind="flat"):
         super().__init__()
         self.kind, self.width = kind, width
         self.embedding = nn.Embedding(vocabulary, width, padding_idx=0)
@@ -113,7 +125,7 @@ class TaskModel(nn.Module):
         # Fixed random semantic codes: no fact values or answer IDs are stored here.
         self.register_buffer("semantic_codes", torch.randn(entities + 3, width) / width ** .5)
         self.parser_frozen = False
-        prototype = RingMemory(width, rings=rings, slots=slots)
+        prototype = RingMemory(width, rings=rings, slots=slots, router_kind=router_kind)
         memory_parameters = sum(p.numel() for p in prototype.parameters())
         if kind == "ring":
             self.knowledge = prototype
@@ -222,5 +234,4 @@ class TensorMemoryStore(Database):
                     self.lib.kouten_retrieve_free(pointer)
             rows.append((torch.stack(per_ring) * weights[:, None]).sum(0))
         return torch.stack(rows), {"queries": len(queries), "scored_keys": scored,
-                                   "router_keys_scored": len(queries) * self.ring_count,
                                    "read_value_vectors": vectors, "returned_value_bytes": payload_bytes}

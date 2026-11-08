@@ -17,7 +17,7 @@ import torch
 from torch import nn
 
 from ring_memory_data import encode, make_task
-from ring_memory_model import TaskModel, TensorMemoryStore
+from ring_memory_model import RingMemory, TaskModel, TensorMemoryStore
 from transformer_energy_bench import PackageEnergy, SudoPackageEnergy
 
 
@@ -75,7 +75,7 @@ def parser_accuracy(model, rows, vocabulary):
     return {name: yes / total for name, yes, total in zip(("entity", "attribute", "operation"), correct, totals)}
 
 
-def train(args, output_dir):
+def train(args, output_dir, model_builder=build_models):
     parser_source = (torch.load(args.parser_checkpoint, map_location="cpu", weights_only=True)
                      if args.parser_checkpoint else None)
     task = parser_source["task"] if parser_source else make_task(args.seed, args.entities, args.values, args.training_pairs)
@@ -83,9 +83,9 @@ def train(args, output_dir):
                           task["values"] != args.values or len(task["train_composition"]) != args.training_pairs):
         raise ValueError("parser source must have the same seed, entity/value counts and training-pair count")
     config = {"width": args.width, "rings": args.rings, "slots": args.slots, "entities": task["parser_entities"]}
-    models = build_models(config, len(task["vocabulary"]), args.values + 2, args.seed)
+    models = model_builder(config, len(task["vocabulary"]), args.values + 2, args.seed)
     rng = random.Random(args.seed)
-    parser_model = models["dense"]
+    parser_model = next(iter(models.values()))
     parser_parameters = [p for name, p in parser_model.named_parameters()
                          if name.startswith(("position.", "stem.", "entity_head.", "attribute_head.", "operation_head."))]
     parser_optimizer = torch.optim.AdamW(parser_parameters, lr=args.learning_rate, weight_decay=.001)
@@ -135,7 +135,7 @@ def train(args, output_dir):
         losses = {}
         for kind, model in models.items():
             model.train()
-            if kind == "ring":
+            if isinstance(model.knowledge, RingMemory):
                 model.knowledge.soft_training = step <= args.soft_steps
             wall, cpu = time.perf_counter(), time.process_time()
             optimizers[kind].zero_grad(set_to_none=True)

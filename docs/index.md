@@ -55,6 +55,7 @@ trial to maintained application is in the
 - [Trained-Model RAG Quality and Energy](real-rag-energy-bench.md)
 - [Trained Ring Memory Answer Quality](ring-memory-quality-bench.md)
 - [Internal Learned Ring Memory](ring-memory-experiment.md)
+- [Product-Key Ring Routing](product-ring-routing.md)
 - [Bounded Ring Memory Capacity Probe](ring-memory-capacity-bench.md)
 - [Small Transformer Compute and Energy](transformer-energy-bench.md)
 
