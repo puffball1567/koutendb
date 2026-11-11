@@ -99,5 +99,9 @@ Core checks include:
 - core tests;
 - CLI, cluster, recovery, universe, and TLS smoke tests.
 
+Linux native-dependency jobs and the Jazzy integration use an explicit Ubuntu
+24.04 baseline. The macOS build and all required tests remain enabled. Image
+updates should be deliberate rather than inherited from `ubuntu-latest` rollouts.
+
 Driver compatibility tests may remain optional when the relevant driver
 repositories are developed separately.

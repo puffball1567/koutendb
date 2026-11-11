@@ -58,6 +58,8 @@ contracts and native storage behavior are unchanged.
 
 CI covers 47 CPU experiment contracts, alongside the native, C ABI, macOS,
 security, recovery, self-host and container checks required for this release.
+The apt-based native and HTTP-integration jobs use an explicit Ubuntu 24.04
+baseline to avoid dependency drift during runner-image rollouts.
 The v1.0 continuous-service evidence tracked in issue #108 remains a separate
 open stabilization gate.
 

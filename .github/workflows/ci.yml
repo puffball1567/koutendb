@@ -54,7 +54,8 @@ jobs:
     name: Nim checks and C ABI
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    # Keep apt-based checks on an explicit baseline during latest-image rollouts.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -136,7 +137,7 @@ jobs:
     name: Core test suite
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -162,7 +163,7 @@ jobs:
     name: CLI, cluster, recovery, and universe smoke
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -234,7 +235,7 @@ jobs:
     name: TLS transport smoke
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -258,7 +259,7 @@ jobs:
     name: AI experiment contracts
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
