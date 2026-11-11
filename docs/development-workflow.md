@@ -102,6 +102,9 @@ Core checks include:
 Linux native-dependency jobs and the Jazzy integration use an explicit Ubuntu
 24.04 baseline. The macOS build and all required tests remain enabled. Image
 updates should be deliberate rather than inherited from `ubuntu-latest` rollouts.
+Dependency setup prefers the Linux Kernel Archives' HTTPS Ubuntu mirror using
+APT mirror priority, retaining the runner's original fallback mirrors and
+Ubuntu archive signature verification.
 
 Driver compatibility tests may remain optional when the relevant driver
 repositories are developed separately.

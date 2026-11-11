@@ -23,6 +23,8 @@
 
 - Pin apt-based native and HTTP-integration CI jobs to Ubuntu 24.04 so their
   dependency baseline does not change with `ubuntu-latest` image rollouts.
+- Prefer an independent HTTPS Ubuntu package mirror during dependency setup,
+  preserving archive signature verification and the existing mirror fallbacks.
 
 ## v0.15.1 - 2026-11-07
 
