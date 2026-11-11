@@ -1,0 +1,1535 @@
+{
+  "scope": "matched_learned_flat_vs_product_ring_routing",
+  "schema_version": 2,
+  "plan": {
+    "seed": 731,
+    "entities": 128,
+    "values": 8,
+    "training_pairs": 4096,
+    "width": 64,
+    "rings": 1024,
+    "slots": 32,
+    "steps": 1500,
+    "soft_steps": 250,
+    "batch_size": 32,
+    "validate_every": 150,
+    "learning_rate": 0.003,
+    "selection": "best validation macro accuracy after warmup; held-out test opened after both models train",
+    "common_initialization": "all tensors except representative-key family",
+    "parser_source_sha256": "be17a5a27245ad748da9cf6328bcb7348f194f2a4216898eee2ee4a5a6cb4a9c"
+  },
+  "model_config": {
+    "width": 64,
+    "rings": 1024,
+    "slots": 32,
+    "entities": 256
+  },
+  "training": {
+    "steps": 1500,
+    "soft_steps": 250,
+    "learning_rate": 0.003,
+    "batch_size": 32,
+    "times": {
+      "flat": {
+        "wall_seconds": 145.85651933928602,
+        "cpu_seconds": 290.9531983049998
+      },
+      "product": {
+        "wall_seconds": 145.87593184187426,
+        "cpu_seconds": 290.91050957999926
+      }
+    },
+    "history": [
+      {
+        "step": 150,
+        "loss": {
+          "flat": 0.9519563913345337,
+          "product": 0.8535275459289551
+        },
+        "validation": {
+          "flat": {
+            "single": 0.7916666666666666,
+            "composition": 0.654296875
+          },
+          "product": {
+            "single": 0.7578125,
+            "composition": 0.671875
+          }
+        }
+      },
+      {
+        "step": 300,
+        "loss": {
+          "flat": 0.06933277100324631,
+          "product": 0.21649803221225739
+        },
+        "validation": {
+          "flat": {
+            "single": 0.9348958333333334,
+            "composition": 0.9140625
+          },
+          "product": {
+            "single": 0.9375,
+            "composition": 0.876953125
+          }
+        }
+      },
+      {
+        "step": 450,
+        "loss": {
+          "flat": 0.005486456677317619,
+          "product": 0.002299149287864566
+        },
+        "validation": {
+          "flat": {
+            "single": 0.9895833333333334,
+            "composition": 0.982421875
+          },
+          "product": {
+            "single": 0.9739583333333334,
+            "composition": 0.958984375
+          }
+        }
+      },
+      {
+        "step": 600,
+        "loss": {
+          "flat": 0.0009368107421323657,
+          "product": 0.029466690495610237
+        },
+        "validation": {
+          "flat": {
+            "single": 0.9973958333333334,
+            "composition": 0.990234375
+          },
+          "product": {
+            "single": 0.9895833333333334,
+            "composition": 0.9765625
+          }
+        }
+      },
+      {
+        "step": 750,
+        "loss": {
+          "flat": 0.0009818131802603602,
+          "product": 0.01940196566283703
+        },
+        "validation": {
+          "flat": {
+            "single": 1.0,
+            "composition": 0.99609375
+          },
+          "product": {
+            "single": 0.9869791666666666,
+            "composition": 0.966796875
+          }
+        }
+      },
+      {
+        "step": 900,
+        "loss": {
+          "flat": 0.07790966331958771,
+          "product": 0.0008095758967101574
+        },
+        "validation": {
+          "flat": {
+            "single": 0.9973958333333334,
+            "composition": 0.98828125
+          },
+          "product": {
+            "single": 0.9895833333333334,
+            "composition": 0.9921875
+          }
+        }
+      },
+      {
+        "step": 1050,
+        "loss": {
+          "flat": 0.06867732852697372,
+          "product": 0.0005845322157256305
+        },
+        "validation": {
+          "flat": {
+            "single": 1.0,
+            "composition": 0.990234375
+          },
+          "product": {
+            "single": 0.9973958333333334,
+            "composition": 0.99609375
+          }
+        }
+      },
+      {
+        "step": 1200,
+        "loss": {
+          "flat": 0.00011267716035945341,
+          "product": 0.15302635729312897
+        },
+        "validation": {
+          "flat": {
+            "single": 1.0,
+            "composition": 0.998046875
+          },
+          "product": {
+            "single": 0.9947916666666666,
+            "composition": 0.998046875
+          }
+        }
+      },
+      {
+        "step": 1350,
+        "loss": {
+          "flat": 0.00020638173737097532,
+          "product": 0.1040300726890564
+        },
+        "validation": {
+          "flat": {
+            "single": 1.0,
+            "composition": 0.98828125
+          },
+          "product": {
+            "single": 1.0,
+            "composition": 0.9921875
+          }
+        }
+      },
+      {
+        "step": 1500,
+        "loss": {
+          "flat": 0.003617487847805023,
+          "product": 0.17514477670192719
+        },
+        "validation": {
+          "flat": {
+            "single": 0.9921875,
+            "composition": 0.982421875
+          },
+          "product": {
+            "single": 0.9921875,
+            "composition": 0.990234375
+          }
+        }
+      }
+    ],
+    "parser_history": [
+      {
+        "step": 200,
+        "validation": {
+          "entity": 0.9614955357142857,
+          "attribute": 0.9988839285714286,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 400,
+        "validation": {
+          "entity": 0.9743303571428571,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 600,
+        "validation": {
+          "entity": 0.9977678571428571,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 800,
+        "validation": {
+          "entity": 0.9849330357142857,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1000,
+        "validation": {
+          "entity": 0.9827008928571429,
+          "attribute": 1.0,
+          "operation": 0.9977678571428571
+        }
+      },
+      {
+        "step": 1200,
+        "validation": {
+          "entity": 0.9994419642857143,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1400,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1600,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 1800,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2000,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2200,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2400,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2600,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 2800,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      },
+      {
+        "step": 3000,
+        "validation": {
+          "entity": 1.0,
+          "attribute": 1.0,
+          "operation": 1.0
+        }
+      }
+    ],
+    "parser_source_sha256": "be17a5a27245ad748da9cf6328bcb7348f194f2a4216898eee2ee4a5a6cb4a9c",
+    "selected_steps": {
+      "flat": 1200,
+      "product": 1050
+    }
+  },
+  "quality": {
+    "flat": {
+      "tensor_sparse": {
+        "single": 1.0,
+        "composition": 0.998046875
+      },
+      "koutendb": {
+        "single": 1,
+        "composition": 0.998046875
+      },
+      "koutendb_per_ring": {
+        "single": 1.0,
+        "composition": 0.998046875
+      }
+    },
+    "product": {
+      "tensor_sparse": {
+        "single": 0.9973958333333334,
+        "composition": 0.98828125
+      },
+      "koutendb": {
+        "single": 0.9973958333333334,
+        "composition": 0.98828125
+      },
+      "koutendb_per_ring": {
+        "single": 0.9973958333333334,
+        "composition": 0.98828125
+      },
+      "full_product_reference": {
+        "single": 0.9973958333333334,
+        "composition": 0.98828125
+      }
+    }
+  },
+  "parity": {
+    "flat": {
+      "prediction_mismatches": 0,
+      "max_logit_error": 1.2159347534179688e-05,
+      "test_questions": 896
+    },
+    "product": {
+      "prediction_mismatches": 0,
+      "max_logit_error": 8.881092071533203e-06,
+      "test_questions": 896
+    }
+  },
+  "test_counts": {
+    "single": 384,
+    "composition": 512
+  },
+  "test_text_overlap_with_knowledge_training": 0,
+  "test_text_overlap_with_parser_training": 0,
+  "access_counts_per_question": {
+    "flat": {
+      "queries": 2,
+      "scored_keys": 128,
+      "read_value_vectors": 16,
+      "returned_value_bytes": 4096,
+      "router_keys_scored": 2048
+    },
+    "product": {
+      "queries": 2,
+      "scored_keys": 128,
+      "read_value_vectors": 16,
+      "returned_value_bytes": 4096,
+      "router_keys_scored": 128,
+      "router_pair_candidates": 8
+    }
+  },
+  "timing_workload": {
+    "single": 16,
+    "composition": 16,
+    "batch_size": 1
+  },
+  "db_aggregation": {
+    "koutendb": "batched",
+    "koutendb_per_ring": "original per-ring reference"
+  },
+  "summaries": {
+    "flat/koutendb_per_ring/model": {
+      "wall_ms": 1.096656795865177,
+      "cpu_ms": 2.191990483333332,
+      "package_j": null
+    },
+    "product/koutendb/knowledge_layer": {
+      "wall_ms": 0.4067635969383842,
+      "cpu_ms": 0.8129410657051295,
+      "package_j": null
+    },
+    "flat/koutendb/model": {
+      "wall_ms": 0.9160456163246837,
+      "cpu_ms": 1.8325907951388913,
+      "package_j": null
+    },
+    "flat/koutendb_per_ring/knowledge_layer": {
+      "wall_ms": 0.4787268721470768,
+      "cpu_ms": 0.9578255672348464,
+      "package_j": null
+    },
+    "product/tensor_sparse/knowledge_layer": {
+      "wall_ms": 0.311516348048434,
+      "cpu_ms": 0.6227250912990168,
+      "package_j": null
+    },
+    "product/tensor_sparse/model": {
+      "wall_ms": 0.9111458524684066,
+      "cpu_ms": 1.8204791770833277,
+      "package_j": null
+    },
+    "flat/koutendb/knowledge_layer": {
+      "wall_ms": 0.31688691624367493,
+      "cpu_ms": 0.6337441831249979,
+      "package_j": null
+    },
+    "flat/tensor_sparse/model": {
+      "wall_ms": 0.8059958297053527,
+      "cpu_ms": 1.6121946328125027,
+      "package_j": null
+    },
+    "product/koutendb_per_ring/model": {
+      "wall_ms": 1.199192250039362,
+      "cpu_ms": 2.4000023191964432,
+      "package_j": null
+    },
+    "product/koutendb/model": {
+      "wall_ms": 1.0361466718791235,
+      "cpu_ms": 2.0731103984374943,
+      "package_j": null
+    },
+    "flat/tensor_sparse/knowledge_layer": {
+      "wall_ms": 0.200836467147616,
+      "cpu_ms": 0.40190202844551476,
+      "package_j": null
+    },
+    "product/koutendb_per_ring/knowledge_layer": {
+      "wall_ms": 0.5753128917669008,
+      "cpu_ms": 1.1499566964285732,
+      "package_j": null
+    }
+  },
+  "samples": {
+    "flat/koutendb_per_ring/model": [
+      {
+        "requests": 480,
+        "wall_ms": 1.082878433347408,
+        "cpu_ms": 2.165998620833331,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.096656795865177,
+        "cpu_ms": 2.191990483333332,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.1101262291655682,
+        "cpu_ms": 2.2203468145833254,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.091263927082764,
+        "cpu_ms": 2.1826352979166685,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.1128360833026818,
+        "cpu_ms": 2.2252748979166626,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.0888511125206908,
+        "cpu_ms": 2.1783188687500106,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.1137509374748333,
+        "cpu_ms": 2.2281412041666706,
+        "package_j": null
+      }
+    ],
+    "product/koutendb/knowledge_layer": [
+      {
+        "requests": 1216,
+        "wall_ms": 0.4191071126641825,
+        "cpu_ms": 0.8384180361842107,
+        "package_j": null
+      },
+      {
+        "requests": 1248,
+        "wall_ms": 0.4092597571984814,
+        "cpu_ms": 0.818608373397434,
+        "package_j": null
+      },
+      {
+        "requests": 1248,
+        "wall_ms": 0.4038603902256746,
+        "cpu_ms": 0.807668709134615,
+        "package_j": null
+      },
+      {
+        "requests": 1248,
+        "wall_ms": 0.4067635969383842,
+        "cpu_ms": 0.8129410657051295,
+        "package_j": null
+      },
+      {
+        "requests": 1280,
+        "wall_ms": 0.4003739351674085,
+        "cpu_ms": 0.8003083671874966,
+        "package_j": null
+      },
+      {
+        "requests": 1216,
+        "wall_ms": 0.41957273766743847,
+        "cpu_ms": 0.8387972968750005,
+        "package_j": null
+      },
+      {
+        "requests": 1248,
+        "wall_ms": 0.4046673734009323,
+        "cpu_ms": 0.8091903333333419,
+        "package_j": null
+      }
+    ],
+    "flat/koutendb/model": [
+      {
+        "requests": 576,
+        "wall_ms": 0.9158132587193298,
+        "cpu_ms": 1.8324357239583344,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.9080041145858154,
+        "cpu_ms": 1.8157839895833316,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.9160456163246837,
+        "cpu_ms": 1.8325907951388913,
+        "package_j": null
+      },
+      {
+        "requests": 544,
+        "wall_ms": 0.9540865533327794,
+        "cpu_ms": 1.9076756819853022,
+        "package_j": null
+      },
+      {
+        "requests": 544,
+        "wall_ms": 0.9418891544127665,
+        "cpu_ms": 1.8848135698529476,
+        "package_j": null
+      },
+      {
+        "requests": 544,
+        "wall_ms": 0.9270869521809372,
+        "cpu_ms": 1.8534947224264762,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.913572597255552,
+        "cpu_ms": 1.826727970486096,
+        "package_j": null
+      }
+    ],
+    "flat/koutendb_per_ring/knowledge_layer": [
+      {
+        "requests": 1024,
+        "wall_ms": 0.49205436914689926,
+        "cpu_ms": 0.9841973847656248,
+        "package_j": null
+      },
+      {
+        "requests": 1088,
+        "wall_ms": 0.4685252196770093,
+        "cpu_ms": 0.9371928455882351,
+        "package_j": null
+      },
+      {
+        "requests": 992,
+        "wall_ms": 0.5059198457538807,
+        "cpu_ms": 1.0118271713709703,
+        "package_j": null
+      },
+      {
+        "requests": 1088,
+        "wall_ms": 0.47184042095442935,
+        "cpu_ms": 0.9442566654411723,
+        "package_j": null
+      },
+      {
+        "requests": 1056,
+        "wall_ms": 0.4787268721470768,
+        "cpu_ms": 0.9578255672348464,
+        "package_j": null
+      },
+      {
+        "requests": 1024,
+        "wall_ms": 0.4989879970764832,
+        "cpu_ms": 0.9979542568359367,
+        "package_j": null
+      },
+      {
+        "requests": 1056,
+        "wall_ms": 0.47750029642140196,
+        "cpu_ms": 0.9547011354166616,
+        "package_j": null
+      }
+    ],
+    "product/tensor_sparse/knowledge_layer": [
+      {
+        "requests": 1728,
+        "wall_ms": 0.29270884838465633,
+        "cpu_ms": 0.5855193541666666,
+        "package_j": null
+      },
+      {
+        "requests": 1664,
+        "wall_ms": 0.3054138960228906,
+        "cpu_ms": 0.6106590294471163,
+        "package_j": null
+      },
+      {
+        "requests": 1664,
+        "wall_ms": 0.3058153852180112,
+        "cpu_ms": 0.6116432872596171,
+        "package_j": null
+      },
+      {
+        "requests": 1632,
+        "wall_ms": 0.3124834656773601,
+        "cpu_ms": 0.6248860238970585,
+        "package_j": null
+      },
+      {
+        "requests": 1600,
+        "wall_ms": 0.3161809243829339,
+        "cpu_ms": 0.6324075587500033,
+        "package_j": null
+      },
+      {
+        "requests": 1632,
+        "wall_ms": 0.311516348048434,
+        "cpu_ms": 0.6227250912990168,
+        "package_j": null
+      },
+      {
+        "requests": 1568,
+        "wall_ms": 0.3215243303536542,
+        "cpu_ms": 0.6428803156887755,
+        "package_j": null
+      }
+    ],
+    "product/tensor_sparse/model": [
+      {
+        "requests": 576,
+        "wall_ms": 0.91186776045207,
+        "cpu_ms": 1.8231982465277747,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.921240673607018,
+        "cpu_ms": 1.8410906475694446,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.8994074044797647,
+        "cpu_ms": 1.7985359861111025,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.8954238298631227,
+        "cpu_ms": 1.7911903368055628,
+        "package_j": null
+      },
+      {
+        "requests": 544,
+        "wall_ms": 0.9246652187571539,
+        "cpu_ms": 1.8492088437499956,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.9037279878612026,
+        "cpu_ms": 1.8063444878472101,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.9111458524684066,
+        "cpu_ms": 1.8204791770833277,
+        "package_j": null
+      }
+    ],
+    "flat/koutendb/knowledge_layer": [
+      {
+        "requests": 1632,
+        "wall_ms": 0.3112987910664707,
+        "cpu_ms": 0.6225254705882363,
+        "package_j": null
+      },
+      {
+        "requests": 1632,
+        "wall_ms": 0.30777385845616595,
+        "cpu_ms": 0.6143329136029391,
+        "package_j": null
+      },
+      {
+        "requests": 1600,
+        "wall_ms": 0.31688691624367493,
+        "cpu_ms": 0.6337441831249979,
+        "package_j": null
+      },
+      {
+        "requests": 1504,
+        "wall_ms": 0.33250041422511556,
+        "cpu_ms": 0.6647009202127668,
+        "package_j": null
+      },
+      {
+        "requests": 1664,
+        "wall_ms": 0.3031849188608668,
+        "cpu_ms": 0.6060563118990366,
+        "package_j": null
+      },
+      {
+        "requests": 1504,
+        "wall_ms": 0.33906829122180226,
+        "cpu_ms": 0.6781366422872335,
+        "package_j": null
+      },
+      {
+        "requests": 1536,
+        "wall_ms": 0.33222850652236957,
+        "cpu_ms": 0.6641460996093806,
+        "package_j": null
+      }
+    ],
+    "flat/tensor_sparse/model": [
+      {
+        "requests": 640,
+        "wall_ms": 0.794625062508203,
+        "cpu_ms": 1.588233907812503,
+        "package_j": null
+      },
+      {
+        "requests": 640,
+        "wall_ms": 0.8199229593628843,
+        "cpu_ms": 1.639981434375004,
+        "package_j": null
+      },
+      {
+        "requests": 640,
+        "wall_ms": 0.7972697937475459,
+        "cpu_ms": 1.5940962859374963,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.8778190659642051,
+        "cpu_ms": 1.753965314236118,
+        "package_j": null
+      },
+      {
+        "requests": 640,
+        "wall_ms": 0.8059958297053527,
+        "cpu_ms": 1.6121946328125027,
+        "package_j": null
+      },
+      {
+        "requests": 640,
+        "wall_ms": 0.8050235765495017,
+        "cpu_ms": 1.6096430578125045,
+        "package_j": null
+      },
+      {
+        "requests": 576,
+        "wall_ms": 0.8696449566135319,
+        "cpu_ms": 1.7393084895833195,
+        "package_j": null
+      }
+    ],
+    "product/koutendb_per_ring/model": [
+      {
+        "requests": 416,
+        "wall_ms": 1.209249903835231,
+        "cpu_ms": 2.4183116225961605,
+        "package_j": null
+      },
+      {
+        "requests": 448,
+        "wall_ms": 1.1644316294742956,
+        "cpu_ms": 2.329584801339292,
+        "package_j": null
+      },
+      {
+        "requests": 416,
+        "wall_ms": 1.2063522067015024,
+        "cpu_ms": 2.4129982956730625,
+        "package_j": null
+      },
+      {
+        "requests": 448,
+        "wall_ms": 1.1815498749976021,
+        "cpu_ms": 2.3622780156250047,
+        "package_j": null
+      },
+      {
+        "requests": 448,
+        "wall_ms": 1.1705055290544155,
+        "cpu_ms": 2.3400927991071376,
+        "package_j": null
+      },
+      {
+        "requests": 448,
+        "wall_ms": 1.199192250039362,
+        "cpu_ms": 2.4000023191964432,
+        "package_j": null
+      },
+      {
+        "requests": 416,
+        "wall_ms": 1.2123612764648546,
+        "cpu_ms": 2.4237082764423294,
+        "package_j": null
+      }
+    ],
+    "product/koutendb/model": [
+      {
+        "requests": 512,
+        "wall_ms": 1.0074053906805602,
+        "cpu_ms": 2.014955771484375,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.048620612467251,
+        "cpu_ms": 2.096511800000004,
+        "package_j": null
+      },
+      {
+        "requests": 512,
+        "wall_ms": 1.0361466718791235,
+        "cpu_ms": 2.0731103984374943,
+        "package_j": null
+      },
+      {
+        "requests": 480,
+        "wall_ms": 1.0526434021206417,
+        "cpu_ms": 2.1064609354166652,
+        "package_j": null
+      },
+      {
+        "requests": 512,
+        "wall_ms": 1.0043224433502473,
+        "cpu_ms": 2.008188333984362,
+        "package_j": null
+      },
+      {
+        "requests": 512,
+        "wall_ms": 1.0130961640584246,
+        "cpu_ms": 2.0266746289062665,
+        "package_j": null
+      },
+      {
+        "requests": 448,
+        "wall_ms": 1.1307953638736632,
+        "cpu_ms": 2.260052281249988,
+        "package_j": null
+      }
+    ],
+    "flat/tensor_sparse/knowledge_layer": [
+      {
+        "requests": 2528,
+        "wall_ms": 0.19951587421042238,
+        "cpu_ms": 0.3992641174841761,
+        "package_j": null
+      },
+      {
+        "requests": 2496,
+        "wall_ms": 0.20082023157113163,
+        "cpu_ms": 0.40190202844551476,
+        "package_j": null
+      },
+      {
+        "requests": 2272,
+        "wall_ms": 0.22285512148326386,
+        "cpu_ms": 0.4459908807218313,
+        "package_j": null
+      },
+      {
+        "requests": 2496,
+        "wall_ms": 0.200836467147616,
+        "cpu_ms": 0.40154822996794864,
+        "package_j": null
+      },
+      {
+        "requests": 2304,
+        "wall_ms": 0.21762880078313174,
+        "cpu_ms": 0.43506855468750105,
+        "package_j": null
+      },
+      {
+        "requests": 2528,
+        "wall_ms": 0.19896533268377115,
+        "cpu_ms": 0.3979318002373438,
+        "package_j": null
+      },
+      {
+        "requests": 2464,
+        "wall_ms": 0.20535693791127604,
+        "cpu_ms": 0.4106215758928557,
+        "package_j": null
+      }
+    ],
+    "product/koutendb_per_ring/knowledge_layer": [
+      {
+        "requests": 896,
+        "wall_ms": 0.5615060546720737,
+        "cpu_ms": 1.1227993627232162,
+        "package_j": null
+      },
+      {
+        "requests": 864,
+        "wall_ms": 0.5983649421236974,
+        "cpu_ms": 1.1966446608796244,
+        "package_j": null
+      },
+      {
+        "requests": 896,
+        "wall_ms": 0.5673534609351398,
+        "cpu_ms": 1.1353926997767891,
+        "package_j": null
+      },
+      {
+        "requests": 896,
+        "wall_ms": 0.5753128917669008,
+        "cpu_ms": 1.1499566964285732,
+        "package_j": null
+      },
+      {
+        "requests": 864,
+        "wall_ms": 0.5896101145952815,
+        "cpu_ms": 1.1785914247685172,
+        "package_j": null
+      },
+      {
+        "requests": 896,
+        "wall_ms": 0.5767115134014082,
+        "cpu_ms": 1.1535483683035663,
+        "package_j": null
+      },
+      {
+        "requests": 896,
+        "wall_ms": 0.5742743593535644,
+        "cpu_ms": 1.149017102678562,
+        "package_j": null
+      }
+    ]
+  },
+  "router_only_scaling": [
+    {
+      "rings": 1024,
+      "shape": [
+        32,
+        32
+      ],
+      "expanded_key_bytes": 65536,
+      "product_key_bytes": 2048,
+      "access_counts_per_query": {
+        "expanded": {
+          "router_keys_scored": 1024
+        },
+        "product": {
+          "router_keys_scored": 64,
+          "router_pair_candidates": 4
+        }
+      },
+      "selection_mismatches": 0,
+      "max_score_error": 1.1920928955078125e-07,
+      "summaries_per_query": {
+        "product": {
+          "wall_ms": 0.05107089082884117,
+          "cpu_ms": 0.1021248969567,
+          "package_j": null
+        },
+        "expanded": {
+          "wall_ms": 0.008514988136294902,
+          "cpu_ms": 0.017041634412445616,
+          "package_j": null
+        }
+      },
+      "samples": {
+        "product": [
+          {
+            "requests": 9856,
+            "wall_ms": 0.05086265209034276,
+            "cpu_ms": 0.10167977546672068,
+            "package_j": null
+          },
+          {
+            "requests": 9792,
+            "wall_ms": 0.05107089082884117,
+            "cpu_ms": 0.1021248969567,
+            "package_j": null
+          },
+          {
+            "requests": 9856,
+            "wall_ms": 0.050768047180831846,
+            "cpu_ms": 0.1014912019074681,
+            "package_j": null
+          },
+          {
+            "requests": 9472,
+            "wall_ms": 0.05311358372207021,
+            "cpu_ms": 0.1062082825168923,
+            "package_j": null
+          },
+          {
+            "requests": 9664,
+            "wall_ms": 0.051882932945128586,
+            "cpu_ms": 0.10381890635347664,
+            "package_j": null
+          },
+          {
+            "requests": 9984,
+            "wall_ms": 0.05022469851831911,
+            "cpu_ms": 0.10050322205528833,
+            "package_j": null
+          },
+          {
+            "requests": 9600,
+            "wall_ms": 0.05226267218555828,
+            "cpu_ms": 0.1045515631250001,
+            "package_j": null
+          }
+        ],
+        "expanded": [
+          {
+            "requests": 59136,
+            "wall_ms": 0.00845961088018228,
+            "cpu_ms": 0.016930624188311805,
+            "package_j": null
+          },
+          {
+            "requests": 54080,
+            "wall_ms": 0.009255461075893237,
+            "cpu_ms": 0.018517262647928797,
+            "package_j": null
+          },
+          {
+            "requests": 57856,
+            "wall_ms": 0.008651269755656978,
+            "cpu_ms": 0.017309901963495793,
+            "package_j": null
+          },
+          {
+            "requests": 59072,
+            "wall_ms": 0.008470067409280435,
+            "cpu_ms": 0.01693263735780054,
+            "package_j": null
+          },
+          {
+            "requests": 59136,
+            "wall_ms": 0.008456935758020975,
+            "cpu_ms": 0.016911124881628773,
+            "package_j": null
+          },
+          {
+            "requests": 58688,
+            "wall_ms": 0.008528516545130746,
+            "cpu_ms": 0.01704758088536,
+            "package_j": null
+          },
+          {
+            "requests": 58752,
+            "wall_ms": 0.008514988136294902,
+            "cpu_ms": 0.017041634412445616,
+            "package_j": null
+          }
+        ]
+      }
+    },
+    {
+      "rings": 4096,
+      "shape": [
+        64,
+        64
+      ],
+      "expanded_key_bytes": 262144,
+      "product_key_bytes": 4096,
+      "access_counts_per_query": {
+        "expanded": {
+          "router_keys_scored": 4096
+        },
+        "product": {
+          "router_keys_scored": 128,
+          "router_pair_candidates": 4
+        }
+      },
+      "selection_mismatches": 0,
+      "max_score_error": 1.1920928955078125e-07,
+      "summaries_per_query": {
+        "expanded": {
+          "wall_ms": 0.02137153329942541,
+          "cpu_ms": 0.042753264557718586,
+          "package_j": null
+        },
+        "product": {
+          "wall_ms": 0.05499158315150917,
+          "cpu_ms": 0.10994934298513914,
+          "package_j": null
+        }
+      },
+      "samples": {
+        "expanded": [
+          {
+            "requests": 22144,
+            "wall_ms": 0.022595164242806266,
+            "cpu_ms": 0.04516503793352645,
+            "package_j": null
+          },
+          {
+            "requests": 23488,
+            "wall_ms": 0.021332857671980215,
+            "cpu_ms": 0.04265612244550422,
+            "package_j": null
+          },
+          {
+            "requests": 22848,
+            "wall_ms": 0.02191466132606248,
+            "cpu_ms": 0.04366701601890776,
+            "package_j": null
+          },
+          {
+            "requests": 24000,
+            "wall_ms": 0.020884685999286983,
+            "cpu_ms": 0.04175712520833308,
+            "package_j": null
+          },
+          {
+            "requests": 24000,
+            "wall_ms": 0.02087681975050752,
+            "cpu_ms": 0.04174851037499986,
+            "package_j": null
+          },
+          {
+            "requests": 23424,
+            "wall_ms": 0.02137153329942541,
+            "cpu_ms": 0.042753264557718586,
+            "package_j": null
+          },
+          {
+            "requests": 22080,
+            "wall_ms": 0.02266573161197838,
+            "cpu_ms": 0.04530888709239159,
+            "package_j": null
+          }
+        ],
+        "product": [
+          {
+            "requests": 9152,
+            "wall_ms": 0.05489189816280423,
+            "cpu_ms": 0.10984674562937029,
+            "package_j": null
+          },
+          {
+            "requests": 8640,
+            "wall_ms": 0.057890319213685065,
+            "cpu_ms": 0.11545461932870439,
+            "package_j": null
+          },
+          {
+            "requests": 8768,
+            "wall_ms": 0.05709057880924436,
+            "cpu_ms": 0.11410322890054615,
+            "package_j": null
+          },
+          {
+            "requests": 9216,
+            "wall_ms": 0.054319177192180886,
+            "cpu_ms": 0.10867430132378533,
+            "package_j": null
+          },
+          {
+            "requests": 9280,
+            "wall_ms": 0.05424490247668441,
+            "cpu_ms": 0.10844389935344825,
+            "package_j": null
+          },
+          {
+            "requests": 9152,
+            "wall_ms": 0.05499158315150917,
+            "cpu_ms": 0.10994934298513914,
+            "package_j": null
+          },
+          {
+            "requests": 8768,
+            "wall_ms": 0.05742898551644915,
+            "cpu_ms": 0.11479239062500093,
+            "package_j": null
+          }
+        ]
+      }
+    },
+    {
+      "rings": 65536,
+      "shape": [
+        256,
+        256
+      ],
+      "expanded_key_bytes": 4194304,
+      "product_key_bytes": 16384,
+      "access_counts_per_query": {
+        "expanded": {
+          "router_keys_scored": 65536
+        },
+        "product": {
+          "router_keys_scored": 512,
+          "router_pair_candidates": 4
+        }
+      },
+      "selection_mismatches": 0,
+      "max_score_error": 1.1920928955078125e-07,
+      "summaries_per_query": {
+        "product": {
+          "wall_ms": 0.07376695887031465,
+          "cpu_ms": 0.14745732665094077,
+          "package_j": null
+        },
+        "expanded": {
+          "wall_ms": 0.22412254285362515,
+          "cpu_ms": 0.4482135433035645,
+          "package_j": null
+        }
+      },
+      "samples": {
+        "product": [
+          {
+            "requests": 6784,
+            "wall_ms": 0.07376695887031465,
+            "cpu_ms": 0.14745732665094077,
+            "package_j": null
+          },
+          {
+            "requests": 6848,
+            "wall_ms": 0.07320801766845507,
+            "cpu_ms": 0.14630278198014057,
+            "package_j": null
+          },
+          {
+            "requests": 6656,
+            "wall_ms": 0.07580936207974585,
+            "cpu_ms": 0.15167547536058065,
+            "package_j": null
+          },
+          {
+            "requests": 6656,
+            "wall_ms": 0.07517426367415353,
+            "cpu_ms": 0.1500798706430273,
+            "package_j": null
+          },
+          {
+            "requests": 6528,
+            "wall_ms": 0.07667465349061554,
+            "cpu_ms": 0.15341783287377314,
+            "package_j": null
+          },
+          {
+            "requests": 6912,
+            "wall_ms": 0.07274821904148768,
+            "cpu_ms": 0.1454565815972216,
+            "package_j": null
+          },
+          {
+            "requests": 6912,
+            "wall_ms": 0.07295850115985593,
+            "cpu_ms": 0.14587322236689657,
+            "package_j": null
+          }
+        ],
+        "expanded": [
+          {
+            "requests": 2304,
+            "wall_ms": 0.21790870876733,
+            "cpu_ms": 0.4357295273437447,
+            "package_j": null
+          },
+          {
+            "requests": 2240,
+            "wall_ms": 0.22713453705104517,
+            "cpu_ms": 0.45434783169642856,
+            "package_j": null
+          },
+          {
+            "requests": 2240,
+            "wall_ms": 0.22412254285362515,
+            "cpu_ms": 0.4482135433035645,
+            "package_j": null
+          },
+          {
+            "requests": 2176,
+            "wall_ms": 0.23660593243381728,
+            "cpu_ms": 0.4730444007352955,
+            "package_j": null
+          },
+          {
+            "requests": 2240,
+            "wall_ms": 0.22955319509492256,
+            "cpu_ms": 0.45849343080357485,
+            "package_j": null
+          },
+          {
+            "requests": 2304,
+            "wall_ms": 0.2197375286464699,
+            "cpu_ms": 0.4393388194444434,
+            "package_j": null
+          },
+          {
+            "requests": 2304,
+            "wall_ms": 0.22188076996422346,
+            "cpu_ms": 0.44408711631944214,
+            "package_j": null
+          }
+        ]
+      }
+    },
+    {
+      "rings": 262144,
+      "shape": [
+        512,
+        512
+      ],
+      "expanded_key_bytes": 16777216,
+      "product_key_bytes": 32768,
+      "access_counts_per_query": {
+        "expanded": {
+          "router_keys_scored": 262144
+        },
+        "product": {
+          "router_keys_scored": 1024,
+          "router_pair_candidates": 4
+        }
+      },
+      "selection_mismatches": 0,
+      "max_score_error": 1.1920928955078125e-07,
+      "summaries_per_query": {
+        "expanded": {
+          "wall_ms": 1.400685794275584,
+          "cpu_ms": 2.801562432291682,
+          "package_j": null
+        },
+        "product": {
+          "wall_ms": 0.10163797442855158,
+          "cpu_ms": 0.20327504241071623,
+          "package_j": null
+        }
+      },
+      "samples": {
+        "expanded": [
+          {
+            "requests": 384,
+            "wall_ms": 1.3632007812702795,
+            "cpu_ms": 2.725028145833308,
+            "package_j": null
+          },
+          {
+            "requests": 384,
+            "wall_ms": 1.3961358749838837,
+            "cpu_ms": 2.7918089453125017,
+            "package_j": null
+          },
+          {
+            "requests": 384,
+            "wall_ms": 1.4382220937629124,
+            "cpu_ms": 2.878202940104139,
+            "package_j": null
+          },
+          {
+            "requests": 384,
+            "wall_ms": 1.400685794275584,
+            "cpu_ms": 2.801562432291682,
+            "package_j": null
+          },
+          {
+            "requests": 384,
+            "wall_ms": 1.3741464140366588,
+            "cpu_ms": 2.746213291666688,
+            "package_j": null
+          },
+          {
+            "requests": 384,
+            "wall_ms": 1.4802621171838837,
+            "cpu_ms": 2.959038302083291,
+            "package_j": null
+          },
+          {
+            "requests": 384,
+            "wall_ms": 1.4230294062447986,
+            "cpu_ms": 2.8470639635416184,
+            "package_j": null
+          }
+        ],
+        "product": [
+          {
+            "requests": 4992,
+            "wall_ms": 0.10122938962152918,
+            "cpu_ms": 0.20236708493589695,
+            "package_j": null
+          },
+          {
+            "requests": 4992,
+            "wall_ms": 0.10113554967807804,
+            "cpu_ms": 0.20228553345352643,
+            "package_j": null
+          },
+          {
+            "requests": 4928,
+            "wall_ms": 0.10163797442855158,
+            "cpu_ms": 0.20327504241071623,
+            "package_j": null
+          },
+          {
+            "requests": 4928,
+            "wall_ms": 0.1025360215094992,
+            "cpu_ms": 0.20515257832792516,
+            "package_j": null
+          },
+          {
+            "requests": 4992,
+            "wall_ms": 0.10098873938146333,
+            "cpu_ms": 0.20187358373397624,
+            "package_j": null
+          },
+          {
+            "requests": 4864,
+            "wall_ms": 0.10302143935429117,
+            "cpu_ms": 0.2061961153371673,
+            "package_j": null
+          },
+          {
+            "requests": 4864,
+            "wall_ms": 0.10336624074481829,
+            "cpu_ms": 0.2067640304276308,
+            "package_j": null
+          }
+        ]
+      }
+    }
+  ],
+  "energy": {
+    "available": false,
+    "domains": [],
+    "reason": "intel-rapl:0: Permission denied"
+  },
+  "work_bytes_with_db_snapshots": 66340865,
+  "runtime": {
+    "torch": "2.12.1+cpu",
+    "python": "3.12.8",
+    "threads": 2,
+    "rounds": 7,
+    "min_block_seconds": 0.5
+  },
+  "checkpoint_sha256": "0405aced82d1fc90aa61ff6007f320d41f44c0ff10948d07986374a71874a59c",
+  "library_sha256": "8e06d5394eb3ec9c2bd36fca086cf59da533866eefa35c2a137c40caf79763df",
+  "implementation_sha256": {
+    "ring_memory_product_bench.py": "04c929398f5b61c0371c08d483fc1270ae7a43ffa82ba37e166ca3d00c58df0c",
+    "ring_memory_router.py": "3578e5d1c7637054731b4736d530b619a0faab2ed37a032024fc27c65e03d24b",
+    "ring_memory_model.py": "4d36171d51ce96083a47705fbbdfc555b440c6c6d5f2d4734dbb7b9ce0cde194",
+    "ring_memory_experiment.py": "8be93239619b53ce4f4bd81721c9f0672c8922a79bcef09a8268e9e146c3a203",
+    "ring_memory_data.py": "3e9668defbff9e55778bcb6c3379b5429a61c52af9486104826a4aca0cd145cb"
+  },
+  "limitations": [
+    "Synthetic 384-fact classification by default, not a large language model.",
+    "Only routing is factorized; all local keys/values still exist and are resident in this comparison.",
+    "Product keys restrict the learned representative-key family; arbitrary flat checkpoints require retraining.",
+    "Training uses full scores and dense local memory; no sparse-training or training-energy claim.",
+    "Router-only large keyspaces are untrained and contain no corresponding local memory tables.",
+    "Algorithmic access counts are not measured DRAM or SSD traffic.",
+    "Single world/seed; quality differences need independent replications.",
+    "CPU package joules, if available, exclude GPU, whole-system and data-center energy.",
+    "Timing excludes initialization, DB export, tokenization and training; includes inference routing/read/output."
+  ]
+}

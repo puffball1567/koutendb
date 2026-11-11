@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## v0.15.2 - 2026-11-11
+
+### Added
+
+- Optional product-key ring selection inside the learned-memory prototype,
+  avoiding full representative enumeration at inference for structured keys.
+- Matched flat/product training and bounded cost/quality reports. Large
+  router-only keyspaces improve, while the trained 1,024-ring model retains a
+  small accuracy gap and product-routing overhead.
+
+### Improved
+
+- Batch latent-vector aggregation after scoped DB reads. A controlled synthetic
+  recheck reduces unchanged flat-model CPU time by 16.4% with measured accuracy
+  preserved; the product model improves by 13.6% against its own original reader.
+  These are CPU-time results, not measured electricity savings.
+
+### Fixed
+
+- Pin apt-based native and HTTP-integration CI jobs to Ubuntu 24.04 so their
+  dependency baseline does not change with `ubuntu-latest` image rollouts.
+- Prefer an independent HTTPS Ubuntu package mirror during dependency setup,
+  preserving archive signature verification and the existing mirror fallbacks.
+
 ## v0.15.1 - 2026-11-07
 
 ### Added

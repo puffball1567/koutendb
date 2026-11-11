@@ -19,6 +19,10 @@ The [answer-quality comparison](ring-memory-quality-bench.md) trains dense and
 two ring layouts on 384 facts per world across three independent worlds, then
 evaluates held-out questions through the actual database.
 
+The optional [product-key router](product-ring-routing.md) avoids comparing a
+hidden query with every ring representative. It includes matched training of
+flat and structured routers, actual DB answer checks and separate cost scaling.
+
 ## Architecture and Controls
 
 The common language parser has two Transformer encoder layers, width 64 and four

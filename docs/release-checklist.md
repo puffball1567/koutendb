@@ -4,6 +4,18 @@ This is the canonical release checklist for the public KoutenDB repository.
 The current automated test coverage matrix is tracked in
 [Test Coverage](test-coverage.md).
 
+## v0.15.2 Patch Release
+
+| Area | Release Check |
+|---|---|
+| Scope | PR #146: optional product-key routing and batched latent aggregation in the learned-memory prototype |
+| Package and examples | Nimble metadata, current image examples, bootstrap default and release notes aligned to 0.15.2 |
+| Numerical evidence | Both JSON reports and SHA256SUMS retained; source provenance and checkpoint reuse verified |
+| Accuracy and CPU | Flat-model measured accuracy preserved with 16.4% lower whole-model CPU time; electricity remains unmeasured |
+| Validation | 47 local CPU contracts and feature PR CI pass; release integration requires full release-PR CI and exact-HEAD devel push CI |
+| Compatibility | C ABI version 2, wire and native storage behavior unchanged |
+| v1.0 boundary | Continuous service evidence in issue #108 remains open; this patch does not complete the v1.0 operational trial |
+
 ## Required Before v1.0 RC
 
 The detailed gates and evidence rules are defined in

@@ -58,6 +58,14 @@ See [RAG Energy](docs/real-rag-energy-bench.md),
 limitations and reproduction commands. Model weights and downloaded corpora are
 not included in the repository.
 
+The optional [product-key ring router](docs/product-ring-routing.md) also reduces
+the work of selecting rings inside the learned-memory model. It uses structured
+representatives and bounded candidate combinations; its matched training and
+CPU benchmark reports accuracy separately from routing cost and measured energy.
+Batched latent aggregation also lowers whole-model CPU time by **16.4%** for
+the unchanged flat-router prototype in a controlled recheck, with its measured
+answer accuracy preserved. Electricity use remains unmeasured for this feature.
+
 ## Retrieve Related Data Without Join Shaping
 
 Related records can be stored as nearby subrings and read as one bounded bundle.
@@ -132,7 +140,7 @@ Choose the artifact that matches the first task:
 | Task | Install path |
 |---|---|
 | Local CLI or embedded Nim | `nimble install koutendb` |
-| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.15.1` and the self-host bundle |
+| Persistent self-hosted server | `ghcr.io/puffball1567/koutendb:0.15.2` and the self-host bundle |
 | Existing-language application | published driver plus a compatible KoutenDB server or native library |
 | Core development and full validation | source checkout |
 
@@ -756,7 +764,7 @@ tests/                 unit and smoke tests
 
 ## Operational Scope
 
-KoutenDB v0.15.1 is a public pre-v1 release with persistent storage, strong
+KoutenDB v0.15.2 is a public pre-v1 release with persistent storage, strong
 durability, recovery, transactions, topology controls, TLS-capable transport, a
 C ABI, published drivers, ring-local physical segments, bounded automatic
 maintenance, generation checkpoints, operational metrics, recoverable cluster
