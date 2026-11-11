@@ -107,6 +107,7 @@ trial to maintained application is in the
 ## Release
 
 - [Release Checklist](release-checklist.md)
+- [v0.15.2 Release Notes](github-release-v0.15.2.md)
 - [v0.15.1 Release Notes](github-release-v0.15.1.md)
 - [v0.15.0 Release Notes](github-release-v0.15.0.md)
 - [v0.14.5 Release Notes](github-release-v0.14.5.md)

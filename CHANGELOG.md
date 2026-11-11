@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.15.2 - 2026-11-11
+
 ### Added
 
 - Optional product-key ring selection inside the learned-memory prototype,
