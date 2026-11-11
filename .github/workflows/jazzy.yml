@@ -35,7 +35,7 @@ concurrency:
 jobs:
   integration:
     name: Jazzy HTTP and Docker contracts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +57,9 @@ jobs:
           node-version: '20'
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsodium-dev openssl libsqlite3-0 libpq5
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y libsodium-dev openssl libsqlite3-0 libpq5
 
       - name: Install core dependencies
         run: nimble install -y --depsOnly

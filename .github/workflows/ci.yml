@@ -54,14 +54,17 @@ jobs:
     name: Nim checks and C ABI
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    # Keep apt-based checks on an explicit baseline during latest-image rollouts.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc clang libssl-dev libsodium-dev openssl
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y gcc clang libssl-dev libsodium-dev openssl
 
       - name: Set up Nim
         uses: jiro4989/setup-nim-action@v2
@@ -136,14 +139,16 @@ jobs:
     name: Core test suite
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libsodium-dev
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y gcc libsodium-dev
 
       - name: Set up Nim
         uses: jiro4989/setup-nim-action@v2
@@ -162,14 +167,16 @@ jobs:
     name: CLI, cluster, recovery, and universe smoke
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libsodium-dev
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y gcc libsodium-dev
 
       - name: Set up Nim
         uses: jiro4989/setup-nim-action@v2
@@ -234,14 +241,16 @@ jobs:
     name: TLS transport smoke
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libssl-dev libsodium-dev openssl
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y gcc libssl-dev libsodium-dev openssl
 
       - name: Set up Nim
         uses: jiro4989/setup-nim-action@v2
@@ -258,12 +267,14 @@ jobs:
     name: AI experiment contracts
     needs: classify_flow
     if: ${{ needs.classify_flow.outputs.mode == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libssl-dev libsodium-dev
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y gcc libssl-dev libsodium-dev
       - uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: '2.2.10'
